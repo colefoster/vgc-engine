@@ -2074,7 +2074,10 @@ pub fn on_damaging_hit(
                 // roughskin / ironbarbs onDamagingHit: damage(..., source=target).
                 if battle.plog() {
                     let of = battle.p_ident(target_side, target_slot);
+                    // onDamagingHitOrder: 1 (data/abilities.ts roughskin, ironbarbs).
+                    battle.p_sub(1);
                     battle.p_damage(attacker_side, attacker_slot, &format!("|[from] ability: {}|[of] {of}", crate::battle_protocol::ability_name(ability_id)));
+                    battle.p_sub(3);
                 }
             }
         }

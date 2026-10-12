@@ -10965,6 +10965,8 @@ self.trigger_emergency_exits();
 
         self.apply_move_specific_post_damage(ctx, hit_sub);
         self.p_tag(crate::protocol::step::DAMAGING_HIT, ctx.tside, ctx.tslot);
+        // Handlers without onDamagingHitOrder run after the ordered ones.
+        self.p_sub(3);
 
         // Innards Out (onDamagingHitOrder 1): a holder KO'd by the hit deals
         // the HP it lost (plus earlier hits of a multi-hit move) to the
@@ -10985,7 +10987,9 @@ self.trigger_emergency_exits();
                 }
                 if self.plog() {
                     let of = self.p_ident(ctx.tside, ctx.tslot);
+                    self.p_sub(1);
                     self.p_damage(ctx.actor_side, ctx.actor_slot, &format!("|[from] ability: Innards Out|[of] {of}"));
+                    self.p_sub(3);
                 }
             }
         }
@@ -13519,6 +13523,15 @@ self.trigger_emergency_exits();
                 a.current_hp = 0;
                 a.fainted = true;
             }
+            // damageCallback's pokemon.faint() queues the user ahead of the
+            // target (data/moves.ts finalgambit).
+            let idx = self.side(actor_side).active[actor_slot as usize];
+            if let Some(l) = self.protocol.log_mut() {
+                if !l.faint_queue.contains(&(actor_side as u8, idx)) {
+                    l.faint_queue.insert(0, (actor_side as u8, idx));
+                    l.faint_keys.insert(0, 0);
+                }
+            }
             #[cfg(feature = "ps-rng")]
             {
                 self.ps_hit_dead |= 1 << (actor_side as usize * 2 + actor_slot as usize);
@@ -13824,6 +13837,7 @@ self.trigger_emergency_exits();
         // The hit loop is over: faintMessages, `-hitcount`, then the
         // AfterMoveSecondary lines; the window closes before AfterMoveSecondarySelf.
         self.p_loop_end();
+        self.p_emergency_exit_targets(actor_side, actor_slot);
         self.p_close_move_window();
         if attacker_item_id == data::item_id::LIFEORB && (any_damage_dealt > 0 || self.disguise_hit_this_move) {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
@@ -14699,6 +14713,9 @@ self.trigger_emergency_exits();
     /// (data/mods/champions/abilities.ts:25). Its switch is answered in the
     /// replacement request that closes the turn.
     fn residual_emergency_exits(&mut self, snap: [[(u8, u16); 2]; 2]) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.ee_announced = 0;
+        }
         if self.p1.is_defeated() || self.p2.is_defeated() {
             return;
         }
@@ -14718,6 +14735,7 @@ self.trigger_emergency_exits();
                 if !fires {
                     continue;
                 }
+                self.p_emergency_exit(side, slot as u8);
                 if self.decision_phases {
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
                         m.set_pending_forced_switch();
@@ -14763,6 +14781,13 @@ self.trigger_emergency_exits();
     /// data/mods/champions/scripts.ts:583); the whole-action HP check covers
     /// each. The player picks the replacement, like Eject Button.
     fn trigger_emergency_exits(&mut self) {
+        self.trigger_emergency_exits_inner();
+        if let Some(l) = self.protocol.log_mut() {
+            l.ee_announced = 0;
+        }
+    }
+
+    fn trigger_emergency_exits_inner(&mut self) {
         let Some((snap, damaging)) = self.hp_before_action.take() else { return };
         if !damaging {
             return;
@@ -14783,6 +14808,7 @@ self.trigger_emergency_exits();
                 if !fires {
                     continue;
                 }
+                self.p_emergency_exit(side, slot as u8);
                 if self.decision_phases {
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
                         m.set_pending_forced_switch();
@@ -19850,18 +19876,20 @@ self.trigger_emergency_exits();
                     if move_id == data::move_id::BELLYDRUM && a.boosts[0] >= 6 { return; }
                     a.current_hp -= cost;
                 }
-                // directDamage's `-damage`, then the boost (Belly Drum's `-setboost`).
-                self.p_damage(actor_side, actor_slot, "");
+                // Belly Drum: directDamage then `-setboost` (onHit). Fillet Away /
+                // Clangorous Soul boost in onTryHit before onHit's directDamage
+                // (data/moves.ts clangoroussoul, filletaway).
                 if move_id == data::move_id::BELLYDRUM {
+                    self.p_damage(actor_side, actor_slot, "");
                     self.p_boost_fx(crate::protocol::BoostFx::Silent);
                     if self.plog() {
                         pmon!(self, "-setboost", actor_side, actor_slot, "|atk|6|[from] move: Belly Drum");
                     }
+                    self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                } else {
+                    self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                    self.p_damage(actor_side, actor_slot, "");
                 }
-                // Self-boost after paying HP. The guards above `return`
-                // before reaching here when the move fails, so this runs on
-                // exactly the same paths as the old inline loop.
-                self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
                 // The self-inflicted HP cost can drop the user past a berry's
                 // HP threshold (Sitrus at 1/2, the pinch berries at 1/4). PS
                 // fires the berry's onUpdate right after the directDamage, so we
