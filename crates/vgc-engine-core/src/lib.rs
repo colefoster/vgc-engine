@@ -56,6 +56,8 @@ pub mod ps_request;
 pub mod ps_session;
 pub mod ps_stream;
 pub mod ps_observe;
+pub mod ps_position;
+pub mod ps_board;
 pub mod protocol;
 pub mod calc;
 pub mod canonical_hash;

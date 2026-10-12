@@ -925,33 +925,13 @@ impl Battle {
             crate::ability::recompute_neutralizing_gas(&mut b);
         }
         if switch_ins {
-            // The leads' runSwitch batches all four switch-ins: their
-            // SwitchIn handlers run in Speed order, abilities (priority 0)
-            // before the items' negative-priority handlers
-            // (sim/battle-actions.ts:172-184; data/items.ts onSwitchInPriority),
-            // as in `apply_replacement_switches`. The order is runSwitch's
-            // speedSort, ties shuffled (`lead_switch_in_order`).
-            let (mut leads, k) = match lead_order {
+            // The order is runSwitch's speedSort, ties shuffled
+            // (`lead_switch_in_order`).
+            let order = match lead_order {
                 Some(o) => o,
                 None => b.lead_switch_in_order(),
             };
-            // Abilities' own onSwitchInPriority first (stable in Speed).
-            leads[..k].sort_by_key(|&(s, sl)| {
-                -(b.side(s).active_mon(sl as usize).map_or(0, |m| crate::ability::switch_in_priority(m.effective_ability_id())) as i32)
-            });
-            b.defer_white_herb = true;
-            b.p_pre_announce(&leads[..k]);
-            for &(side, slot) in &leads[..k] {
-                crate::ability::on_switch_in(&mut b, side, slot);
-            }
-            b.defer_white_herb = false;
-            // Shields Down: onSwitchInPriority -1, after the abilities.
-            for &(side, slot) in &leads[..k] {
-                b.shields_down_update(side, slot);
-            }
-            for &(side, slot) in &leads[..k] {
-                crate::item::on_switch_in(&mut b, side, slot);
-            }
+            b.run_lead_switch_ins(order);
         }
         // PR-LC1: prime the effective-weather/terrain cache after
         // battle-start abilities have potentially set weather
@@ -970,6 +950,37 @@ impl Battle {
         plog!(b, "|turn|{}", b.turn + 1);
         b.p_sync(crate::protocol::SyncKind::Move);
         b
+    }
+
+    /// The leads' runSwitch batches all four switch-ins: their SwitchIn
+    /// handlers run in Speed order, abilities (priority 0) before the
+    /// items' negative-priority handlers (sim/battle-actions.ts:172-184;
+    /// data/items.ts onSwitchInPriority), as in `apply_replacement_switches`.
+    pub(crate) fn run_lead_switch_ins(&mut self, order: ([(SideRef, u8); 4], usize)) {
+        let (mut leads, k) = order;
+        // Abilities' own onSwitchInPriority first (stable in Speed).
+        leads[..k].sort_by_key(|&(s, sl)| {
+            -(self.side(s).active_mon(sl as usize).map_or(0, |m| crate::ability::switch_in_priority(m.effective_ability_id())) as i32)
+        });
+        self.defer_white_herb = true;
+        self.p_pre_announce(&leads[..k]);
+        for &(side, slot) in &leads[..k] {
+            crate::ability::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        // Shields Down: onSwitchInPriority -1, after the abilities.
+        for &(side, slot) in &leads[..k] {
+            self.shields_down_update(side, slot);
+        }
+        for &(side, slot) in &leads[..k] {
+            crate::item::on_switch_in(self, side, slot);
+        }
+    }
+
+    /// [`Battle::lead_switch_in_order`] for a mid-game position's
+    /// switch-in effects (ps_position.rs).
+    pub(crate) fn lead_switch_in_order_pub(&mut self) -> ([(SideRef, u8); 4], usize) {
+        self.lead_switch_in_order()
     }
 
     pub fn turn(&self) -> u32 {
@@ -2871,7 +2882,7 @@ self.trigger_emergency_exits();
     /// action (sim/battle.ts runAction, gen >= 5).
     #[cfg(feature = "ps-rng")]
     #[track_caller]
-    fn ps_active_ties(&mut self, include_fainted: bool, op: &'static str) {
+    pub(crate) fn ps_active_ties(&mut self, include_fainted: bool, op: &'static str) {
         let n_active = self.format().active_count();
         let mut keys = [0i64; 4];
         let mut n = 0;
