@@ -376,11 +376,21 @@ async function runBattle(job, maxTurns) {
     }
   })();
 
+  // Every chunk each player stream delivers (getPlayerStreams, sim/battle-stream.ts:427-450):
+  // `update` chunks with |split| resolved for that side, and that side's
+  // `sideupdate` chunks (|request|, |error|), in arrival order.
+  const playerChunks = { p1: [], p2: [] };
+  const spectatorChunks = [];
+  const drainSpec = (async () => {
+    for await (const chunk of sides.spectator) spectatorChunks.push(chunk);
+  })();
+
   async function driveSide(sideId) {
     const s = sides[sideId];
     let lastReq = null;
     let lastPhase = 'main';
     for await (const chunk of s) {
+      playerChunks[sideId].push(chunk);
       const lines = chunk.split('\n');
       if (lines.some((l) => l.startsWith('|error|'))) {
         const err = lines.find((l) => l.startsWith('|error|'));
@@ -450,7 +460,7 @@ async function runBattle(job, maxTurns) {
     // (sim/battle.ts:3083 addSplit), for the protocol-log diff.
     if (battleRef && battleRef.log) rawLog = battleRef.log.join('\n');
     sides.omniscient.writeEnd();
-    await Promise.race([drainOmni, new Promise((res) => setTimeout(res, 1000))]);
+    await Promise.race([Promise.all([drainOmni, drainSpec]), new Promise((res) => setTimeout(res, 1000))]);
   } finally {
     restoreKeyed();
     restoreForce();
@@ -511,6 +521,7 @@ async function runBattle(job, maxTurns) {
       replay: job.meta && job.meta.replay,
       log: logChunks.join('\n'),
       rawlog: rawLog,
+      streams: { p1: playerChunks.p1, p2: playerChunks.p2, spectator: spectatorChunks, omniscient: logChunks },
     },
   };
 }

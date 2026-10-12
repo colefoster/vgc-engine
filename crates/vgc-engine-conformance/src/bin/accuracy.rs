@@ -228,6 +228,53 @@ fn main() -> ExitCode {
             for (k, ids) in v.iter().take(top) {
                 println!("  {:4}  {k}   e.g. {}", ids.len(), ids.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
             }
+            // Phase 2: per-side requests and player streams.
+            let sc: Vec<&&accuracy::ProtoRecord> = clean.iter().filter(|r| r.has_streams).collect();
+            if !sc.is_empty() {
+                let (rt, rm) = sc.iter().fold((0, 0), |(a, b), r| (a + r.req_total, b + r.req_match));
+                let both = sc.iter().filter(|r| r.streams_identical[0] && r.streams_identical[1]).count();
+                let spec = sc.iter().filter(|r| r.streams_identical[2]).count();
+                let omni = sc.iter().filter(|r| r.streams_identical[3]).count();
+                println!(
+                    "requests: {} / {} byte-identical ({:.2}%); p1+p2 streams identical {} / {} ({:.1}%); spectator {} ({:.1}%); omniscient {} ({:.1}%)",
+                    rm,
+                    rt,
+                    100.0 * rm as f64 / rt.max(1) as f64,
+                    both,
+                    sc.len(),
+                    100.0 * both as f64 / sc.len() as f64,
+                    spec,
+                    100.0 * spec as f64 / sc.len() as f64,
+                    omni,
+                    100.0 * omni as f64 / sc.len() as f64
+                );
+                let mut rb: std::collections::HashMap<&str, Vec<&accuracy::ProtoRecord>> = std::collections::HashMap::new();
+                for r in &sc {
+                    if let Some(b) = r.req_bucket.as_deref() {
+                        rb.entry(b).or_default().push(r);
+                    }
+                }
+                let mut v: Vec<_> = rb.into_iter().collect();
+                v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+                println!(" request buckets (battles, first mismatch):");
+                for (k, rs) in v.iter().take(top) {
+                    let d = rs[0].req_div.as_ref().unwrap();
+                    let cut = |s: &str| s.chars().take(70).collect::<String>();
+                    println!("  {:4}  {k}  PS={} ENG={}   e.g. {}", rs.len(), cut(&d.ps), cut(&d.eng), rs.iter().take(3).map(|r| r.id.as_str()).collect::<Vec<_>>().join(" "));
+                }
+                let mut sb: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+                for r in &sc {
+                    if let Some(b) = r.stream_bucket.as_deref() {
+                        sb.entry(b).or_default().push(&r.id);
+                    }
+                }
+                let mut v: Vec<_> = sb.into_iter().collect();
+                v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+                println!(" stream buckets (battles, first divergent chunk):");
+                for (k, ids) in v.iter().take(top) {
+                    println!("  {:4}  {k}   e.g. {}", ids.len(), ids.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
+                }
+            }
             ExitCode::SUCCESS
         }
         "keyed" => {
