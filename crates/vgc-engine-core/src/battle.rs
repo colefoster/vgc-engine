@@ -1479,6 +1479,47 @@ impl Battle {
         }
     }
 
+    /// Protean / Libero's onPrepareHit retype (see the call in
+    /// `resolve_move_with_pending`). `attacker` supplies the move's type
+    /// after onModifyType. Returns the new type when it retyped.
+    fn protean_prepare_hit(&mut self, side: SideRef, slot: u8, move_id: u16, attacker: &Pokemon) -> Option<u8> {
+        let a = self.side(side).active_mon(slot as usize)?;
+        let ability = a.effective_ability_id();
+        if !matches!(ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) || a.protean_used || a.terastallized {
+            return None;
+        }
+        // `move.type` here is post-onModifyType (runMove's ModifyType
+        // precedes PrepareHit, sim/battle-actions.ts useMoveInner): Weather
+        // Ball in rain retypes to Water, an -ate Normal move to the -ate type.
+        let move_type = crate::damage::move_type_in_ctx(attacker, move_id, &DamageContext {
+            weather: self.effective_weather_for(side, slot),
+            terrain: self.terrain,
+            champions: self.champions,
+            ..DamageContext::default()
+        });
+        // Skip when the holder is already mono of the move type.
+        let (types, num) = a.effective_types();
+        if move_type == u8::MAX || (num == 1 && types[0] == move_type) {
+            return None;
+        }
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.set_type_override(move_type, None);
+            a.protean_used = true;
+        }
+        // protean onPrepareHit (data/abilities.ts:3505).
+        if self.plog() {
+            pmon!(self, "-start", side, slot, "|typechange|{}|[from] ability: {}", crate::battle_protocol::type_name(move_type), crate::battle_protocol::ability_name(ability));
+        }
+        Some(move_type)
+    }
+
+    /// Protean / Libero for a stall move whose onPrepareHit passed.
+    fn protean_after_stall(&mut self, side: SideRef, slot: u8, move_id: u16) {
+        if let Some(a) = self.side(side).active_mon(slot as usize).cloned() {
+            let _ = self.protean_prepare_hit(side, slot, move_id, &a);
+        }
+    }
+
     /// The hit loop's end (data/mods/champions/scripts.ts:547): its
     /// faintMessages, then each new faint's Faint event.
     #[inline(always)]
@@ -7539,51 +7580,19 @@ self.trigger_emergency_exits();
         // future moves, Snatch, calls-move like Metronome) are edge cases we
         // don't model as move flags yet; standard moves are unaffected.
         // Reset on switch-out via `protean_used = false`.
-        {
-            let pl_ability = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .map(|a| a.effective_ability_id())
-                .unwrap_or(u16::MAX);
-            if matches!(pl_ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) {
-                // `move.type` here is post-onModifyType (runMove's
-                // ModifyType precedes PrepareHit, sim/battle-actions.ts
-                // useMoveInner): Weather Ball in rain retypes to Water,
-                // an -ate Normal move to the -ate type.
-                let move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                    weather: self.effective_weather_for(actor_side, actor_slot),
-                    terrain: self.terrain,
-                    champions: self.champions,
-                    ..DamageContext::default()
-                });
-                let do_retype = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| {
-                        if a.protean_used || a.terastallized || move_type == u8::MAX {
-                            return false;
-                        }
-                        // Skip when the holder is already mono of the move type.
-                        let (types, num) = a.effective_types();
-                        !(num == 1 && types[0] == move_type)
-                    });
-                if do_retype {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.set_type_override(move_type, None);
-                        a.protean_used = true;
-                    }
-                    // protean onPrepareHit (data/abilities.ts:3452).
-                    if self.plog() {
-                        pmon!(self, "-start", actor_side, actor_slot, "|typechange|{}|[from] ability: {}", crate::battle_protocol::type_name(move_type), crate::battle_protocol::ability_name(pl_ability));
-                    }
-                    // Refresh the attacker SNAPSHOT (cloned at the top of this
-                    // fn, before this retype) so the damage calc sees the new
-                    // mono-type and grants STAB on the very move that triggered
-                    // Protean/Libero — PS `onPrepareHit` retypes before the move
-                    // resolves. Same snapshot-refresh idiom as Stance Change
-                    // above. Without this the STAB check reads the stale clone.
-                    attacker.set_type_override(move_type, None);
-                }
+        // A stall move's own onPrepareHit (`willAct() && StallMove`) runs
+        // first (sim/battle-actions.ts:826-828), so when it fails Protean
+        // never fires: those moves retype in their success branch
+        // (`resolve_status_move`) instead.
+        if !is_stall_prepare_hit_move(move_id) {
+            if let Some(t) = self.protean_prepare_hit(actor_side, actor_slot, move_id, &attacker) {
+                // Refresh the attacker SNAPSHOT (cloned at the top of this
+                // fn, before this retype) so the damage calc sees the new
+                // mono-type and grants STAB on the very move that triggered
+                // Protean/Libero — PS `onPrepareHit` retypes before the move
+                // resolves. Same snapshot-refresh idiom as Stance Change
+                // above. Without this the STAB check reads the stale clone.
+                attacker.set_type_override(t, None);
             }
         }
 
@@ -18114,6 +18123,10 @@ self.trigger_emergency_exits();
                     n => 3u32.saturating_pow(n.min(6) as u32),
                 };
                 let success = self.rng.range(denom) == 0;
+                // The move's PrepareHit passed: Protean / Libero's runs next.
+                if success {
+                    self.protean_after_stall(actor_side, actor_slot, move_id);
+                }
 
                 let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     Some(a) => a,
@@ -18169,6 +18182,9 @@ self.trigger_emergency_exits();
                     n => 3u32.saturating_pow(n.min(6) as u32),
                 };
                 let success = self.rng.range(denom) == 0;
+                if success {
+                    self.protean_after_stall(actor_side, actor_slot, move_id);
+                }
                 let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     Some(a) => a,
                     None => return,
@@ -21877,6 +21893,19 @@ struct MonEffectSnapshot {
     ability: (u16, bool),
     types: [u8; 2],
     species: u16,
+}
+
+/// Moves whose own onPrepareHit is the stall check `!!this.queue.willAct()
+/// && this.runEvent('StallMove', pokemon)` (data/moves.ts protect, detect,
+/// spikyshield, banefulbunker, kingsshield, obstruct, burningbulwark,
+/// silktrap, endure).
+fn is_stall_prepare_hit_move(move_id: u16) -> bool {
+    use data::move_id as M;
+    matches!(
+        move_id,
+        M::PROTECT | M::DETECT | M::SPIKYSHIELD | M::BANEFULBUNKER | M::KINGSSHIELD | M::OBSTRUCT | M::BURNINGBULWARK
+            | M::SILKTRAP | M::ENDURE
+    )
 }
 
 fn protect_variant_for(move_id: u16) -> u8 {

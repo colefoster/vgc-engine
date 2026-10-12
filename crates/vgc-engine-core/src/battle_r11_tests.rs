@@ -136,6 +136,32 @@ fn receiver_ignores_noreceiver_abilities() {
 }
 
 #[test]
+fn protean_skips_a_stall_move_that_fails_its_prepare_hit() {
+    // sim/battle-actions.ts:826-828: the move's PrepareHit (`willAct() &&
+    // StallMove`) runs before runEvent('PrepareHit') (Protean,
+    // data/abilities.ts:3497). Sim-diff b00984: Meowscarada's last-moving
+    // Protect fails and stays Grass/Dark.
+    // Everyone else Protects first (same +4 bracket, faster), so nothing
+    // acts after Meowscarada: `willAct()` is false.
+    let p1 = r#"[{"species":"meowscarada","level":50,"ability":"protean","moves":["protect"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["protect","splash"]}]"#;
+    let p2 = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["protect","splash"]},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["protect","splash"]}]"#;
+    let mut b = logged_doubles(p1, p2, 3);
+    b.p1.team[0].stats.spe = 1;
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(!b.p1.team[0].protean_used, "no retype on a failed Protect");
+    assert!(!log_lines(&b).iter().any(|l| l.contains("typechange")));
+    // A Protect that works retypes first, then `-singleturn`.
+    b.p1.team[0].stats.spe = 400;
+    b.step(&[mv(0, 0, None), mv(1, 1, None)], &[mv(0, 1, None), mv(1, 1, None)]);
+    assert!(b.p1.team[0].protean_used);
+    let log = log_lines(&b);
+    let tc = log.iter().position(|l| l == "|-start|p1a: Meowscarada|typechange|Normal|[from] ability: Protean").expect("typechange");
+    assert_eq!(log[tc + 1], "|-singleturn|p1a: Meowscarada|Protect");
+}
+
+#[test]
 fn spread_drain_logs_each_heal_in_ps_target_order() {
     // allAdjacent lists the user's allies before its foes (PS
     // sim/pokemon.ts:809-813) and spreadDamage heals after each target in
