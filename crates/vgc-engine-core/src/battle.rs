@@ -1538,6 +1538,8 @@ impl Battle {
         }
         let target = if m.species_id == MORPEKO { MORPEKOHANGRY } else { MORPEKO };
         self.set_forme(side, slot, target, true);
+        // formeChange's `-formechange` with no message (data/mods/champions/scripts.ts:103).
+        pmon!(self, "-formechange", side, slot, "|{}|", data::SPECIES[target as usize].name);
         // formeChange -> setSpecies caches the raw Speed (sim/pokemon.ts:1418).
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
@@ -10686,14 +10688,21 @@ self.trigger_emergency_exits();
         // any hit, a Substitute's included (selfDrops skips only missed
         // targets). PS data/moves.ts glaiverush.
         if ctx.move_id == data::move_id::GLAIVERUSH {
+            let mut started = false;
             if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
                 if a.is_alive() {
+                    started = !a.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush);
                     let _ = a.volatiles.add(crate::pokemon::Volatile {
                         kind: crate::pokemon::VolatileKind::GlaiveRush,
                         turns_remaining: 0,
                         payload: 0,
                     });
                 }
+            }
+            // glaiverush condition onStart (data/moves.ts:6661-6663).
+            if started && self.plog() {
+                self.p_tag(crate::protocol::step::SELF_DROP, ctx.tside, ctx.tslot);
+                pmon!(self, "-singlemove", ctx.actor_side, ctx.actor_slot, "|Glaive Rush|[silent]");
             }
         }
         if hit_sub {
@@ -11085,6 +11094,12 @@ self.trigger_emergency_exits();
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
             crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
+            // The same Update reaches the attacker: a berry it dropped below
+            // its threshold on Rocky Helmet / Rough Skin is eaten here, before
+            // recoil and Life Orb.
+            if (ctx.actor_side, ctx.actor_slot) != (ctx.tside, ctx.tslot) {
+                crate::item::on_after_damage(self, ctx.actor_side, ctx.actor_slot, &mut rng);
+            }
             self.rng = rng;
         }
         if disguised {
@@ -12826,6 +12841,10 @@ self.trigger_emergency_exits();
         // useMoveInner's `|move|` (sim/battle-actions.ts:457), held pending:
         // Focus Punch's beforeMoveCallback and Gravity's BeforeMove print
         // their `cant` before it, so they cancel it.
+        // chillyreception's onBeforeMove `-prepare` (data/moves.ts:2413-2416).
+        if move_id == data::move_id::CHILLYRECEPTION {
+            pmon!(self, "-prepare", actor_side, actor_slot, "|Chilly Reception|[premajor]");
+        }
         self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
         if matches!(
             move_id,
@@ -16826,6 +16845,16 @@ self.trigger_emergency_exits();
     /// data/abilities.ts defiant / competitive onAfterEachBoost), while
     /// Eject Pack and White Herb react to any drop.
     pub(crate) fn after_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool, foe_source: bool) -> usize {
+        let lowered = self.after_drop_no_herb(side, slot, before, eject, foe_source);
+        if lowered > 0 {
+            crate::item::try_consume_white_herb(self, side, slot);
+        }
+        lowered
+    }
+
+    /// [`Self::after_drop`] without White Herb, for a caller that runs the
+    /// Update (White Herb's onUpdate) itself once its whole effect is done.
+    pub(crate) fn after_drop_no_herb(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool, foe_source: bool) -> usize {
         let lowered = self
             .side(side)
             .active_mon(slot as usize)
@@ -16834,14 +16863,26 @@ self.trigger_emergency_exits();
             return 0;
         }
         if foe_source {
-            for _ in 0..lowered {
+            // boost() runs AfterEachBoost per stat, so Defiant / Competitive
+            // lines follow each `-unboost` (sim/battle.ts boost).
+            let reacts = self.side(side).active_mon(slot as usize).is_some_and(|m| {
+                matches!(m.effective_ability_id(), data::ability_id::DEFIANT | data::ability_id::COMPETITIVE)
+            });
+            let held = if lowered > 1 && reacts {
+                self.protocol.log_mut().and_then(|l| l.pop_tail_lines(lowered, "|-unboost|"))
+            } else {
+                None
+            };
+            for i in 0..lowered {
+                if let Some(line) = held.as_ref().and_then(|h| h.get(i)) {
+                    self.p_push(line.clone());
+                }
                 crate::ability::react_to_opposing_stat_drop(self, side, slot);
             }
         }
         if eject {
             let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
         }
-        crate::item::try_consume_white_herb(self, side, slot);
         lowered
     }
 
@@ -16926,12 +16967,15 @@ self.trigger_emergency_exits();
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 let had = self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive() && m.volatiles.has(crate::pokemon::VolatileKind::PerishSong));
+                // The handler's key (and the earlier handlers' faints) first.
+                if had && self.plog() {
+                    self.p_res(24, 0, Some((side, slot)));
+                }
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     m.tick_perish_song();
                 }
                 // perishsong onResidual / onEnd (data/moves.ts perishsong).
                 if had && self.plog() {
-                    self.p_res(24, 0, Some((side, slot)));
                     let left = self.side(side).active_mon(slot as usize).map_or(0, |m| m.perish_turns());
                     let fainted = self.side(side).active_mon(slot as usize).is_some_and(|m| !m.is_alive());
                     pmon!(self, "-start", side, slot, "|perish{}", if fainted { 0 } else { left });
@@ -17567,6 +17611,12 @@ self.trigger_emergency_exits();
                 // block itself fires at per-target resolution: Wide Guard
                 // stops spread (`allAdjacent` / `allAdjacentFoes`) moves,
                 // Quick Guard priority > 0 moves.
+                // onTry `!!this.queue.willAct()`: nothing left to act fails it.
+                if pending_kind.iter().flatten().all(|&k| k == 0) {
+                    self.p_try_fail(actor_side, actor_slot);
+                    self.ps_status_failed();
+                    return;
+                }
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.mark_used_stall_this_turn();
                 } else {
@@ -20304,6 +20354,18 @@ self.trigger_emergency_exits();
                     data::move_id::JUNGLEHEALING | data::move_id::LUNARBLESSING
                 );
                 let n = self.format().active_count() as u8;
+                // Life Dew's moveHit heal step per target, in position order:
+                // `-heal` or `-fail|heal` (+ `[still]`), then `[spread]`
+                // (sim/battle-actions.ts moveHit heal, :618).
+                let mut dew: [Option<bool>; 2] = [None; 2];
+                for slot in [actor_slot, actor_slot ^ 1] {
+                    if slot >= n {
+                        continue;
+                    }
+                    if let Some(p) = self.side(actor_side).active_mon(slot as usize).filter(|p| p.is_alive()) {
+                        dew[slot as usize & 1] = Some(p.current_hp < p.stats.hp);
+                    }
+                }
                 for slot in [actor_slot, actor_slot ^ 1] {
                     if slot >= n {
                         continue;
@@ -20331,6 +20393,26 @@ self.trigger_emergency_exits();
                     // PR-EOT3: a cure here may have cleared a DOT.
                     if cures {
                         self.sync_status_dot_bit(actor_side, slot);
+                    }
+                }
+                if is_life_dew && self.plog() {
+                    let n_t = dew.iter().flatten().count();
+                    let mut still = false;
+                    for (slot, healed) in dew.iter().enumerate() {
+                        match healed {
+                            Some(true) => self.p_heal(actor_side, slot as u8, ""),
+                            Some(false) => {
+                                if !std::mem::replace(&mut still, true) {
+                                    self.p_attr("[still]");
+                                }
+                                pmon!(self, "-fail", actor_side, slot as u8, "|heal");
+                            }
+                            None => {}
+                        }
+                    }
+                    if n_t > 1 {
+                        let s = actor_side as u8 + 1;
+                        self.p_attr(&format!("[spread] p{s}a,p{s}b"));
                     }
                 }
             }
@@ -22140,10 +22222,16 @@ fn apply_secondary_effect(
         // PS rolls random(100) for every secondary, a 100% one included
         // (sim/battle-actions.ts:1343), then applies it.
         let _ = rng.percent_1_100();
+        let mut started = false;
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() {
+                started = t.throat_chop_turns() == 0;
                 t.set_throat_chop(2);
             }
+        }
+        // throatchop condition onStart (data/moves.ts throatchop).
+        if started {
+            pmon!(battle, "-start", target_side, target_slot, "|Throat Chop|[silent]");
         }
     }
     // Salt Cure — PS data/moves.ts:15638 (saltcure)
@@ -22167,6 +22255,8 @@ fn apply_secondary_effect(
                     turns_remaining: 0,
                     payload: 0,
                 });
+                // saltcure condition onStart (data/moves.ts saltcure).
+                pmon!(battle, "-start", target_side, target_slot, "|Salt Cure");
             }
         }
     }
