@@ -258,6 +258,10 @@ struct ReconArgs {
     /// Use set facts revealed after the stop.
     #[arg(long)]
     lookahead: bool,
+    /// Sample prior-filled fields from the prior with this seed (default:
+    /// the most likely).
+    #[arg(long)]
+    prior_sample_seed: Option<u64>,
     #[arg(long)]
     format: Option<String>,
     /// Also print the kcheck board and sets the battle was built from.
@@ -296,6 +300,7 @@ fn run_recon(a: &ReconArgs) -> Result<ExitCode, String> {
         Some(v) => return Err(format!("--viewer {v} (p1 | p2)")),
     };
     o.lookahead = a.lookahead;
+    o.prior_sample_seed = a.prior_sample_seed;
     o.format = a.format.clone();
     if let Some((side, r)) = input.request.clone() {
         o.requests[side as usize] = Some(r);

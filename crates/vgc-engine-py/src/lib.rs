@@ -1664,9 +1664,12 @@ fn py_sets(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<Vec<core::TeamMembe
 /// before turn `turn`. `sets`: `{"p1": export | [dicts], "p2": ...}`.
 /// `request`: a `|request|` dict (its `side.id` says whose) or
 /// `{"p1": ..., "p2": ...}`. `lookahead=True` also uses set facts revealed
-/// after the stop. The report is `battle.reconstruction_report()`.
+/// after the stop. `prior_sample_seed`: sample the prior-filled fields
+/// (spread and nature, unrevealed moves, item, ability) from the prior,
+/// deterministically per seed, instead of taking the most likely.
+/// The report is `battle.reconstruction_report()`.
 #[pyfunction]
-#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = None, sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None))]
+#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = None, sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None, prior_sample_seed = None))]
 #[allow(clippy::too_many_arguments)]
 fn position_from_replay(
     py: Python<'_>,
@@ -1682,6 +1685,7 @@ fn position_from_replay(
     format: Option<&str>,
     protocol: &str,
     player_names: Option<(String, String)>,
+    prior_sample_seed: Option<u64>,
 ) -> PyResult<PyBattle> {
     use vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions, Stop};
     let text: String = if let Ok(s) = log.extract::<String>() {
@@ -1707,6 +1711,7 @@ fn position_from_replay(
         Some(v) => return Err(PyValueError::new_err(format!("viewer={v:?} (\"p1\" | \"p2\")"))),
     };
     o.lookahead = lookahead;
+    o.prior_sample_seed = prior_sample_seed;
     o.format = format.map(str::to_string);
     if let Some((side, r)) = input.request.clone() {
         o.requests[side as usize] = Some(r);

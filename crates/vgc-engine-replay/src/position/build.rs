@@ -1,6 +1,7 @@
 //! Set resolution, the board, the engine patches and the report.
 
 use super::*;
+use crate::prior::PriorSpread;
 
 // ---------------------------------------------------------------------------
 // Counters read off the stream (the same rules phase 4's builder gate checks)
@@ -172,6 +173,7 @@ pub(super) fn resolve_set(
     prior: &Prior,
     champions: bool,
     used_items: &mut HashSet<String>,
+    mut sampler: Option<&mut PriorSampler>,
 ) -> Result<SetPick, ReconError> {
     let m = &tr.mons[side][i];
     let base = if m.set_species.is_empty() { m.preview.trim_end_matches("-*").to_string() } else { m.set_species.clone() };
@@ -263,7 +265,14 @@ pub(super) fn resolve_set(
         // The most used spread (with the shown nature, if any).
         let cand = sp_prior.and_then(|p| {
             let total: f64 = p.spreads.iter().map(|s| s.p).sum();
-            p.spreads.iter().filter(|s| nature.src != Src::Exact || s.nature == slug(&nature.v)).max_by(|a, b| a.p.total_cmp(&b.p)).map(|s| (s, total))
+            let ok = |s: &&PriorSpread| nature.src != Src::Exact || s.nature == slug(&nature.v);
+            match sampler.as_deref_mut() {
+                Some(r) => {
+                    let c: Vec<&PriorSpread> = p.spreads.iter().filter(ok).collect();
+                    r.pick(&c.iter().map(|s| s.p).collect::<Vec<_>>()).map(|k| (c[k], total))
+                }
+                None => p.spreads.iter().filter(ok).max_by(|a, b| a.p.total_cmp(&b.p)).map(|s| (s, total)),
+            }
         });
         match cand {
             Some((s, total)) => {
@@ -315,7 +324,8 @@ pub(super) fn resolve_set(
                 && !(s == "lifeorb" && m.hit_without_lo)
         });
         let total: f64 = c.iter().map(|x| x.1).sum();
-        match c.first() {
+        let k = sampler.as_deref_mut().and_then(|r| r.pick(&c.iter().map(|x| x.1).collect::<Vec<_>>())).unwrap_or(0);
+        match c.get(k) {
             Some((it, p)) => pk(item_name(it).map(str::to_string), Src::Prior, Some(p / total.max(1e-9))),
             None => pk(None, Src::Default, None),
         }
@@ -355,8 +365,9 @@ pub(super) fn resolve_set(
             }
         } else {
             let total: f64 = c.iter().map(|x| x.1).sum();
-            let p = c[0].1 / total.max(1e-9);
-            pk(ability_name(&c[0].0).map(str::to_string), if c.len() == 1 && legal.len() == 1 { Src::Exact } else { Src::Prior }, Some(p))
+            let k = sampler.as_deref_mut().and_then(|r| r.pick(&c.iter().map(|x| x.1).collect::<Vec<_>>())).unwrap_or(0);
+            let p = c[k].1 / total.max(1e-9);
+            pk(ability_name(&c[k].0).map(str::to_string), if c.len() == 1 && legal.len() == 1 { Src::Exact } else { Src::Prior }, Some(p))
         }
     };
 
@@ -378,15 +389,29 @@ pub(super) fn resolve_set(
                     }
                 }
             }
-            for (mv, p) in sp_prior.map(|p| p.moves.clone()).unwrap_or_default() {
-                if out.len() >= 4 {
-                    break;
+            let prior_moves = sp_prior.map(|p| p.moves.clone()).unwrap_or_default();
+            match sampler {
+                // Drawn one at a time without replacement, by share of sets.
+                Some(r) => {
+                    let mut c: Vec<(String, f64)> = prior_moves.into_iter().filter(|(mv, _)| move_name(mv).is_some() && !out.iter().any(|o| slug(&o.v) == *mv)).collect();
+                    while out.len() < 4 {
+                        let Some(k) = r.pick(&c.iter().map(|x| x.1).collect::<Vec<_>>()) else { break };
+                        let (mv, p) = c.remove(k);
+                        out.push(pk(move_name(&mv).unwrap_or(&mv).to_string(), Src::Prior, Some(p.min(1.0))));
+                    }
                 }
-                if out.iter().any(|o| slug(&o.v) == mv) {
-                    continue;
-                }
-                if let Some(n) = move_name(&mv) {
-                    out.push(pk(n.to_string(), Src::Prior, Some(p.min(1.0))));
+                None => {
+                    for (mv, p) in prior_moves {
+                        if out.len() >= 4 {
+                            break;
+                        }
+                        if out.iter().any(|o| slug(&o.v) == mv) {
+                            continue;
+                        }
+                        if let Some(n) = move_name(&mv) {
+                            out.push(pk(n.to_string(), Src::Prior, Some(p.min(1.0))));
+                        }
+                    }
                 }
             }
             out

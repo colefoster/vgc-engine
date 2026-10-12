@@ -280,6 +280,52 @@ impl Prior {
     }
 }
 
+/// The deterministic draw behind `prior_sample_seed` (SplitMix64): one per
+/// mon, so a mon's sample does not depend on the order mons are resolved.
+#[derive(Debug, Clone)]
+pub struct PriorSampler(u64);
+
+impl PriorSampler {
+    pub fn new(seed: u64) -> Self {
+        PriorSampler(seed)
+    }
+
+    /// The sampler for team member `index` of `side`.
+    pub fn for_mon(seed: u64, side: usize, index: usize) -> Self {
+        let mut s = PriorSampler(seed);
+        let mix = s.next_u64() ^ ((side as u64) << 32 | index as u64);
+        PriorSampler(mix)
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// An index drawn with probability proportional to `weights`
+    /// (uniform when they sum to 0); `None` when empty.
+    pub fn pick(&mut self, weights: &[f64]) -> Option<usize> {
+        if weights.is_empty() {
+            return None;
+        }
+        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        let total: f64 = weights.iter().map(|w| w.max(0.0)).sum();
+        if total <= 0.0 {
+            return Some(((u * weights.len() as f64) as usize).min(weights.len() - 1));
+        }
+        let mut x = u * total;
+        for (k, w) in weights.iter().enumerate() {
+            x -= w.max(0.0);
+            if x < 0.0 {
+                return Some(k);
+            }
+        }
+        weights.iter().rposition(|w| *w > 0.0)
+    }
+}
 
 /// SHA-256 of `data`, lowercase hex (FIPS 180-4), so a report's hash matches
 /// `shasum -a 256` of the prior file without a crypto dependency.
