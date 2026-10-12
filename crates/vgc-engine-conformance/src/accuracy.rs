@@ -69,6 +69,10 @@ pub struct Meta {
     pub replay: Option<String>,
     #[serde(default)]
     pub log: String,
+    /// PS's raw `battle.log` with its `|split|` markers (ps-battle.js
+    /// `rawlog`), the protocol-log diff target. Absent in older captures.
+    #[serde(default)]
+    pub rawlog: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -383,7 +387,26 @@ fn apply_team_preview(b: &mut Battle, log: &str) {
 fn drive(
     acc: &AccBattle,
     rng: Rng,
+    before_step: impl FnMut(&mut Battle, u32),
+) -> (Battle, Result<(u32, u32, Option<Divergence>, bool), String>) {
+    drive_with(acc, rng, before_step, None)
+}
+
+/// Team-preview picks PS made: the identity pick of the brought size
+/// (see [`apply_team_preview`]); an empty list keeps a side's team.
+fn identity_picks(acc: &AccBattle, active: usize, sizes: [usize; 2]) -> [Vec<u8>; 2] {
+    let pick = |tag: &str, len: usize| match brought_team_size(&acc.meta.log, tag) {
+        Some(n) if n >= active && n < len => (0..n as u8).collect(),
+        _ => Vec::new(),
+    };
+    [pick("p1", sizes[0]), pick("p2", sizes[1])]
+}
+
+fn drive_with(
+    acc: &AccBattle,
+    rng: Rng,
     mut before_step: impl FnMut(&mut Battle, u32),
+    proto: Option<&vgc_engine_core::ProtocolOptions>,
 ) -> (Battle, Result<(u32, u32, Option<Divergence>, bool), String>) {
     let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
     let p1 = build_engine_team(&acc.p1team, champions);
@@ -396,8 +419,17 @@ fn drive(
             return (dummy, Err(format!("team: {e}")));
         }
     };
-    let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
-    apply_team_preview(&mut b, &acc.meta.log);
+    let mut b = match proto {
+        None => {
+            let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
+            apply_team_preview(&mut b, &acc.meta.log);
+            b
+        }
+        Some(opts) => {
+            let picks = identity_picks(acc, format.active_count(), [p1.len(), p2.len()]);
+            Battle::with_protocol(BattleConfig { format, seed: 0 }, rng, p1, p2, opts, &acc.format, Some(&picks))
+        }
+    };
     b.decision_phases = true;
     b.set_format_id(&acc.format);
     let mut matched = 0u32;
@@ -1449,4 +1481,186 @@ mod team_preview_tests {
         apply_team_preview(&mut b, "|teamsize|p1|0\n");
         assert_eq!(sizes(&b), (6, 6));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Protocol-log diff
+// ---------------------------------------------------------------------------
+
+/// One battle's protocol-log comparison: the engine's `ps`-mode raw log
+/// (with `|split|` triples, so every view is covered) against PS's
+/// `battle.log`, after the keyed (forced-RNG) replay.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtoRecord {
+    pub id: String,
+    /// The keyed state replay is clean (the gate's population).
+    pub state_clean: bool,
+    pub has_rawlog: bool,
+    pub identical: bool,
+    pub ps_lines: usize,
+    pub eng_lines: usize,
+    /// Longest common subsequence of the two raw logs.
+    pub lcs: usize,
+    pub first_div: Option<ProtoDiv>,
+    pub bucket: Option<String>,
+    pub engine_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtoDiv {
+    pub index: usize,
+    pub turn: u32,
+    pub ps: Option<String>,
+    pub eng: Option<String>,
+    pub ps_ctx: Vec<String>,
+    pub eng_ctx: Vec<String>,
+}
+
+/// `|t:|` carries PS's wall clock; nothing can match it byte for byte.
+fn norm_proto_line(l: &str) -> String {
+    if l.starts_with("|t:|") {
+        "|t:|".to_string()
+    } else {
+        l.to_string()
+    }
+}
+
+fn lcs_len(a: &[String], b: &[String]) -> usize {
+    // Trim the common prefix and suffix first: most logs differ little.
+    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let (a2, b2) = (&a[pre..], &b[pre..]);
+    let suf = a2.iter().rev().zip(b2.iter().rev()).take_while(|(x, y)| x == y).count();
+    let (a3, b3) = (&a2[..a2.len() - suf], &b2[..b2.len() - suf]);
+    let mut prev = vec![0usize; b3.len() + 1];
+    let mut cur = vec![0usize; b3.len() + 1];
+    for x in a3 {
+        for (j, y) in b3.iter().enumerate() {
+            cur[j + 1] = if x == y { prev[j] + 1 } else { prev[j + 1].max(cur[j]) };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    pre + suf + prev[b3.len()]
+}
+
+/// A divergence bucket signature for one raw line: its tag plus the effect
+/// it names (`[from]` source, or the effect field of activate/start/...).
+pub fn proto_sig(line: Option<&str>) -> String {
+    let Some(l) = line else { return "<none>".into() };
+    let parts: Vec<&str> = l.split('|').collect();
+    let tag = parts.get(1).copied().unwrap_or("");
+    if let Some(f) = parts.iter().find(|p| p.starts_with("[from]")) {
+        return format!("{tag} {f}");
+    }
+    let field = match tag {
+        "move" | "cant" => parts.get(3).copied(),
+        "-fieldstart" | "-fieldend" | "-weather" => parts.get(2).copied(),
+        "-activate" | "-start" | "-end" | "-item" | "-enditem" | "-ability" | "-singleturn" | "-singlemove"
+        | "-sidestart" | "-sideend" | "-fail" | "-formechange" | "detailschange" | "-boost" | "-unboost"
+        | "-setboost" => parts.get(3).copied(),
+        _ => None,
+    };
+    match field {
+        Some(f) => format!("{tag} {f}"),
+        None => tag.to_string(),
+    }
+}
+
+/// The secret line a raw index points at (a `|split|` marker's next line).
+fn sig_line(lines: &[String], i: usize) -> Option<&str> {
+    let l = lines.get(i)?;
+    if l.starts_with("|split|") {
+        lines.get(i + 1).map(String::as_str)
+    } else {
+        Some(l.as_str())
+    }
+}
+
+/// Keyed replay with the protocol log on, diffed against PS's raw log.
+/// PS's residual tie shuffles from the raw trace, for the protocol log's
+/// residual order: `fieldEvent('Residual')`'s speedSort (kind 0) and the
+/// weather's `eachEvent('Weather')` (kind 1).
+fn residual_shuffles(acc: &AccBattle) -> Vec<(u32, u8, u32, u32, u32)> {
+    let mut out = Vec::new();
+    for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
+        if d.op != "shuffle" {
+            continue;
+        }
+        let at = |i: usize, p: &str| d.site.get(i).is_some_and(|s| s.starts_with(p));
+        let kind = if at(1, "Battle.fieldEvent@") && at(2, "Battle.runAction@") {
+            0
+        } else if at(1, "Battle.eachEvent@") && d.site.get(2).is_some_and(|s| s.contains("onFieldResidual@")) {
+            1
+        } else {
+            continue;
+        };
+        out.push((d.turn, kind, d.a as u32, d.b as u32, d.result as u32));
+    }
+    out
+}
+
+pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
+    let (table, _repaired, b, res, misses) = repaired_table(acc);
+    let state_clean = matches!(&res, Ok((_, _, None, _))) && misses.is_empty();
+    let mut rec = ProtoRecord {
+        id: acc.id.clone(),
+        state_clean,
+        has_rawlog: acc.meta.rawlog.is_some(),
+        identical: false,
+        ps_lines: 0,
+        eng_lines: 0,
+        lcs: 0,
+        first_div: None,
+        bucket: None,
+        engine_error: res.as_ref().err().cloned(),
+    };
+    drop(b);
+    let Some(raw) = acc.meta.rawlog.as_deref() else { return rec };
+    let opts = vgc_engine_core::ProtocolOptions {
+        player_names: ["P1".to_string(), "P2".to_string()],
+        ..vgc_engine_core::ProtocolOptions::new(vgc_engine_core::ProtocolMode::Ps)
+    };
+    let rng = Rng::oracle_keyed(table, 0xC0FFEE);
+    let shuffles = residual_shuffles(acc);
+    let mut fed = false;
+    let (mut b, _res) = drive_with(
+        acc,
+        rng,
+        |b, _| {
+            if !std::mem::replace(&mut fed, true) {
+                b.protocol_set_oracle_shuffles(shuffles.clone());
+            }
+        },
+        Some(&opts),
+    );
+    let ps: Vec<String> = raw.split('\n').map(norm_proto_line).collect();
+    if ps.last().is_some_and(|l| l == "|tie") {
+        b.protocol_force_tie();
+    }
+    let eng: Vec<String> = b
+        .protocol_log()
+        .map(|l| l.raw_lines().iter().map(|x| norm_proto_line(x)).collect())
+        .unwrap_or_default();
+    rec.ps_lines = ps.len();
+    rec.eng_lines = eng.len();
+    rec.identical = ps == eng;
+    rec.lcs = if rec.identical { ps.len() } else { lcs_len(&ps, &eng) };
+    if !rec.identical {
+        let i = ps.iter().zip(&eng).take_while(|(x, y)| x == y).count();
+        let turn = ps[..i.min(ps.len())]
+            .iter()
+            .rev()
+            .find_map(|l| l.strip_prefix("|turn|").and_then(|n| n.parse::<u32>().ok()))
+            .unwrap_or(0);
+        let ctx = |v: &[String]| v[i.saturating_sub(4).min(v.len())..(i + 6).min(v.len())].to_vec();
+        rec.bucket = Some(format!("PS[{}] ENG[{}]", proto_sig(sig_line(&ps, i)), proto_sig(sig_line(&eng, i))));
+        rec.first_div = Some(ProtoDiv {
+            index: i,
+            turn,
+            ps: ps.get(i).cloned(),
+            eng: eng.get(i).cloned(),
+            ps_ctx: ctx(&ps),
+            eng_ctx: ctx(&eng),
+        });
+    }
+    rec
 }

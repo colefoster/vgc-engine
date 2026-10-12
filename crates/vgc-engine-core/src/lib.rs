@@ -6,7 +6,35 @@
 #![forbid(unsafe_code)]
 
 pub use vgc_engine_data as data;
+
+/// Push one formatted protocol line when the battle keeps a protocol log;
+/// nothing is formatted otherwise (`crate::protocol`).
+macro_rules! plog {
+    ($b:expr, $($arg:tt)*) => {
+        if $b.protocol.on() {
+            let __line = format!($($arg)*);
+            $b.protocol.add(__line);
+        }
+    };
+}
+
 pub use vgc_engine_data::Gender;
+
+/// `|tag|<ident of the mon in side/slot>{rest}`; `rest` is formatted only
+/// when the battle keeps a protocol log.
+macro_rules! pmon {
+    ($b:expr, $tag:expr, $side:expr, $slot:expr) => {
+        if $b.protocol.on() {
+            $b.p_mon($tag, $side, $slot, "");
+        }
+    };
+    ($b:expr, $tag:expr, $side:expr, $slot:expr, $($arg:tt)+) => {
+        if $b.protocol.on() {
+            let __rest = format!($($arg)+);
+            $b.p_mon($tag, $side, $slot, &__rest);
+        }
+    };
+}
 
 mod choice;
 mod format;
@@ -19,6 +47,9 @@ mod team_export;
 pub mod ability;
 mod accuracy;
 pub mod battle;
+mod battle_protocol;
+mod protocol_residual;
+pub mod protocol;
 pub mod calc;
 pub mod canonical_hash;
 #[cfg(feature = "chance")]
@@ -63,6 +94,7 @@ pub use rng::{
     expand_uniform_damage, DamageSegments, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent,
     RngKey, SlotRef, NO_SLOT,
 };
+pub use protocol::{ProtocolLog, ProtocolMode, ProtocolOptions, ProtocolView};
 pub use side::{Side, SideRef};
 pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
 pub use team::{boosted_max_pp, build_member, build_member_in, champions_max_pp, TeamBuilder, TeamLoadError, TeamMember};
