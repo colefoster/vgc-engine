@@ -165,6 +165,9 @@ pub struct LogInput {
     pub lines: Vec<String>,
     pub request: Option<(SideRef, Value)>,
     pub turn: Option<u32>,
+    /// A decision file's stop: its request's kind (a `forceSwitch` at the
+    /// end of a turn is the replacement stop before the next one).
+    pub stop: Option<Stop>,
 }
 
 /// Read a log: a replay JSON (`log`), a mimikyu ps_bot decision file
@@ -194,8 +197,24 @@ pub fn parse_input(text: &str) -> Result<LogInput, String> {
             };
             Some((side, r))
         });
-        let turn = v.get("turn").and_then(Value::as_u64).map(|x| x as u32);
-        return Ok(LogInput { lines, request, turn });
+        let mut turn = v.get("turn").and_then(Value::as_u64).map(|x| x as u32);
+        let mut stop = None;
+        if request.as_ref().is_some_and(|(_, r)| r.get("forceSwitch").is_some()) {
+            // A faint replacement after the turn's residuals is the stop
+            // before the next turn; a switch mid-turn (U-turn, Eject
+            // Button) has no position form.
+            let last_turn = lines.iter().rposition(|l| l.starts_with("|turn|"));
+            let last_upkeep = lines.iter().rposition(|l| l == "|upkeep");
+            if last_upkeep > last_turn {
+                stop = Some(Stop::Replace);
+                turn = turn.map(|t| t + 1);
+            } else {
+                return Err("a mid-turn switch request (U-turn, Eject Button, ...) has no position form".into());
+            }
+        } else if turn.is_some() {
+            stop = Some(Stop::Move);
+        }
+        return Ok(LogInput { lines, request, turn, stop });
     }
     Err("log json: no `log` text or `protocol_log` lines".into())
 }
@@ -468,6 +487,8 @@ pub fn detect_kind(lines: &[String]) -> InputKind {
     match (exact[0] > 0, exact[1] > 0) {
         (true, false) => InputKind::PerSide(SideRef::P1),
         (false, true) => InputKind::PerSide(SideRef::P2),
+        // An omniscient channel (every secret half): exact HP for both.
+        (true, true) => InputKind::Raw,
         _ => InputKind::Spectator,
     }
 }
@@ -490,12 +511,20 @@ fn keep_for_prefix(l: &str) -> bool {
 /// Index just past the stop in `lines`.
 fn cut_index(lines: &[String], turn: u32, stop: Stop) -> Result<usize, ReconError> {
     let tl = format!("|turn|{turn}");
-    let t = lines.iter().position(|l| *l == tl).ok_or_else(|| err("no such turn", format!("the log has no `|turn|{turn}`")))?;
+    let found = lines.iter().position(|l| *l == tl);
+    // A stream that stops at the replacement request (a player's stream up
+    // to its decision) ends after turn N-1's residuals.
+    let at_end = found.is_none() && stop == Stop::Replace && lines.iter().rev().find(|l| l.starts_with("|turn|")).is_some_and(|l| *l == format!("|turn|{}", turn.saturating_sub(1)));
+    let t = match found {
+        Some(t) => t,
+        None if at_end => lines.len(),
+        None => return Err(err("no such turn", format!("the log has no `|turn|{turn}`"))),
+    };
     match stop {
         Stop::Move => Ok(t + 1),
         Stop::Replace => {
             let u = lines[..t].iter().rposition(|l| l == "|upkeep").ok_or_else(|| err("no replacement stop", format!("no end of turn before turn {turn}")))?;
-            let has_switch = lines[u..t].iter().any(|l| l.starts_with("|switch|") || l.starts_with("|drag|"));
+            let has_switch = at_end || lines[u..t].iter().any(|l| l.starts_with("|switch|") || l.starts_with("|drag|"));
             let fainted = lines[..u].iter().rev().take_while(|l| !l.starts_with("|turn|")).any(|l| l.starts_with("|faint|"));
             if !has_switch || !fainted {
                 return Err(err("no replacement stop", format!("no faint replacement before turn {turn}")));
@@ -592,6 +621,12 @@ struct Mon {
     /// Stat swaps / splits since it came in (Speed Swap, Power Split, ...):
     /// (line, kind, the other mon).
     stat_ops: Vec<(usize, String, Option<(usize, usize)>)>,
+    /// Transformed (Transform / Imposter) into this mon this stint, and the
+    /// PP its copied moves used since.
+    transformed: Option<(usize, usize)>,
+    /// The name it shows while disguised by Illusion.
+    disguise: Option<String>,
+    trans_pp: Vec<(String, u32)>,
     unsupported: Vec<String>,
 }
 
@@ -688,7 +723,7 @@ impl Tracker {
     fn mon_by_ident(&self, ident: &str) -> Option<(usize, usize)> {
         let (side, slot, name) = parse_ident(ident)?;
         if let Some(i) = slot.and_then(|s| self.slots[side].get(s).copied().flatten()) {
-            if name.is_empty() || self.mons[side][i].name.as_deref() == Some(name.as_str()) {
+            if name.is_empty() || self.mons[side][i].name.as_deref() == Some(name.as_str()) || self.mons[side][i].disguise.as_deref() == Some(name.as_str()) {
                 return Some((side, i));
             }
         }
@@ -786,6 +821,9 @@ impl Tracker {
         m.stint_status_move = false;
         m.charging = None;
         m.last_target = None;
+        m.transformed = None;
+        m.trans_pp.clear();
+        m.disguise = None;
         // Skill Swap / Trace / Mummy changes end on switch-out.
         m.ability_now = None;
     }
@@ -833,7 +871,34 @@ impl Tracker {
                     let (Some(id), Some(det)) = (p.get(2), p.get(3)) else { continue };
                     let Some((_, slot, _)) = parse_ident(id) else { continue };
                     let Some(slot) = slot else { continue };
-                    let Some((side, i)) = self.mon_of(id, Some(det), li) else { continue };
+                    let Some((side, mut i)) = self.mon_of(id, Some(det), li) else { continue };
+                    // The same mon in the other slot too: one of the two is an
+                    // Illusion holder in disguise. The one that used a move its
+                    // shown species cannot learn is; else the newcomer.
+                    if let Some(other) = self.mons[side][i].active.filter(|&o| o != slot) {
+                        let z = (0..self.mons[side].len()).find(|&z| z != i && self.mons[side][z].active.is_none() && ["zoroark", "zorua"].iter().any(|x| slug(&self.mons[side][z].preview).starts_with(x)));
+                        match z {
+                            Some(z) => {
+                                let zp = self.mons[side][z].preview.clone();
+                                let zname = self.mons[side][z].name.clone().unwrap_or_else(|| zp.split('-').next().unwrap_or("").to_string());
+                                let shown = species_def(&self.mons[side][i].species).map(|x| x.0);
+                                let odd_move = self.mons[side][i].stint_moves.iter().any(|mv| match (shown, move_def(mv)) {
+                                    (Some(sid), Some((mid, _))) => !data::species_can_learn(sid, mid),
+                                    _ => false,
+                                });
+                                let real = self.illusion_target(side, &zname, &zp, li);
+                                if odd_move {
+                                    self.illusion_swap(side, other, real);
+                                } else {
+                                    let name = self.mons[side][i].name.clone();
+                                    i = real;
+                                    self.mons[side][i].disguise = name;
+                                    self.mons[side][i].ability_base = Some("Illusion".into());
+                                }
+                            }
+                            None => self.unsupported.push("illusion (unrevealed)".into()),
+                        }
+                    }
                     if let Some(prev) = self.slots[side][slot] {
                         if prev != i {
                             self.switch_out(side, prev);
@@ -862,19 +927,22 @@ impl Tracker {
                     m.turns_active = 0;
                     m.move_actions = 0;
                     m.toxic_ticks = 0;
-                    m.level = lvl;
-                    if !g.is_empty() {
-                        m.gender = g;
-                    }
-                    if let Some((sid, _)) = species_def(&sp) {
-                        if let Some(st) = mega_of(sid) {
-                            m.mega = true;
-                            m.set_species = data::SPECIES[st.base_species_id as usize].name.to_string();
-                        } else if !m.mega {
-                            m.set_species = sp.clone();
+                    let disguised = m.disguise.is_some();
+                    if !disguised {
+                        m.level = lvl;
+                        if !g.is_empty() {
+                            m.gender = g;
                         }
+                        if let Some((sid, _)) = species_def(&sp) {
+                            if let Some(st) = mega_of(sid) {
+                                m.mega = true;
+                                m.set_species = data::SPECIES[st.base_species_id as usize].name.to_string();
+                            } else if !m.mega {
+                                m.set_species = sp.clone();
+                            }
+                        }
+                        m.species = sp;
                     }
-                    m.species = sp;
                     // Shed Tail hands its doll to the incoming mon.
                     if p.iter().any(|x| *x == "[from] Shed Tail") {
                         m.sub = true;
@@ -888,6 +956,7 @@ impl Tracker {
                     let Some((side, Some(slot), name)) = parse_ident(id) else { continue };
                     let real = self.illusion_target(side, &name, det, li);
                     self.illusion_swap(side, slot, real);
+                    self.mons[side][real].disguise = None;
                     if let Some(hp) = p.get(4) {
                         self.set_hp(side, real, hp, exact_side);
                     }
@@ -947,6 +1016,18 @@ impl Tracker {
                         continue;
                     }
                     let mname = move_name(mv).unwrap_or(mv).to_string();
+                    if m.transformed.is_some() {
+                        // A copied move: not its own set's.
+                        match m.trans_pp.iter_mut().find(|x| slug(&x.0) == mslug) {
+                            Some(x) => x.1 += if locked { 0 } else { 1 + extra },
+                            None => m.trans_pp.push((mname.clone(), if locked { 0 } else { 1 + extra })),
+                        }
+                        m.last_move = Some(mname.clone());
+                        if !m.stint_moves.iter().any(|x| slug(x) == mslug) {
+                            m.stint_moves.push(mname);
+                        }
+                        continue;
+                    }
                     let k = match m.moves.iter().position(|x| slug(x) == mslug) {
                         Some(k) => k,
                         None => {
@@ -1263,6 +1344,18 @@ impl Tracker {
                                 }
                                 continue;
                             }
+                            if label == "typeadd" {
+                                // The engine keeps two types (battle.rs addType).
+                                continue;
+                            }
+                            if matches!(label, "move: Octolock" | "move: Torment" | "Torment") {
+                                let name = if label.ends_with("Octolock") { "?OCTOLOCK" } else { "?TORMENT" };
+                                let src = p.iter().find_map(|x| x.strip_prefix("[of] ")).and_then(|id| self.mon_by_ident(id)).map(|(a, b)| format!("{a},{b}")).unwrap_or_default();
+                                let m = &mut self.mons[side][i];
+                                m.vols.retain(|v| v.name != name);
+                                m.vols.push(Vol { name: name.into(), line: li, arg: src });
+                                continue;
+                            }
                             if label == "move: Dragon Cheer" {
                                 let m = &mut self.mons[side][i];
                                 m.vols.retain(|v| v.name != "?DRAGONCHEER");
@@ -1327,6 +1420,14 @@ impl Tracker {
                         "Attract" => "ATTRACT",
                         "move: Imprison" => "IMPRISON",
                         "ability: Flash Fire" => "FLASHFIRE",
+                        "Octolock" | "move: Octolock" => {
+                            m.vols.retain(|v| v.name != "?OCTOLOCK");
+                            continue;
+                        }
+                        "Torment" | "move: Torment" => {
+                            m.vols.retain(|v| v.name != "?TORMENT");
+                            continue;
+                        }
                         other => {
                             let q = format!("?{other}");
                             m.vols.retain(|v| v.name != q);
@@ -1462,9 +1563,13 @@ impl Tracker {
                     }
                 }
                 "-transform" => {
-                    if let Some((side, i)) = p.get(2).and_then(|id| self.mon_by_ident(id)) {
-                        self.mons[side][i].unsupported.push("transform".into());
-                    }
+                    let (Some((side, i)), Some(t)) = (p.get(2).and_then(|id| self.mon_by_ident(id)), p.get(3).and_then(|id| self.mon_by_ident(id))) else { continue };
+                    let boosts = self.mons[t.0][t.1].boosts;
+                    let m = &mut self.mons[side][i];
+                    m.transformed = Some(t);
+                    m.trans_pp.clear();
+                    m.boosts = boosts;
+                    self.from_reveals(&p, Some((side, i)), tag);
                 }
                 "swap" => {
                     let Some((side, i)) = p.get(2).and_then(|id| self.mon_by_ident(id)) else { continue };
@@ -1585,6 +1690,7 @@ impl Tracker {
         r.must_recharge = d.must_recharge;
         r.times_attacked = d.times_attacked;
         r.ability_base = Some("Illusion".into());
+        r.disguise = d.name.clone();
         r.first_seen = Some(r.first_seen.unwrap_or(d.switch_line).min(d.switch_line));
         self.mons[side][real] = r;
         // The disguise: back to before that switch-in.
@@ -1643,4 +1749,43 @@ fn stat_index(s: &str) -> Option<usize> {
         "evasion" => 6,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_percentage_maps_to_the_hp_values_ps_shows_that_way() {
+        // Champions: floor, at least 1.
+        assert_eq!(pct_interval(50, Some('g'), 200, true), (101, 101));
+        assert_eq!(pct_interval(50, Some('y'), 200, true), (100, 100));
+        assert_eq!(pct_interval(1, None, 207, true), (1, 4));
+        assert_eq!(pct_interval(100, None, 207, true), (207, 207));
+        // Gen 9: ceil, 99 for a scratch.
+        assert_eq!(pct_interval(99, None, 207, false), (203, 206));
+        for max in [100u16, 157, 207, 351] {
+            for hp in 1..=max {
+                let t = pct_text(hp, max, true);
+                let (n, _, band, _, _) = parse_hp(&t).unwrap();
+                let (lo, hi) = pct_interval(n, band, max, true);
+                assert!(lo <= hp && hp <= hi, "{hp}/{max} shown {t}: {lo}..{hi}");
+            }
+        }
+    }
+
+    #[test]
+    fn hp_text_parses() {
+        assert_eq!(parse_hp("82/100"), Some((82, 100, None, None, false)));
+        assert_eq!(parse_hp("20/100y par"), Some((20, 100, Some('y'), Some("par".into()), false)));
+        assert_eq!(parse_hp("0 fnt").map(|x| x.4), Some(true));
+        assert_eq!(parse_hp("142/172 slp").map(|x| (x.0, x.1)), Some((142, 172)));
+    }
+
+    #[test]
+    fn idents_and_details_parse() {
+        assert_eq!(parse_ident("p2b: Mr. Mime"), Some((1, Some(1), "Mr. Mime".to_string())));
+        assert_eq!(parse_ident("p1: Garchomp").map(|x| x.1), Some(None));
+        assert_eq!(parse_details("Salamence-Mega, L50, M, shiny"), ("Salamence-Mega".to_string(), 50, "M".to_string()));
+    }
 }
