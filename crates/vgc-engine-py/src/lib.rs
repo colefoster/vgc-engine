@@ -674,7 +674,7 @@ impl PyBattle {
         };
         let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
         let json_format = value.get("format_id").and_then(|v| v.as_str()).map(str::to_string);
-        let mut inner: core::Battle = serde_json::from_value(value).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
+        let inner: core::Battle = serde_json::from_value(value).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
         Self::open_position(inner, json_format, ps_seed, prefix_value(prefix)?, reveals, switch_in_effects, protocol, format, player_names)
     }
 

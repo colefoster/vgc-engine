@@ -11,6 +11,8 @@ simulate-battle`'s stdio protocol, and `vgc_engine.BattleStream` is the
 same in-process ([Use as a local Showdown replacement](#use-as-a-local-showdown-replacement)).
 Phase 4 starts a session from any mid-game position, a snapshot or a
 kcheck board ([Start from a mid-game position](#start-from-a-mid-game-position)).
+A real replay's log becomes such a position at any turn, with the hidden
+sets filled from usage stats ([Start from a real replay](#start-from-a-real-replay)).
 
 **Model input.** A model that should see only its own player's view must
 read `Battle.observe(side)` (or `player_stream(side)` / `request(side)`),
@@ -817,3 +819,267 @@ allocations per step for both.
 - Confusion's remaining turns, a Stockpile count, and the sources of Leech
   Seed, Curse and Attract are hidden on a board. They get the defaults
   above.
+
+## Start from a real replay
+
+`position_from_replay` reads a Showdown log up to the start of turn N (or
+the faint-replacement stop before it) and returns a `Battle` there, through
+`Battle.from_position`. What the log shows is copied. What it hides comes
+from a usage prior. Every field says which it is.
+
+### Python
+
+```python
+b = vgc_engine.position_from_replay(replay["log"], 6, ps_seed="1,2,3,4", viewer="p1")
+rep = b.reconstruction_report()
+rep["active_prior_fields"]        # {"p1a": ["moves[2]", "spread", ...], "p2a": [...], ...}
+b.request("p1"); b.choose("p1", "move 1 1, move 2"); b.player_stream("p1")
+```
+
+```
+vgc_engine.position_from_replay(log, turn=None, prior=None, ps_seed=None, viewer=None,
+                                stop=None, sets=None, request=None, lookahead=False,
+                                format=None, protocol="ps", player_names=None) -> Battle
+Battle.reconstruction_report() -> dict | None
+```
+
+- **`log`**: one of these:
+  - a replay's `log` text, or the replay JSON dict;
+  - PS's raw `battle.log` (`|split|` pairs), or an omniscient log;
+  - one player's stream, as text or a list of lines;
+  - a mimikyu ps_bot decision dict (`decide_payload.live.protocol_log` and
+    `request`).
+
+  The kind is detected: `|split|` lines mean a raw log. Exact HP on one
+  side, or a `|request|`, means that player's stream. Exact HP on both
+  sides means an omniscient log. Otherwise it is a spectator log.
+- **`turn`**: the decision turn. The position is turn N's move request, so
+  `battle.turn` is N-1. A ps_bot decision file supplies its own turn.
+- **`stop`**: `"move"` (the default), or `"replace"` for the faint
+  replacement after turn N-1's residuals. A decision file with a
+  `forceSwitch` request at the end of a turn is a `"replace"` stop.
+- **`prior`**: `None` / `"default"` (embedded, below), `"none"`, or a stats
+  file path: a chaos-derived JSON (Bring Four `smogon.py` shape) or a
+  Smogon moveset `.txt`. Loaded priors are cached by path.
+- **`viewer`**: `"p1"` / `"p2"`. Only that player's view fills the
+  opponent's hidden info. The viewer's own side uses the `|split|` secret
+  lines, the request and the sets when given, else the prior. Without a
+  viewer everything given is used for both sides.
+- **`sets`**: `{"p1": export, "p2": export}`. Each export is a Showdown
+  export or a list of set dicts. In Champions formats `evs` are stat
+  points, as PS Champions exports carry them.
+- **`request`**: a `|request|` dict (its `side.id` names the side), or
+  `{"p1": ..., "p2": ...}`. A request gives that side exactly: which mons
+  were brought, PS team order, HP, moves, item, ability and PP.
+  Its stats are solved back to a nature and spread.
+- **`lookahead=True`** also reads set facts revealed after the stop: moves,
+  items, abilities and which mons were brought. Off by default: only the
+  log up to the stop is read.
+- **`ps_seed`** gives the play-out PS's PRNG, seeded as `from_teams` seeds
+  it. Two positions with the same seed and the same choices play out the
+  same.
+- **Prefix.** The log up to the stop becomes the history (see
+  [Prefix framing](#prefix-framing)), so each player's stream carries the
+  real past.
+  - A raw log is kept whole.
+  - A replay loses chat, joins, renames and inactivity notes.
+  - A player stream is merged with a copy whose own HP is shown as
+    percentages, so the other player never sees that side's exact HP.
+- **Errors** raise `ValueError`, with a bucket: `no such turn`,
+  `no replacement stop`, `unsupported: ...`, `board`, `request stats`.
+
+The CLI prints the same as JSON: the battle (`from_position`'s input), the
+prefix and the report. `--board` adds the kcheck board and sets it was
+built from. `--check` opens the session and adds both requests.
+
+```sh
+vgc recon --log replay.json --turn 6 [--stop replace] [--viewer p1] [--prior FILE|none] \
+          [--sets-p1 team.txt --sets-p2 team.txt] [--lookahead] [--board] [--check]
+```
+
+Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
+`Reconstruction::session(opts)` opens the PS session.
+
+### Provenance
+
+`reconstruction_report()` has these keys:
+
+- `sides.p1` / `sides.p2`: `team`, a list in team order (the pick order).
+  - Each mon has `name`, `team_index` and `active_slot` (`"p1a"` or null).
+  - Every field is `{"value", "src", "p"}`: `species`, `brought`, `hp`
+    (with `max` and the `interval` the shown percentage allows), `status`,
+    `boosts`, `item` (the starting item), `item_now`, `ability`, `moves`
+    (one entry per slot), `pp`, `nature`, `spread` (`{"unit": "sp" | "ev",
+    "values"}`), `gender` and `tera` (not in Champions).
+  - When they apply: `sleep_turns_remaining`, `toxic_counter`,
+    `confusion_turns_remaining`, `volatiles`, `last_move`, `turns_active`
+    and `move_actions`.
+  - `prior_fields` lists the mon's prior or default fields. `n_fields`
+    counts the fields reported.
+  - Per side: `brought` (exact or prior), `team_order` (exact or inferred)
+    and `knowledge` (`full`, or `viewer` for the opponent of `viewer`).
+- `active_prior_fields`: `{"p1a": [...], "p1b": [...], ...}`, the active
+  mons' prior or default fields.
+- `field`: every field effect with its turns up.
+- `n_prior_fields` / `n_fields` for the whole position, plus `turn`,
+  `stop`, `format`, `input`, `viewer`, `lookahead` and `prior`.
+
+`src` is one of:
+
+| `src` | Meaning |
+|---|---|
+| `exact` | Shown by the input: the log, a request, given sets, a team sheet (`|showteam|`) |
+| `inferred` | Derived by a rule. An HP percentage becomes the interval's midpoint (lower median). Turn counters are counted on the stream. A bench order is first-seen order |
+| `prior` | Filled from the usage prior. `p` is the prior's probability: the share among allowed candidates for items, abilities, spreads and species / Mega formes, a move's share of sets, a brought mon's estimated chance |
+| `default` | Neither shown nor in the prior: a fixed default |
+
+**HP.** Exact when a `|split|` secret line, an own-side stream or a request
+shows it. Otherwise the shown percentage maps to an interval of HP values
+for the mon's max HP. Champions shows `floor(100 * hp / max)`, at least 1,
+with the 20 / 50 colour band. Gen 9 shows the ceiling, and 99 for a
+scratched full bar. The midpoint is used. With a prior spread, the max HP
+is the prior's too.
+
+**Exact from the log.** Copied from the log:
+
+- species and forme, Mega, Tera;
+- HP, boosts, status;
+- the toxic counter (residual ticks since the status or the switch-in);
+- turns asleep (`|cant|...|slp`);
+- volatiles, with their ages and PS's extra Taunt / Encore / Disable turn;
+- weather, terrain, Trick Room, Gravity, Magic / Wonder Room, Tailwind,
+  screens and hazards, with turns up;
+- items: revealed, consumed (PS `lastItem` for this stint), knocked off,
+  tricked;
+- abilities: revealed, and changed by Trace, Skill Swap or Mummy;
+- PP used per revealed move, Pressure included;
+- turns active and move actions (Champions Fake Out reads them);
+- the Protect streak, choice lock, last move and its target;
+- a pending two-turn move (its target is hidden: the first live foe);
+- Future Sight / Doom Desire, Rage Fist's hit count, Supreme Overlord;
+- Speed Swap, Power / Guard Split and Power Trick;
+- Transform / Imposter, Illusion when revealed;
+- Shed Tail's doll, Octolock, Torment, Dragon Cheer.
+
+### Prior policy
+
+The default prior is Smogon's `gen9championsvgc2026regmb` chaos stats for
+2026-08, cutoff 0 (`data/smogon-stats/2026-08/`, top 10 per category, from
+Bring Four's `smogon.py`). Species that list lacks are Reg M-C additions,
+like Rillaboom, Indeedee and Salamence. They fall back to Bring Four's
+Reg M-C replay reveal shares (`data/smogon-stats/2026-09/`, 280k games).
+Those reveal shares are biased and carry no spreads.
+
+The prior is conditioned on what was revealed:
+
+- **Species key.** A Mega Evolved mon uses its Mega forme's stats. Smogon
+  lists a stone holder under its Mega forme. Otherwise the most used of the
+  species and its Mega formes is chosen; Megas are excluded once the side
+  has Mega Evolved, or when the mon's item is known. A Mega key brings its
+  stone as the item.
+- **Brought mons.** Unseen ones are the most used unseen preview mons.
+- **Item.** The most likely item, excluding:
+  - items a teammate holds (Item Clause) and Mega stones;
+  - Choice items once the mon used two moves in a stint, or a status move;
+  - Assault Vest after a status move;
+  - Sitrus Berry once its HP was shown at or below 50% without eating one;
+  - the pinch berries below 25%;
+  - Life Orb after a damaging hit with no recoil shown.
+- **Ability.** The most likely legal ability. A mon that came in without
+  announcing it has none of the always-announced abilities (Intimidate,
+  Drizzle, the surges, Pressure, Unnerve, ...).
+- **Moves.** The revealed moves, then the most used moves up to 4.
+- **Spread.** The most used spread with a shown nature (team sheet), else
+  the most used spread. With no stats, offense and Speed are maxed (the
+  `CanonicalDefault` heuristic).
+- **Hidden counters.** Sleep turns left default to `max(1, 3 - turns
+  asleep)`. Confusion gets 2 turns. These are hidden even with full info.
+
+Speed-order and damage-range constraints (`spread_recon`) are not applied
+yet.
+
+### Real replay gates
+
+```sh
+cargo build --release -p vgc-engine-conformance --features ps-rng --bin recon_gate
+target/release/recon_gate --dirs <B>,<C> --count 1000 --threads 4 --out recon.jsonl
+cargo build --release -p vgc-engine-replay --bin recon_corpus
+ssh unraid 'cd .../gen9championsvgc2026regmc && find 2026-10-03 ... 2026-10-11 -name "*.json" -print0 | xargs -0 cat | gzip -1' \
+  | gunzip | target/release/recon_corpus --threads 3 --out corpus.jsonl
+```
+
+`recon_gate` plays `resume_gate`'s forced-RNG battles: phase-1 records,
+Champions Reg M-C / M-B, PS's PRNG and a seeded random policy. It stops at
+a random move or replacement request. It rebuilds that stop from the
+battle's final log alone:
+
+- **Full info**: PS's raw log, both requests at the stop and both team
+  sheets. Every state field is compared with the true engine state (gate 1).
+  The true PRNG is then put in, which the log cannot show, and the logged
+  choices are replayed. All four streams after the stop must match byte
+  for byte (gate 2). A second run also puts in the true sleep and confusion
+  counters.
+- **Hidden sets**: the spectator log only, with the prior. Fields are
+  compared per field.
+
+`recon_corpus` rebuilds every turn of every usable replay, at the move
+request and at the replacement stop when one exists, and opens the session
+there. Usable means a natural end (no forfeit or timer loss) and both sides
+showing 4 mons. It reads a directory, or concatenated replay JSON on stdin.
+
+Results (branch `replay-position`):
+
+| Gate | Result |
+|---|---|
+| 1. Full info: state fields matching the true engine state | **153,316 / 153,565 (99.84%)**, 1000 / 1000 positions rebuilt, 962 with every field |
+| 1. Hidden counters (sleep / confusion turns left, prior) | 9 / 17 |
+| 1. Rebuilt prefix == PS's log at the stop | 1000 / 1000 |
+| 2. Byte-identical continuation (true PRNG put in) | **961 / 1000 (96.1%)**; with the true hidden counters too, 967 / 1000 (96.7%) |
+| 3. Held-out Reg M-C, 2026-10-03 .. 10-11 (200,119 replays, 86,555 usable) | **951,980 / 952,256 positions (99.97%)**: move stops 686,226 / 686,405; 86,456 replays rebuilt at every stop |
+| 3. Dev window (`mimikyu/data/replays/.../2026-09-*`, 279 usable) | 3,120 / 3,123 |
+
+- **Gate 1 misses.** The 249 misses come mostly from about a dozen
+  positions where an Illusion holder was never revealed before the stop:
+  every field of the disguise's mon is wrong. The rest are single fields:
+  a failed-Protect streak, a Taunt / Disable / Encore turn, a Substitute's
+  HP after hits, PP under Pressure.
+- **Gate 2 failure buckets** (39): `-damage` 8, `-activate` 8, request at
+  the stop 7, `move` 7, `-end` 4. These are the gate-1 misses above,
+  played out.
+- **Gate 3 failure buckets** (276): `illusion (ambiguous)` 139,
+  `illusion (unrevealed)` 73, `board` 57 (an unrevealed Illusion behind a
+  Mega forme), Syrup Bomb 4, Uproar 3.
+- **Prior-filled fields per held-out position**: mean 49.6 of 88.1. p10 39,
+  p50 50, p90 63, max 75. A spectator log never shows a nature or spread,
+  so every active mon has at least `nature` and `spread` prior-filled.
+- **Hidden sets** (spectator log + default prior on the conformance
+  teams), fields matching the truth mon by mon (80.1% overall):
+  - near-exact: species 100%, status 100%, boosts 100%, active 99.8%,
+    turns active 99.9%;
+  - prior-dependent: ability 77.6%, item 59.9%, HP 52.5%, nature 44.1%,
+    stats 17.4%;
+  - the whole 4-move list in slot order: 5.8%.
+
+**Cost.** No engine (`vgc-engine-core`) code changed, so step throughput is
+unchanged. A rebuild takes about 1 ms (3 threads: about 1,000 positions/s
+per thread, session included).
+
+### Replay limits
+
+- **Hidden counters.** Sleep and confusion turns left, a Substitute's HP
+  after hits, and a charging move's target are hidden. They get the
+  defaults above.
+- **Illusion before it breaks.** In a spectator log the disguise is all
+  there is. Two mons with the same name active at once are resolved: the
+  one that used a move its shown species cannot learn is the Illusion
+  holder, else the newcomer. A request fixes the actives. A disguised stint
+  that ends before the reveal stays attributed to the disguise.
+- **Mid-turn switch requests** (U-turn, Eject Button) have no position
+  form, as in phase 4.
+- **Not carried.** A few turn-scoped results: `move_last_turn_result`
+  (Stomping Tantrum's boost), the last attacker (Counter, Revenge) and the
+  third type (`typeadd`, which the engine does not model either). Other
+  unknown volatiles fail with `unsupported: volatile ...`.
+- **Priors.** The embedded prior is Reg M-B usage, with Reg M-C reveals as
+  the fallback; no Reg M-C chaos stats were local. Reveal shares
+  understate moves. Pass `prior=` for a better file.
