@@ -421,6 +421,11 @@ impl Battle {
             _ => None,
         };
         if let Some(w) = winner {
+            // The win ends the log: it sorts after everything an open
+            // window holds, and the window flushes now.
+            if let Some(win) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+                win.key = u32::MAX;
+            }
             self.p_push("|".to_string());
             match w {
                 Some(s) => {
@@ -430,6 +435,7 @@ impl Battle {
                 None => self.p_push("|tie".to_string()),
             }
             if let Some(l) = self.protocol.log_mut() {
+                l.window_close();
                 l.ended = true;
             }
         }
@@ -1235,15 +1241,28 @@ impl Battle {
             return;
         }
         let mut display = self.p_display_target(side, slot, move_id, chosen);
-        // getTarget's RedirectTarget (Follow Me, Rage Powder, Lightning Rod).
+        // getMoveTargets' RedirectTarget (Follow Me, Rage Powder, Lightning
+        // Rod; sim/pokemon.ts:829-831), after the `|move|` line, which is
+        // then retargeted. Lightning Rod / Storm Drain announce themselves.
+        let mut rod: Option<(SideRef, u8, u16)> = None;
         if let Some(t) = display {
             let m = &self.moves()[move_id as usize];
             if matches!(m.target, 0 | 4 | 10) {
                 let r = self.resolve_targets(side, slot, move_id, attacker, m, crate::battle::TargetBuf::single(t));
                 if r.len() == 1 {
+                    if r[0] != t {
+                        let ab = self.side(r[0].0).active_mon(r[0].1 as usize).map_or(0, |x| x.effective_ability_id());
+                        if matches!(ab, data::ability_id::LIGHTNINGROD | data::ability_id::STORMDRAIN) {
+                            rod = Some((r[0].0, r[0].1, ab));
+                        }
+                    }
                     display = Some(r[0]);
                 }
             }
+        }
+        // struggle onModifyMove, before the `|move|` line (data/moves.ts:18226).
+        if move_id == data::move_id::STRUGGLE {
+            pmon!(self, "-activate", side, slot, "|move: Struggle");
         }
         // Expanding Force in Psychic Terrain re-picks its target after each
         // ModifyMove (sim/battle-actions.ts:432-443).
@@ -1276,6 +1295,9 @@ impl Battle {
             l.cur_user = Some((side as u8, slot));
             l.active_move = move_id;
             l.last_move[side as usize][(slot as usize).min(1)] = move_id;
+        }
+        if let Some((rs, rsl, ab)) = rod {
+            pmon!(self, "-activate", rs, rsl, "|ability: {}", ability_name(ab));
         }
     }
 

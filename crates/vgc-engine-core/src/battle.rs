@@ -2564,6 +2564,7 @@ impl Battle {
                     }
                     self.p_action_end();
                     self.white_herb_after_move();
+        self.attract_update();
                     // runAction's faintMessages (sim/battle.ts:2835), before its Update.
                     self.faint_forme_cleanup();
                     self.run_pending_drags();
@@ -2606,6 +2607,7 @@ self.trigger_emergency_exits();
                 self.update_hp_berries();
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
                 self.white_herb_after_move();
+        self.attract_update();
                 self.faint_forme_cleanup();
                 self.run_pending_drags();
                 self.trigger_emergency_exits();
@@ -4187,6 +4189,7 @@ self.trigger_emergency_exits();
         self.update_hp_berries();
         self.multi_targeted_defenders = 0;
         self.white_herb_after_move();
+        self.attract_update();
         self.faint_forme_cleanup();
         self.run_pending_drags();
         self.trigger_emergency_exits();
@@ -5561,6 +5564,7 @@ self.trigger_emergency_exits();
             self.white_herb_move_defer = true;
             self.resolve_move_with_pending(action, &[[0u8; 2]; 2], false);
             self.white_herb_after_move();
+        self.attract_update();
             self.multi_targeted_defenders = saved_couple;
             self.pursuit_intercepting = false;
         }
@@ -8301,8 +8305,11 @@ self.trigger_emergency_exits();
                     // drop on `source`). Plain Protect/Detect (variant 0) is a
                     // no-op.
                     let variant = defender.protect_variant();
-                    // protect et al. onTryHit (data/moves.ts protect condition).
-                    pmon!(self, "-activate", tside, tslot, "|move: Protect");
+                    // protect et al. onTryHit (data/moves.ts protect condition):
+                    // a smartTarget move (Dragon Darts) is blocked silently.
+                    if darts_phase[ti] != 1 {
+                        pmon!(self, "-activate", tside, tslot, "|move: Protect");
+                    }
                     if variant != 0
                         && crate::damage::move_makes_contact(&self.moves()[move_id as usize], &attacker)
                     {
@@ -16824,6 +16831,23 @@ self.trigger_emergency_exits();
     /// runMove's `runEvent('AfterMove')`, sim/battle-actions.ts:311-312):
     /// after a move action, every active holder restores the negative
     /// stages it still has. Before the forced switches the move set up.
+    /// attract's onUpdate: the volatile ends once its source left the field
+    /// (data/moves.ts attract condition), at the Update after an action.
+    fn attract_update(&mut self) {
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                let Some((src_side, src_idx)) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()).and_then(|m| m.attract_source()) else { continue };
+                if self.attract_source_on_field(src_side, src_idx) {
+                    continue;
+                }
+                if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    a.clear_attract();
+                }
+                pmon!(self, "-end", side, slot, "|Attract|[silent]");
+            }
+        }
+    }
+
     fn white_herb_after_move(&mut self) {
         if !self.white_herb_move_defer {
             return;
@@ -19189,11 +19213,12 @@ self.trigger_emergency_exits();
                                 u.fainted = true;
                             }
                         }
-                        // curse onHit: the volatile's `-start`, then directDamage.
+                        // curse: onHit's directDamage, then the volatile's `-start`
+                        // (data/moves.ts curse).
                         if self.plog() {
                             let of = self.p_ident(actor_side, actor_slot);
-                            pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
                             self.p_damage(actor_side, actor_slot, "");
+                            pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
                         }
                     }
                 }
