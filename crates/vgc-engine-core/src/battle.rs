@@ -11060,13 +11060,8 @@ self.trigger_emergency_exits();
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
         }
-        // Every active's HP at the hit's start, for its Update below.
-        let mut hp_at_hit = [[0u16; 2]; 2];
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..self.format().active_count().min(2) {
-                hp_at_hit[side as usize][slot] = self.side(side).active_mon(slot).map_or(0, |a| a.current_hp);
-            }
-        }
+        // The attacker's HP at the hit's start, for the hit's Update below.
+        let attacker_hp_at_hit = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).map_or(0, |a| a.current_hp);
         // Per-hit damage — Beat Up per-ally arm + normal-move
         // per-hit re-roll arm, both threading through the
         // DamagePipeline (attacker item + Friend Guard). Lifted
@@ -11357,30 +11352,17 @@ self.trigger_emergency_exits();
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
             // eachEvent('Update') over the actives in speed order: the
-            // target, and any other mon this hit cost HP (the attacker on
-            // Rocky Helmet / Rough Skin), eat their berries here, before
-            // recoil and Life Orb. A mon the hit spared already had its turn.
-            // (Any other active holding a berry that is in range: eachEvent
-            // reaches every mon, e.g. one already low from earlier.)
-            let hurt = |b: &Battle, s: SideRef, sl: u8| {
-                (s, sl) != (ctx.tside, ctx.tslot)
-                    && b.side(s).active_mon(sl as usize).is_some_and(|a| {
-                        a.is_alive()
-                            && (a.current_hp < hp_at_hit[s as usize][(sl as usize).min(1)]
-                                || (a.item_id != u16::MAX
-                                    && data::ITEMS[a.item_id as usize].is_berry
-                                    && a.current_hp <= a.stats.hp / 2))
-                    })
-            };
-            let others = [SideRef::P1, SideRef::P2]
-                .into_iter()
-                .any(|s| (0..self.format().active_count().min(2) as u8).any(|sl| hurt(self, s, sl)));
-            if !others {
+            // target, and the attacker when this hit cost it HP (Rocky
+            // Helmet / Rough Skin), eat their berries here, before recoil
+            // and Life Orb.
+            let attacker_hurt = (ctx.actor_side, ctx.actor_slot) != (ctx.tside, ctx.tslot)
+                && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.current_hp < attacker_hp_at_hit);
+            if !attacker_hurt {
                 crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
             } else {
                 let (order, k) = self.actives_by_speed();
                 for &(s, sl) in &order[..k] {
-                    if (s, sl) == (ctx.tside, ctx.tslot) || hurt(self, s, sl) {
+                    if (s, sl) == (ctx.tside, ctx.tslot) || (s, sl) == (ctx.actor_side, ctx.actor_slot) {
                         crate::item::on_after_damage(self, s, sl, &mut rng);
                     }
                 }
@@ -15142,6 +15124,7 @@ self.trigger_emergency_exits();
     /// contact damage for the user (sim/battle-actions.ts and
     /// data/mods/champions/scripts.ts:583); the whole-action HP check covers
     /// each. The player picks the replacement, like Eject Button.
+    #[inline]
     fn trigger_emergency_exits(&mut self) {
         self.trigger_emergency_exits_inner();
         if let Some(l) = self.protocol.log_mut() {
@@ -15149,6 +15132,7 @@ self.trigger_emergency_exits();
         }
     }
 
+    #[inline]
     fn trigger_emergency_exits_inner(&mut self) {
         let Some((snap, damaging)) = self.hp_before_action.take() else { return };
         if !damaging {

@@ -182,8 +182,6 @@ pub(crate) enum StatusFx {
     Ability(u16, u8, u8),
     /// `[from] item: Flame Orb` / `Toxic Orb`.
     Item(u16),
-    /// Nothing printed.
-    Silent,
     /// Plain even for sleep: a secondary's onHit trySetStatus, whose
     /// effect is not the move (data/moves.ts direclaw).
     Bare,
@@ -212,8 +210,15 @@ impl fmt::Debug for ProtoSlot {
 impl ProtoSlot {
     /// True when the battle is logging and the log is still open (PS stops
     /// adding lines once the battle has ended).
+    ///
+    /// Without the `protocol` feature this is constant `false` (and
+    /// `log` / `log_mut` constant `None`), so every protocol hook compiles
+    /// out of the step loop.
     #[inline(always)]
     pub fn on(&self) -> bool {
+        #[cfg(not(feature = "protocol"))]
+        return false;
+        #[cfg(feature = "protocol")]
         match &self.0 {
             Some(l) => !l.ended,
             None => false,
@@ -221,10 +226,16 @@ impl ProtoSlot {
     }
     #[inline]
     pub fn log(&self) -> Option<&ProtocolLog> {
+        #[cfg(not(feature = "protocol"))]
+        return None;
+        #[cfg(feature = "protocol")]
         self.0.as_deref()
     }
     #[inline]
     pub fn log_mut(&mut self) -> Option<&mut ProtocolLog> {
+        #[cfg(not(feature = "protocol"))]
+        return None;
+        #[cfg(feature = "protocol")]
         self.0.as_deref_mut()
     }
     pub(crate) fn add(&mut self, line: String) {
@@ -294,8 +305,6 @@ pub struct ProtocolLog {
     pub(crate) status_ctx: Option<(u8, u8, Option<(u8, u8)>)>,
     /// Lines written since the current `|move|` was announced.
     pub(crate) since_move: u32,
-    /// Residual window: each active's speed key (`[side][slot]`).
-    pub(crate) res_speed: [[u8; 2]; 2],
     /// Scratch HP for a residual handler.
     pub(crate) res_hp_before: u16,
     /// `[side][team index]` the partial-trapping move holding the mon.
@@ -398,9 +407,7 @@ pub(crate) mod step {
     pub const TRY_IMMUNE: u8 = 4;
     pub const ACCURACY: u8 = 5;
     pub const BREAK_PROTECT: u8 = 6;
-    pub const SUBSTITUTE: u8 = 7;
     pub const CALC: u8 = 8;
-    pub const CALC_ITEM: u8 = 9;
     pub const DAMAGE: u8 = 10;
     pub const EFFECTS: u8 = 11;
     pub const SELF_DROP: u8 = 12;
@@ -450,7 +457,6 @@ impl ProtocolLog {
             magic_room_source: String::new(),
             status_ctx: None,
             since_move: 0,
-            res_speed: [[0; 2]; 2],
             res_hp_before: 0,
             trap_move: [[u16::MAX; 6]; 2],
             cur_user: None,
