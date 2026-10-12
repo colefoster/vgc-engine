@@ -73,6 +73,8 @@ pub struct PsSession {
     raw: Vec<String>,
     /// How many of the log's raw lines `raw` holds.
     raw_pos: usize,
+    /// At a mid-turn stop: the replay whose log the streams show.
+    shown: Option<Battle>,
     /// A stop's requests were made and not yet taken (PS `sentRequests`).
     new_requests: bool,
     /// `>pN <choice>` lines PS's commitChoices logged (sim/battle.ts:3009-3012).
@@ -114,6 +116,7 @@ impl PsSession {
             log_chunks: [0; 4],
             raw: Vec::new(),
             raw_pos: 0,
+            shown: None,
             new_requests: true,
             input_log: Vec::new(),
             ended: false,
@@ -314,11 +317,24 @@ impl PsSession {
     /// PS `battle.win(side)` (sim/battle.ts:1520-1543): `|`, `|win|name`
     /// (`|tie` for `None`), and the battle ends.
     pub fn force_win(&mut self, side: Option<SideRef>) {
+        self.end_with(&[], side);
+    }
+
+    /// `lines`, then the win (`None`: a tie).
+    fn end_with(&mut self, lines: &[String], side: Option<SideRef>) {
         if self.ended {
             return;
         }
-        self.base.protocol_force_win(side);
-        let b = self.take_base();
+        // The battle whose log PS has shown: a mid-turn stop's replay, or
+        // the base, cut back to the stop (the base was built or played
+        // past it).
+        let mut b = match self.shown.take() {
+            Some(b) => b,
+            None => self.take_base(),
+        };
+        b.protocol_truncate(self.raw_pos);
+        b.protocol_add_lines(lines);
+        b.protocol_force_win(side);
         self.expose(&b, None);
         self.base = b;
         self.ended = true;
@@ -330,11 +346,7 @@ impl PsSession {
     /// PS `>tiebreak` (sim/battle.ts:1467-1508): its message lines, then
     /// the win (a tie for `None`).
     pub fn tiebreak(&mut self, lines: &[String], winner: Option<SideRef>) {
-        if self.ended {
-            return;
-        }
-        self.base.protocol_add_lines(lines);
-        self.force_win(winner);
+        self.end_with(lines, winner);
     }
 
     /// PS `>reseed` (sim/battle.ts:360-363): the battle draws from `rng`
@@ -416,8 +428,10 @@ impl PsSession {
             self.stop = sp;
             self.answered = [None, None];
             self.new_requests = true;
+            self.shown = Some(b);
             return;
         }
+        self.shown = None;
         // The turn is through: commit.
         let last = stops.iter().rev().find(|s| !matches!(s.kind, SyncKind::MidTurn(_))).cloned();
         let ended = matches!(r, Some(StepResult::Ended { .. })) || b.protocol_log().is_some_and(|l| l.is_ended());

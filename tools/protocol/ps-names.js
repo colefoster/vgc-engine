@@ -20,6 +20,12 @@ for (const s of Dex.species.all()) {
 	const ab = {};
 	for (const k of ['0', '1', 'H', 'S']) if (s.abilities[k]) ab[k] = s.abilities[k];
 	species[s.id] = [s.name, s.baseSpecies, ab];
+	// Cosmetic formes (Alcremie-Salted-Cream ...) are no entries of their own,
+	// but Dex.species.get resolves them (sim/dex-species.ts).
+	for (const c of s.cosmeticFormes || []) {
+		const cs = Dex.species.get(c);
+		if (cs.exists && !species[cs.id]) species[cs.id] = [cs.name, cs.baseSpecies, ab];
+	}
 }
 const names = table => sorted(Object.fromEntries(table.all().map(x => [x.id, x.name])));
 const out = {

@@ -518,6 +518,18 @@ pub fn to_member(set: &Json) -> TeamMember {
     }
 }
 
+/// Champions sets carry Stat Points in `evs`. PS's Champions `statModify`
+/// (data/mods/champions/scripts.ts:10-40) adds them to the base stat and
+/// ignores IVs and level; at level 50 that equals the main-series formula
+/// with `8 * sp - 4` EVs (0 for 0) and 31 IVs, which is what the engine
+/// computes (and recomputes on Mega Evolution). Exact at level 50 only, as
+/// in the conformance harness (vgc-engine-conformance `build_engine_team`).
+pub fn champions_stat_points(m: &mut TeamMember) {
+    let ev = |sp: u8| if sp == 0 { 0 } else { (8 * sp as u16 - 4).min(255) as u8 };
+    m.ivs = StatSpread::MAX_IV;
+    m.evs = StatSpread { hp: ev(m.evs.hp), atk: ev(m.evs.atk), def: ev(m.evs.def), spa: ev(m.evs.spa), spd: ev(m.evs.spd), spe: ev(m.evs.spe) };
+}
+
 /// The name PS gives the mon (sim/pokemon.ts:334, `set.name.substr(0, 20)`).
 pub fn display_name(set: &Json) -> String {
     set.str_of("name").chars().take(20).collect()
