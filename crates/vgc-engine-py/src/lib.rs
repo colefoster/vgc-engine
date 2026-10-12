@@ -317,6 +317,48 @@ fn choice_from_tuple(c: &LegalChoice) -> PyResult<core::Choice> {
 #[pyclass(name = "Battle")]
 pub struct PyBattle {
     inner: core::Battle,
+    /// A PS choice/request session (`ps_session=True`); `inner` mirrors its
+    /// committed battle.
+    session: Option<Box<core::ps_session::PsSession>>,
+}
+
+/// `0` / `1` / `"p1"` / `"p2"` -> side.
+fn parse_side(side: &Bound<'_, PyAny>) -> PyResult<core::SideRef> {
+    if let Ok(i) = side.extract::<u8>() {
+        return match i {
+            0 => Ok(core::SideRef::P1),
+            1 => Ok(core::SideRef::P2),
+            _ => Err(PyValueError::new_err("side must be 0, 1, \"p1\" or \"p2\"")),
+        };
+    }
+    match side.extract::<String>()?.as_str() {
+        "p1" => Ok(core::SideRef::P1),
+        "p2" => Ok(core::SideRef::P2),
+        _ => Err(PyValueError::new_err("side must be 0, 1, \"p1\" or \"p2\"")),
+    }
+}
+
+/// A stream name: a side, `"spectator"` or `"omniscient"`.
+fn parse_view(v: &Bound<'_, PyAny>) -> PyResult<core::ProtocolView> {
+    if let Ok(s) = parse_side(v) {
+        return Ok(if s == core::SideRef::P1 { core::ProtocolView::P1 } else { core::ProtocolView::P2 });
+    }
+    let name: String = v.extract()?;
+    core::ProtocolView::parse(&name)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown stream: {name} (p1 | p2 | spectator | omniscient)")))
+}
+
+impl PyBattle {
+    fn session_ref(&self) -> PyResult<&core::ps_session::PsSession> {
+        self.session.as_deref().ok_or_else(|| PyValueError::new_err("needs Battle.from_teams(..., ps_session=True)"))
+    }
+
+    fn no_session(&self, what: &str) -> PyResult<()> {
+        if self.session.is_some() {
+            return Err(PyValueError::new_err(format!("{what} is unavailable on a ps_session battle; use choose()")));
+        }
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -341,7 +383,13 @@ impl PyBattle {
     /// log, read with `protocol_log()` (docs/protocol.md); `None` (the
     /// default) keeps none and costs nothing. `player_names` sets the
     /// `|player|` / `|win|` names (default "Player 1" / "Player 2").
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None, protocol = None, player_names = None))]
+    ///
+    /// `ps_session=True` plays the battle the way Pokémon Showdown's
+    /// BattleStream serves its players (implies `protocol="ps"`): read a
+    /// side's `request(side)` / `player_stream(side)`, answer with
+    /// `choose(side, "move 1 2, switch 3")`. The battle starts at team
+    /// preview when the format has one. `step_*` are unavailable then.
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None, protocol = None, player_names = None, ps_session = false))]
     #[allow(clippy::too_many_arguments)]
     fn from_teams(
         p1_team_json: &str,
@@ -355,7 +403,12 @@ impl PyBattle {
         champions: Option<bool>,
         protocol: Option<&str>,
         player_names: Option<(String, String)>,
+        ps_session: bool,
     ) -> PyResult<Self> {
+        let protocol = match (protocol, ps_session) {
+            (None, true) => Some("ps"),
+            (p, _) => p,
+        };
         let id = format.to_ascii_lowercase();
         let (fmt, format_champions) = match id.as_str() {
             "singles" => (core::Format::Singles, true),
@@ -389,6 +442,7 @@ impl PyBattle {
                 Some(opts)
             }
         };
+        let keep = ps_session.then(|| (cfg.clone(), p1.clone(), p2.clone()));
         let mut inner = match ps_seed {
             None => match &proto {
                 None => core::Battle::new(cfg, p1, p2),
@@ -415,7 +469,91 @@ impl PyBattle {
             inner.p1.conditions.tera_used = true;
             inner.p2.conditions.tera_used = true;
         }
-        Ok(Self { inner })
+        if !ps_session {
+            return Ok(Self { inner, session: None });
+        }
+        // The session rebuilds the battle from the team-preview picks: same
+        // seed, same construction, so the preamble it already showed holds.
+        let opts = proto.expect("ps_session implies a protocol");
+        let (cfg, p1, p2) = keep.expect("kept for the session");
+        let ps_seed_owned = ps_seed.map(str::to_string);
+        let make_rng = move || -> core::Rng {
+            match ps_seed_owned.as_deref() {
+                #[cfg(feature = "ps-rng")]
+                Some(s) => core::Rng::ps(s).expect("ps_seed validated above"),
+                _ => core::Rng::new(seed),
+            }
+        };
+        let builder = move |picks: Option<&[Vec<u8>; 2]>| {
+            let mut b = core::Battle::with_protocol(cfg.clone(), make_rng(), p1.clone(), p2.clone(), &opts, &id, picks);
+            b.decision_phases = true;
+            b.champions = champions;
+            if !tera_allowed {
+                b.p1.conditions.tera_used = true;
+                b.p2.conditions.tera_used = true;
+            }
+            b
+        };
+        let session = core::ps_session::PsSession::new(Box::new(builder));
+        Ok(Self { inner: session.battle().clone_with_log(), session: Some(Box::new(session)) })
+    }
+
+    /// Side `side`'s current Pokémon Showdown `|request|` JSON (byte-identical
+    /// to PS's), or `None` when it has nothing to choose (a `wait` request,
+    /// a choice already accepted, or the battle is over). Needs
+    /// `ps_session=True`.
+    fn request(&self, side: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+        let s = parse_side(side)?;
+        Ok(self.session_ref()?.request(s))
+    }
+
+    /// Answer `side`'s request in PS choice syntax (`"move 1 2, move 3"`,
+    /// `"switch 3"`, `"team 1234"`, `"pass"`, `"move 2 terastallize"`,
+    /// `"move 1 mega"`, `"default"`). Returns `None` when accepted, else
+    /// PS's exact `|error|[Invalid choice] ...` line(s) (also written to the
+    /// side's stream). When both sides have answered, the battle advances
+    /// to the next request.
+    fn choose(&mut self, side: &Bound<'_, PyAny>, choice: &str) -> PyResult<Option<String>> {
+        let s = parse_side(side)?;
+        let sess = self.session.as_mut().ok_or_else(|| PyValueError::new_err("choose needs Battle.from_teams(..., ps_session=True)"))?;
+        let r = sess.choose(s, choice);
+        self.inner = sess.battle().clone_with_log();
+        Ok(r.err().map(|e| e.join("\n")))
+    }
+
+    /// Lines of a stream as PS's `getPlayerStreams` delivers them, from
+    /// line `since` on: `"p1"` / `"p2"` (that player's view, its
+    /// `|request|`s and `|error|`s included), `"spectator"` or
+    /// `"omniscient"`. Needs `ps_session=True`.
+    #[pyo3(signature = (side, since = 0))]
+    fn player_stream(&self, side: &Bound<'_, PyAny>, since: usize) -> PyResult<Vec<String>> {
+        let v = parse_view(side)?;
+        let lines: Vec<String> = self.session_ref()?.stream(v).iter().flat_map(|c| c.split('\n').map(str::to_string)).collect();
+        Ok(lines.into_iter().skip(since).collect())
+    }
+
+    /// The same stream as whole chunks (one per PS `update` / `sideupdate`).
+    #[pyo3(signature = (side, since = 0))]
+    fn player_chunks(&self, side: &Bound<'_, PyAny>, since: usize) -> PyResult<Vec<String>> {
+        let v = parse_view(side)?;
+        Ok(self.session_ref()?.stream(v).iter().skip(since).cloned().collect())
+    }
+
+    /// PS `>forcetie`: end the battle in a tie (a turn-limit cutoff).
+    fn force_tie(&mut self) -> PyResult<()> {
+        let sess = self.session.as_mut().ok_or_else(|| PyValueError::new_err("force_tie needs ps_session=True"))?;
+        sess.force_tie();
+        self.inner = sess.battle().clone_with_log();
+        Ok(())
+    }
+
+    /// True once the battle has ended.
+    #[getter]
+    fn ended(&self) -> bool {
+        match &self.session {
+            Some(s) => s.is_ended(),
+            None => self.inner.winner().is_some(),
+        }
     }
 
     fn needs_replacements(&self) -> bool { self.inner.needs_replacements() }
@@ -471,24 +609,26 @@ impl PyBattle {
     }
 
     /// One pass-only step for both sides (debug helper while moves are unwired).
-    fn step_pass(&mut self) -> &'static str {
+    fn step_pass(&mut self) -> PyResult<&'static str> {
+        self.no_session("step_pass")?;
         let n = self.inner.format().active_count() as u8;
         let p1: Vec<core::Choice> =
             (0..n).map(|i| core::Choice::Pass { actor_slot: i }).collect();
         let p2: Vec<core::Choice> =
             (0..n).map(|i| core::Choice::Pass { actor_slot: i }).collect();
-        match self.inner.step(&p1, &p2) {
+        Ok(match self.inner.step(&p1, &p2) {
             core::StepResult::Continue => "continue",
             core::StepResult::Ended { winner } => match winner {
                 Some(core::SideRef::P1) => "p1_win",
                 Some(core::SideRef::P2) => "p2_win",
                 None => "tie",
             },
-        }
+        })
     }
 
     /// Switch one active mon on a side; returns step result string.
     fn step_switch(&mut self, side: u8, actor_slot: u8, team_index: u8) -> PyResult<&'static str> {
+        self.no_session("step_switch")?;
         let s = match side {
             0 => core::SideRef::P1,
             1 => core::SideRef::P2,
@@ -529,6 +669,7 @@ impl PyBattle {
         p1_choices: Vec<LegalChoice>,
         p2_choices: Vec<LegalChoice>,
     ) -> PyResult<&'static str> {
+        self.no_session("step_move")?;
         let p1: Vec<core::Choice> =
             p1_choices.iter().map(choice_from_tuple).collect::<PyResult<_>>()?;
         let p2: Vec<core::Choice> =
@@ -540,7 +681,7 @@ impl PyBattle {
     /// clone (or the original) never affects the other — for MCTS-style
     /// state branching in mimikyu.
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self { inner: self.inner.clone(), session: None }
     }
 
     /// `copy.deepcopy(battle)` support — same as `clone()`. The `_memo`
@@ -548,13 +689,13 @@ impl PyBattle {
     /// to track).
     #[pyo3(signature = (_memo = None))]
     fn __deepcopy__(&self, _memo: Option<PyObject>) -> Self {
-        Self { inner: self.inner.clone() }
+        Self { inner: self.inner.clone(), session: None }
     }
 
     /// `copy.copy(battle)` support — `Battle` has no interior sharing, so
     /// a shallow copy is a full independent clone too.
     fn __copy__(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self { inner: self.inner.clone(), session: None }
     }
 
     /// Serialize the full battle state to bincode bytes (compact, fast).
@@ -572,7 +713,7 @@ impl PyBattle {
             .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
         // See `from_json`: recompute the `#[serde(skip)]` derived caches.
         inner.rehydrate_caches();
-        Ok(Self { inner })
+        Ok(Self { inner, session: None })
     }
 
     /// Serialize the full battle state to a JSON string. Slower / larger
@@ -591,7 +732,7 @@ impl PyBattle {
         // cached weather+terrain) come back at their Default after a
         // round-trip; recompute them from canonical state.
         inner.rehydrate_caches();
-        Ok(Self { inner })
+        Ok(Self { inner, session: None })
     }
 
     /// Current HP of the active mon in `(side, slot)`, or `None` if the
@@ -738,8 +879,23 @@ impl PyBattle {
     ///   ]
     /// }
     /// ```
-    fn observe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        build_observation(py, &self.inner)
+    ///
+    /// `observe(side)` (needs `ps_session=True`) is instead the partial
+    /// observation of one player, built only from that player's stream
+    /// and requests: its own team exact; the opponent as PS shows it
+    /// (revealed species / moves / items / abilities / Tera, HP as a
+    /// percentage, boosts, statuses, field). This is the one safe for
+    /// model input; see docs/protocol.md.
+    #[pyo3(signature = (side = None))]
+    fn observe<'py>(&self, py: Python<'py>, side: Option<&Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+        let Some(side) = side else {
+            return Ok(build_observation(py, &self.inner)?.into_any());
+        };
+        let s = parse_side(side)?;
+        let view = if s == core::SideRef::P1 { core::ProtocolView::P1 } else { core::ProtocolView::P2 };
+        let obs = core::ps_observe::observe(s as usize, self.session_ref()?.stream(view));
+        let text = serde_json::to_string(&obs).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        py.import("json")?.call_method1("loads", (text,))
     }
 
     fn __repr__(&self) -> String {
