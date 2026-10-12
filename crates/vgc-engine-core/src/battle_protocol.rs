@@ -1238,6 +1238,35 @@ impl Battle {
         pmon!(self, "-fail", side, slot, "|unboost{stat_part}|[from] ability: {name}|[of] {of}");
     }
 
+    /// A non-secondary opposing drop of `stats` that the target's
+    /// ability / Clear Amulet vetoed: Clear Body et al. print one
+    /// `-fail|unboost`, Hyper Cutter / Big Pecks / Keen Eye one per stat
+    /// (data/abilities.ts clearbody, hypercutter; data/items.ts clearamulet).
+    pub(crate) fn p_drop_blocked(&mut self, side: SideRef, slot: u8, stats: &[u8]) {
+        if !self.plog() {
+            return;
+        }
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        let ab = m.effective_ability_id();
+        let amulet = m.item_id == data::item_id::CLEARAMULET;
+        let mut blocked = [false; 8];
+        for (b, &st) in blocked.iter_mut().zip(stats) {
+            *b = crate::ability::blocks_opposing_stat_drop_for(m, st);
+        }
+        if matches!(ab, data::ability_id::CLEARBODY | data::ability_id::WHITESMOKE | data::ability_id::FULLMETALBODY) {
+            self.p_unboost_fail(side, slot, ab, 0);
+        } else if amulet {
+            let of = self.p_ident(side, slot);
+            pmon!(self, "-fail", side, slot, "|unboost|[from] item: Clear Amulet|[of] {of}");
+        } else {
+            for (&b, &st) in blocked.iter().zip(stats) {
+                if b {
+                    self.p_unboost_fail(side, slot, ab, st);
+                }
+            }
+        }
+    }
+
     /// `|tag|<ident>|<Item Name>{suffix}`.
     #[inline(always)]
     pub(crate) fn p_item_line(&mut self, tag: &str, side: SideRef, slot: u8, item: u16, suffix: &str) {
@@ -1635,6 +1664,20 @@ impl Battle {
         let rank = self.p_rank(side, slot);
         if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
             w.key = (w.hit as u32) << 16 | (crate::protocol::step::TRYHIT as u32) << 8 | (class as u32) << 4 | rank as u32;
+        }
+    }
+
+    /// The open window's (key, hit), to put back after a detour.
+    #[inline]
+    pub(crate) fn p_key_save(&self) -> Option<(u32, u8)> {
+        self.protocol.log().and_then(|l| l.window.as_deref()).map(|w| (w.key, w.hit))
+    }
+
+    #[inline]
+    pub(crate) fn p_key_restore(&mut self, saved: Option<(u32, u8)>) {
+        if let (Some((key, hit)), Some(w)) = (saved, self.protocol.log_mut().and_then(|l| l.window.as_deref_mut())) {
+            w.key = key;
+            w.hit = hit;
         }
     }
 
