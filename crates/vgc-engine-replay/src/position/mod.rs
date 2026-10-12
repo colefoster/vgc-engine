@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use vgc_engine_core::ps_position::{raw_channel, Prefix};
 use vgc_engine_core::{data, nature_by_id, Battle, SideRef, StatSpread, Status, TeamMember, VolatileKind};
 
-use crate::prior::{slug, Prior};
+use crate::prior::{slug, Prior, PriorSampler};
 
 mod build;
 mod recon;
@@ -81,11 +81,15 @@ pub struct ReconOptions {
     pub format: Option<String>,
     /// Force the input kind (otherwise detected).
     pub kind: Option<InputKind>,
+    /// Sample prior-filled fields (spread and nature, unrevealed moves,
+    /// item, ability) from the prior with this seed instead of taking the
+    /// most likely. `None`: the argmax, unchanged.
+    pub prior_sample_seed: Option<u64>,
 }
 
 impl ReconOptions {
     pub fn new(turn: u32) -> Self {
-        ReconOptions { turn, stop: Stop::Move, viewer: None, sets: [None, None], requests: [None, None], lookahead: false, format: None, kind: None }
+        ReconOptions { turn, stop: Stop::Move, viewer: None, sets: [None, None], requests: [None, None], lookahead: false, format: None, kind: None, prior_sample_seed: None }
     }
 }
 
