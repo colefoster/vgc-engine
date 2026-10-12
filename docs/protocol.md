@@ -9,6 +9,8 @@ in PS syntax, and builds a player's partial observation from its own stream
 Phase 3 puts PS's BattleStream on top: `vgc sim` speaks `pokemon-showdown
 simulate-battle`'s stdio protocol, and `vgc_engine.BattleStream` is the
 same in-process ([Use as a local Showdown replacement](#use-as-a-local-showdown-replacement)).
+Phase 4 starts a session from any mid-game position, a snapshot or a
+kcheck board ([Start from a mid-game position](#start-from-a-mid-game-position)).
 
 **Model input.** A model that should see only its own player's view must
 read `Battle.observe(side)` (or `player_stream(side)` / `request(side)`),
@@ -537,3 +539,281 @@ off, 6 interleaved runs: ~2,401 vs ~2,376 ns/step (~416.5k vs ~420.8k
 steps/s, -1.0%), 0 allocations per step for both. The battles differ
 slightly (the branch fixes mechanics that change their course), so
 ns/step is the comparable figure.
+
+## Start from a mid-game position
+
+Phase 4 starts a PS session from any position: a `to_json()` snapshot, or
+a position built from a kcheck board. `request(side)`, `choose(side, ...)`,
+`player_stream(side)` and `observe(side)` then work as in a session that
+played up to there.
+
+### Python
+
+```python
+js = vgc_engine.position_from_board(board, sets, format="gen9championsvgc2026regmc", side_of_own="p1")
+b = vgc_engine.Battle.from_position(js, ps_seed="1,2,3,4", prefix={"p1": p1_lines, "p2": p2_lines},
+                                    reveals={"p1": {"0": {"moves": ["Earthquake"], "item": "Life Orb"}}})
+b.request("p1"); b.choose("p1", "move 1 1, move 2"); b.player_stream("p1"); b.observe("p1")
+```
+
+```
+Battle.from_position(battle_json, ps_seed=None, prefix=None, reveals=None,
+                     switch_in_effects=False, protocol="ps", format=None, player_names=None)
+vgc_engine.position_from_board(board, sets=None, format="gen9championsvgc2026regmc",
+                               side_of_own="p1") -> str   # Battle JSON
+```
+
+- `battle_json`: a `to_json()` string or dict, or `position_from_board`
+  output. It is not checked against the prefix.
+- **Turn.** The JSON's `turn` is the number of turns played. The session
+  stops at the move request of turn `turn + 1`. If an active has fainted
+  and a replacement is available, it stops at the faint-replacement request
+  instead, as PS does, before any `|turn|`.
+- **Switch-in effects** (Intimidate, weather and terrain setters, Booster
+  Energy, ...) are not applied: the position is already on the field.
+  `switch_in_effects=True` runs the actives' switch-in abilities and items
+  in Speed order, as the battle start does. Their lines follow the prefix.
+- **`ps_seed`** replaces the battle's PRNG with PS's, seeded as
+  `from_teams(ps_seed=...)` seeds it (`ps-rng` wheels). The continuation is
+  deterministic per seed. Without `ps_seed` the snapshot's PRNG state is
+  kept (`to_json` includes it). A `position_from_board` battle carries the
+  engine's own RNG, so pass `ps_seed` for PS's draws.
+- **`format`** picks the preamble, team preview and HP display. Default:
+  the JSON's `format_id` (set by `position_from_board`), else Champions Reg
+  M-C for a Champions battle, else `gen9vgc2025regi` (doubles) or `gen9ou`.
+  A `debug` format would show exact HP to everyone, so it is never the
+  default.
+- **`player_names`** default to the prefix's `|player|pN|Name|` lines, else
+  "Player 1" / "Player 2".
+- **`protocol`** is `"ps"` or `"compact"`.
+
+### Prefix framing
+
+The prefix is the history each player has seen. It takes one of two forms:
+
+- `{"p1": [lines], "p2": [lines]}`: each player's stream, as
+  `player_stream(side)` gives it. `|request|` and `|error|` lines, and empty
+  lines, are dropped. The two streams are merged into one PS log. Equal
+  lines are shared. A pair that differs only after its subject (an HP line)
+  becomes a `|split|` pair owned by the subject's side. A line only one side
+  has is a `|split|` line the other side does not see. Open Team Sheets'
+  `|uhtml|` box is one line per player.
+- `[lines]`: PS's raw `battle.log`, with `|split|pN` followed by the secret
+  and the shared line. A list without `|split|` lines is shown to every
+  stream as is. This is the form for synthlog's single spectator log.
+
+Every stream (p1, p2, spectator, omniscient) starts with one `update` chunk:
+its view of the prefix, verbatim. Player streams then get the stop's
+`|request|` chunk. When the turn resolves, the normal `update` follows, then
+the next requests. `player_stream(side)` returns the prefix lines as given,
+then `|request|...`. `protocol_log()` includes the prefix.
+
+The log's own bookkeeping is rebuilt from the prefix (its omniscient view)
+and the state:
+
+- PS names and the details formes come from `|switch|` / `|drag|` /
+  `|replace|` / `|detailschange|`. Mons the prefix never shows get the
+  base-species name.
+- An Illusion holder's disguise comes from the name its slot last showed.
+- The Wish user, a partial trap's move, Zero to Hero's shown message and
+  Magic Room's source are rebuilt the same way.
+- The PS team order comes from the state (`Side::ps_order`).
+- The last `|turn|` number is rebuilt from the prefix.
+
+On `ps-rng`, the state a snapshot drops is rebuilt: the field PS last saw
+(its WeatherChange / TerrainChange sorts) and each mon's cached Speed.
+
+**No prefix.** The engine writes a short header in PS's lines:
+
+1. The preamble and team preview's `|poke|`s.
+2. `|teamsize|`, `|start`, then the live actives' `|switch|`es (shared
+   halves as percentages).
+3. Tera, boosts and the common volatiles (`Substitute`, `confusion`, Leech
+   Seed, Taunt, Encore, Disable, Yawn, Heal Block, Magnet Rise, Aqua Ring,
+   Ingrain, Focus Energy, Salt Cure, `perishN`).
+4. Weather, terrain, Trick Room / Gravity / Magic Room / Wonder Room, then
+   each side's conditions and hazards.
+5. `|turn|N`.
+
+The header names no opponent move, item or ability.
+
+### Reveals
+
+`reveals={"p1": {"<opponent team index>": {"species", "moves": [...], "item",
+"ability", "tera"}}, "p2": {...}}`. Keys may be ints or strings.
+
+- **Default.** Reveals are parsed from the stream, which `observe(side)`
+  already reads.
+- **Override.** The given reveals are merged on top of the stream's in
+  `observe(side)`:
+  - moves are added (ids, no duplicates);
+  - `item` / `ability` / `tera` (the mon's `tera_type`) replace what the
+    stream showed;
+  - `species` relabels the mon.
+- **Matching.** A mon is matched by its PS name, then as an unseen
+  team-preview entry of its species. If neither matches, it is added.
+- **Scope.** Reveals never change a `|request|`: a request describes only
+  the requester's own side.
+- **Team indices** are the battle's team order. For `position_from_board`
+  that is the actives in board order, then the bench in board order.
+
+### Builder (`position_from_board`)
+
+The board uses mimikyu's kcheck field names (`audit/litmus/kcheck/schema.py`,
+`_common.mon` / `field`), so kcheck needs no translation layer.
+
+**`sets`** gives each mon's full set:
+
+- Fields: `species`, `nature`, `evs` (EVs) or `sps` (Champions stat points,
+  converted as PS Champions does: `8 * sp - 4` EVs), `ivs`, `item` (the item
+  it started with), `ability`, `moves`, `tera`, `gender`, `level`.
+- Shapes: parallel lists `{"own_active": [...], "own_bench": [...],
+  "opp_active": [...], "opp_bench": [...]}`, or `{"own": {species: set},
+  "opp": {species: set}}`.
+- A missing set uses the board mon's kit, a Serious nature and no EVs.
+
+**Turn.** Elapsed turns follow kcheck: `<effect>_elapsed` counts the turns
+up, the setting turn included. 1 (the default) means the effect was set
+after last turn's residuals. 2 means it was set by a move last turn. The
+engine counts the turns left including this one:
+**`remaining = duration + 1 - elapsed`**.
+`ps_board::tests::remaining_matches_the_engine_counters` pins this rule to
+the engine's own counters.
+
+| kcheck | Engine | Rule |
+|---|---|---|
+| `own_active` / `opp_active` | `side.active` | Exactly the format's active count. `side_of_own` picks which side `own_*` plays (p1 by default) |
+| `own_bench` / `opp_bench` | rest of the team | Team order: actives, then bench. At most 6 mons |
+| mon `species` | `species_id` | A `-Mega` forme builds the base species with its stone and Mega Evolves it (`mega_used`). Another forme than the set's (Palafin-Hero) is applied |
+| `hp` / `alive` / `fainted` | `current_hp`, `fainted` | `round(hp * max_hp)`, at least 1 while alive; `hp <= 0` or `alive: false` faints it |
+| `status` | `status` | `brn par slp frz psn tox`; `""` / `ok` none |
+| `toxic_counter` | ToxicCounter payload | 1-based, cap 15. 0 with `tox`: `toxic_n + 1`, else 1 |
+| `sleep_turns_remaining` | Sleep payload | Remaining turns (1-3 Champions, 1-4 gen 9). 0 with `slp`: `max(1, 3 - sleep_elapsed)` |
+| `boosts[7]` | `boosts` | `[atk, def, spa, spd, spe, acc, eva]`, actives only |
+| `volatile_statuses` (+ `volatile_ages`) | volatiles | Duration volatiles get `duration - age`, age default 1: TAUNT 3, ENCORE 3, DISABLE 4, YAWN 2, THROATCHOP 2, HEALBLOCK 5, MAGNETRISE 5. `volatile_remaining: {"ENCORE": 3}` overrides: PS adds a turn to Taunt / Encore / Disable started after the target moved that turn. ENCORE needs `locked_to_move` or `last_move`; DISABLE takes `disabled_move` (default `last_move`). CONFUSION: `confusion_turns_remaining`, default 2 (hidden). LEECHSEED / YAWN / CURSE / ATTRACT: the source is the opposing slot a. STOCKPILE: `stockpile_layers`, default 1. PERISH1-3 is the count. Also SUBSTITUTE, AQUARING, INGRAIN, FOCUSENERGY (+2 crit stage), CHARGE, SALTCURE, SMACKDOWN, TARSHOT, NORETREAT, MINIMIZE, FLASHFIRE, IMPRISON, GLAIVERUSH, MUSTRECHARGE, PROTOSYNTHESIS*/QUARKDRIVE* (`boosted_stat`, held). Others raise |
+| `substitute_hp_frac` | Substitute payload | Fraction of `floor(max_hp / 4)`, up to 4 (a Shed Tail doll). SUBSTITUTE without a fraction is a full doll |
+| `turns_on_field` | `turns_active`, `move_actions` | Both `k - 1`. 1 = no move action yet (Fake Out works) |
+| `last_move` | `last_used_move_slot` | A kit move, or Struggle. Implies a move action |
+| `locked_to_move` | Choice lock (`Locked`) | Needs a Choice item, or ENCORE (the encored move) |
+| `item` | `item_id` / `consumed_item` | `""` while the set has an item: consumed or removed, unless `item_confidence < 1` (an opponent's unknown item stays held). `item_consumed: true/false` overrides. A different item than the set's (Trick) is held |
+| `ability` | `ability_override` | When it differs from the set's (or the Mega's): Skill Swap, Trace, ... |
+| `is_mega` | via `species` | |
+| `move_pp` | `pp` | `None` = full |
+| `terastallized` | `terastallized`, `tera_used` | Engine extension. Field `tera_used_own/opp` / `mega_used_own/opp` set a side's Tera / Mega use outright (a Tera'd mon that fainted) |
+| `field.turn` | `turn` | `turn - 1`: the decision is turn `field.turn` |
+| `field.weather` (+ `_elapsed`) | `weather`, `weather_turns` | SunnyDay / RainDance / Sandstorm / Snow / Snowscape. Duration 5, or 8 when a board mon holds the matching rock and has the weather's ability or move |
+| `field.terrain` (+ `_elapsed`) | `terrain`, `terrain_turns` | Electric / Grassy / Psychic / Misty. 5, or 8 with Terrain Extender on a mon with the surge ability or terrain move |
+| `field.trick_room` (+ `_elapsed`) | `trick_room_turns` | Duration 5, so elapsed ≤ 5 |
+| `field.tailwind_own/opp` (+ `_elapsed`) | `tailwind_turns` | Duration 4, so elapsed ≤ 4 |
+| `field.screens_own/opp` `[light_screen, reflect, aurora_veil]` (+ `<screen>_<side>_elapsed`) | `*_turns` | 5, or 8 when a mon on that side holds Light Clay and knows the move |
+| `<effect>_duration` | | Engine extension: overrides the full duration, e.g. a setter that lost its Light Clay since |
+| `field.hazards_own/opp` | side conditions | `stealth_rock`, `spikes` (0-3), `toxic_spikes` (0-2), `sticky_web`, `safeguard` / `mist` (5 turns) |
+
+**Not mapped** (no engine state, or nothing to rebuild):
+
+- `history`, `last_move_own/opp` and `field.ended`. They belong in the
+  prefix.
+- `move_confidences` / `item_confidence` / `ability_confidence`. They become
+  reveals through the prefix, or through `reveals`. The one exception:
+  `item_confidence < 1` keeps an opponent's item held.
+- `protect_streak`, `sleep_elapsed`, `toxic_n` and `volatile_ages` past the
+  table above.
+- `nature` / `evs` on the board mon. They are used only when `sets` gives
+  none.
+
+**Errors.** `position_from_board` raises `ValueError` when it cannot build
+the board:
+
+- an unknown species, move, item, ability or status;
+- the wrong number of actives, or more than 6 mons;
+- a board move not in the set;
+- a Mega without its stone;
+- two Megas or two Tera'd mons on one side;
+- boosts, volatiles or a Substitute on a bench mon;
+- an unsupported volatile;
+- an elapsed count out of range;
+- a side with no mon left.
+
+A position needs only the board fields that matter to the scenario. Note
+one difference from synthlog: a mon with no `turns_on_field` gets 1 here,
+so Fake Out works. synthlog's neutral default gives such a mon 2 in the
+log. Set `turns_on_field` explicitly when Fake Out matters.
+
+### Rust
+
+```rust
+let raw = ps_position::prefix_raw_lines(&Prefix::PerSide([p1_lines, p2_lines]))?;
+let mut b: Battle = serde_json::from_str(&snapshot)?;
+b.attach_position_log(&ProtocolOptions::new(ProtocolMode::Ps), "gen9championsvgc2026regmc", raw, false)?;
+let mut session = PsSession::from_battle(b);
+let built = ps_board::position_from_board(&board, &sets, "gen9championsvgc2026regmc", SideRef::P1)?;
+```
+
+### Phase 4 gate
+
+```sh
+cargo build --release -p vgc-engine-conformance --features ps-rng --bin resume_gate
+target/release/resume_gate --dirs <B>,<C> --count 3600 --threads 4 --out resume.jsonl
+```
+
+`resume_gate` takes each battle record's teams and seed (the phase-1
+`ps-battle.js` records, Champions Reg M-C teams) and plays them as Champions
+Reg M-B / M-C and gen 9 VGC 2024 G / 2025 I. Each battle runs through
+`PsSession` on PS's PRNG with a seeded random policy. The policy's invalid
+choices go in too, with a `default` fallback.
+
+**Gate 1, snapshot / resume.** At a random turn stop (a move request, or a
+faint-replacement request), the harness snapshots the battle with
+`to_json`. It restores the snapshot with `attach_position_log`, with the
+real stream so far as the prefix: half the battles get the two player
+streams, half PS's raw log. It replays the remaining choice strings in the
+same order. The restored battle must match the original byte for byte on:
+
+- both requests at the stop;
+- all four streams after the stop;
+- the final state.
+
+**Gate 2, builder round trip.** At move stops the harness maps the state
+to a kcheck board. Elapsed turns and volatile ages are counted on the
+stream, as a kcheck author or synthlog would count them, not taken from the
+engine's counters. It rebuilds the board with `position_from_board` and
+compares every mapped field.
+
+Results (branch `ps-protocol-4`, 3600 battles, 900 per format):
+
+| Gate | Result |
+|---|---|
+| Resume continuations byte-identical | **3600 / 3600** (move stops 2679, replacement stops 921; per-side prefix 1800, raw 1800) |
+| Merged per-side prefix renders the real spectator / omniscient streams | 3600 / 3600 |
+| Builder round trip, mapped fields identical | **2632 / 2632** positions |
+| Positions a board cannot express (excluded) | 47: Speed Swap / Guard Split / Power Split / Power Trick (stats) 24, partial trap 10, Transform 5, Octolock 3, Dragon Cheer 3, Gravity's grounding 2 |
+
+**Gate 3, redaction.** `test_position.py::test_observe_never_leaks_hidden_opponent_info`
+restores 30 seeded battles with and without a prefix and plays on. In every
+`observe(side)`, each opponent move, item, ability and Tera must have been
+shown by the side's own stream, and opponent HP must be a percentage.
+
+Two engine fixes came out of the gates: Ally Switch now swaps
+`Side::ps_order` (PS swapPosition), and Light Clay extends only its
+holder's screens (PS `durationCallback` reads the source's item).
+
+**Cost.** `perf_bench --battles 5000`, logging off, 6 interleaved runs:
+~444.4k (branch) vs ~446.1k (main `b0da64d`) steps/s, within noise, 0
+allocations per step for both.
+
+### Limits
+
+- Positions mid-turn (a U-turn's switch request) can't be restored: a
+  snapshot holds the turn's start, not the picks so far.
+- A prefix is trusted. A stream that contradicts the state (another HP, a
+  move the mon lacks) is shown as given, and `observe(side)` reads the
+  stream.
+- PS names of mons the prefix never shows default to the base species
+  (PS's default when a set has no nickname).
+- Without a prefix, a mid-game Illusion disguise isn't rebuilt (the header
+  shows the real mon).
+- The builder's item-extension guess sees only current items. Use
+  `<effect>_duration` when the setter has lost its extender.
+- Confusion's remaining turns, a Stockpile count, and the sources of Leech
+  Seed, Curse and Attract are hidden on a board. They get the defaults
+  above.
