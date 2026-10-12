@@ -7398,9 +7398,7 @@ self.trigger_emergency_exits();
             }
             // charge onAfterMove: any Electric move but Charge ends it.
             if m.type_ == 3 && move_id != data::move_id::CHARGE {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.set_charged(false);
-                }
+                self.end_charge(actor_side, actor_slot);
             }
             return;
         }
@@ -9805,6 +9803,7 @@ self.trigger_emergency_exits();
         }
 
         self.apply_after_hit_hazards(actor_side, actor_slot, move_id, m, any_damage_dealt);
+        self.apply_partial_trap(actor_side, actor_slot, move_id, m, any_damage_dealt, hit_target);
         self.apply_self_effects(
             actor_side,
             actor_slot,
@@ -9826,6 +9825,72 @@ self.trigger_emergency_exits();
             drag_target,
             hit_target,
         );
+    }
+
+    /// Partial-trapping moves' volatile (`volatileStatus: 'partiallytrapped'`),
+    /// applied in the hit's moveHit before the DamagingHit reactions and
+    /// AfterMoveSecondarySelf (Life Orb) (data/conditions.ts:225-247).
+    fn apply_partial_trap(&mut self, actor_side: SideRef, actor_slot: u8, move_id: u16, m: &data::MoveDef, any_damage_dealt: u16, hit_target: Option<(SideRef, u8)>) {
+        if any_damage_dealt > 0
+            && matches!(
+                move_id,
+                data::move_id::WHIRLPOOL | data::move_id::WRAP | data::move_id::BIND
+                    | data::move_id::FIRESPIN | data::move_id::SANDTOMB
+                    | data::move_id::MAGMASTORM | data::move_id::INFESTATION
+                    | data::move_id::CLAMP | data::move_id::SNAPTRAP
+                    | data::move_id::THUNDERCAGE
+            )
+        {
+            // The volatile goes on the target the hit connected with; its
+            // durationCallback (random(5, 7)) only runs when it is added.
+            if let Some((ts, tslot)) = hit_target {
+                let trappable = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
+                });
+                if trappable {
+                    let dur = 5 + self.rng.range(2) as u32; // timer 5 or 6
+                    let src_team = self.side(actor_side).active[actor_slot as usize] as u32;
+                    let payload = dur
+                        | ((actor_side as u8 as u32) << 8)
+                        | ((actor_slot as u32) << 16)
+                        | (src_team << 24);
+                    if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                        let _ = t.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::PartialTrap,
+                            turns_remaining: 0,
+                            payload,
+                        });
+                    }
+                    // partiallytrapped onStart (data/conditions.ts:229-232),
+                    // in the hit's moveHit effects.
+                    if self.plog() {
+                        self.p_set_hit(0);
+                        self.p_tag(crate::protocol::step::EFFECTS, ts, tslot);
+                        let idx = self.side(ts).active[tslot as usize] as usize;
+                        if let Some(l) = self.protocol.log_mut() {
+                            if idx < 6 {
+                                l.trap_move[ts as usize][idx] = move_id;
+                            }
+                        }
+                        let of = self.p_ident(actor_side, actor_slot);
+                        pmon!(self, "-activate", ts, tslot, "|move: {}|[of] {of}", m.name);
+                    }
+                }
+            }
+        }
+
+    }
+
+    /// charge onAfterMove: removeVolatile('charge'), whose onEnd prints a
+    /// silent `-end` (data/conditions.ts charge).
+    fn end_charge(&mut self, side: SideRef, slot: u8) {
+        let was = self.side(side).active_mon(slot as usize).is_some_and(|a| a.is_charged());
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.set_charged(false);
+        }
+        if was {
+            pmon!(self, "-end", side, slot, "|Charge|[silent]");
+        }
     }
 
     /// Ceaseless Edge / Stone Axe hazards: their onAfterHit runs inside the
@@ -11640,7 +11705,7 @@ self.trigger_emergency_exits();
         m: &data::MoveDef,
         any_damage_dealt: u16,
         drag_target: Option<(SideRef, u8)>,
-        hit_target: Option<(SideRef, u8)>,
+        _hit_target: Option<(SideRef, u8)>,
     ) {
         // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
         // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
@@ -11662,50 +11727,7 @@ self.trigger_emergency_exits();
         // 5 chips (`eot_partial_trap`). Single-target moves; we apply to the
         // first alive opposing slot the engine actually dealt damage
         // to (mirrors PS's "applied to the hit target").
-        if any_damage_dealt > 0
-            && matches!(
-                move_id,
-                data::move_id::WHIRLPOOL | data::move_id::WRAP | data::move_id::BIND
-                    | data::move_id::FIRESPIN | data::move_id::SANDTOMB
-                    | data::move_id::MAGMASTORM | data::move_id::INFESTATION
-                    | data::move_id::CLAMP | data::move_id::SNAPTRAP
-                    | data::move_id::THUNDERCAGE
-            )
-        {
-            // The volatile goes on the target the hit connected with; its
-            // durationCallback (random(5, 7)) only runs when it is added.
-            if let Some((ts, tslot)) = hit_target {
-                let trappable = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
-                    t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
-                });
-                if trappable {
-                    let dur = 5 + self.rng.range(2) as u32; // timer 5 or 6
-                    let src_team = self.side(actor_side).active[actor_slot as usize] as u32;
-                    let payload = dur
-                        | ((actor_side as u8 as u32) << 8)
-                        | ((actor_slot as u32) << 16)
-                        | (src_team << 24);
-                    if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
-                        let _ = t.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::PartialTrap,
-                            turns_remaining: 0,
-                            payload,
-                        });
-                    }
-                    // partiallytrapped onStart (data/conditions.ts:229-232).
-                    if self.plog() {
-                        let idx = self.side(ts).active[tslot as usize] as usize;
-                        if let Some(l) = self.protocol.log_mut() {
-                            if idx < 6 {
-                                l.trap_move[ts as usize][idx] = move_id;
-                            }
-                        }
-                        let of = self.p_ident(actor_side, actor_slot);
-                        pmon!(self, "-activate", ts, tslot, "|move: {}|[of] {of}", m.name);
-                    }
-                }
-            }
-        }
+        // (Partial trapping: `apply_partial_trap`, inside the hit.)
 
         // Rapid Spin / Mortal Spin — PS `data/moves.ts:rapidspin` /
         // `mortalspin` `onAfterHit` (+ `onAfterSubDamage` for Substitute
@@ -11770,9 +11792,7 @@ self.trigger_emergency_exits();
             m.type_ == 3
         };
         if fired_electric {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.set_charged(false);
-            }
+            self.end_charge(actor_side, actor_slot);
         }
 
         // A hit Disguise absorbed (0 move damage) still counts as a hit:
@@ -20728,7 +20748,13 @@ self.trigger_emergency_exits();
                     }
                 }
                 if is_life_dew && self.plog() {
+                    // A failed heal adds `[still]`; with every target failed the
+                    // move fails too (a second `[still]`) and `[spread]` lists
+                    // no slot, else it lists every target (sim/battle-actions.ts:618).
                     let n_t = dew.iter().flatten().count();
+                    let n_ok = dew.iter().flatten().filter(|&&h| h).count();
+                    let s = actor_side as u8 + 1;
+                    let mut slots: Vec<String> = Vec::new();
                     let mut still = false;
                     for (slot, healed) in dew.iter().enumerate() {
                         match healed {
@@ -20739,12 +20765,16 @@ self.trigger_emergency_exits();
                                 }
                                 pmon!(self, "-fail", actor_side, slot as u8, "|heal");
                             }
-                            None => {}
+                            None => continue,
                         }
+                        slots.push(format!("p{s}{}", if slot == 0 { 'a' } else { 'b' }));
                     }
                     if n_t > 1 {
-                        let s = actor_side as u8 + 1;
-                        self.p_attr(&format!("[spread] p{s}a,p{s}b"));
+                        if n_ok == 0 {
+                            self.p_attr("[still]");
+                            slots.clear();
+                        }
+                        self.p_attr(&format!("[spread] {}", slots.join(",")));
                     }
                 }
             }
@@ -22556,8 +22586,10 @@ fn apply_secondary_effect(
         let _ = rng.percent_1_100();
         let mut started = false;
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-            if t.is_alive() {
-                started = t.throat_chop_turns() == 0;
+            // addVolatile on a mon that already has it does nothing (the
+            // condition has no onRestart): the lockout is not refreshed.
+            if t.is_alive() && t.throat_chop_turns() == 0 {
+                started = true;
                 t.set_throat_chop(2);
             }
         }

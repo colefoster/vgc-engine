@@ -193,7 +193,7 @@ impl Battle {
                                 m.encore_turns() == 1 || m.pp.get(locked).copied().unwrap_or(0) == 0
                             }),
                             V::ThroatChop => (22, m.throat_chop_turns() == 1),
-                            V::PartialTrap => (13, v.turns_remaining <= 1),
+                            V::PartialTrap => (13, (v.payload & 0xFF) <= 1),
                             V::Octolock => (14, false),
                             // stall: duration 2, refreshed by each use
                             // (data/conditions.ts stall).
