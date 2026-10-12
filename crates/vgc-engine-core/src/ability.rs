@@ -2620,6 +2620,17 @@ pub fn on_damaging_hit(
             {
                 t.ability_override = attacker_id;
             }
+            // battle.skillSwap(source = attacker, target = holder)
+            // (sim/battle.ts:1325-1332).
+            if battle.plog() {
+                let of = battle.p_ident(target_side, target_slot);
+                if attacker_side == target_side {
+                    pmon!(battle, "-activate", attacker_side, attacker_slot, "|Skill Swap|||[of] {of}");
+                    battle.p_push("|-hint|Skill Swap does not announce the abilities of the Pokémon when used between allies.".to_string());
+                } else {
+                    pmon!(battle, "-activate", attacker_side, attacker_slot, "|Skill Swap|{}|{}|[of] {of}", crate::battle_protocol::ability_name(target_id), crate::battle_protocol::ability_name(attacker_id));
+                }
+            }
         }
     }
 }

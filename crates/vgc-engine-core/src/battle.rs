@@ -10628,6 +10628,8 @@ self.trigger_emergency_exits();
                 && capped >= def_cur
             {
                 capped = def_cur - 1;
+                // sturdy onDamage (data/abilities.ts sturdy).
+                pmon!(self, "-ability", ctx.tside, ctx.tslot, "|Sturdy");
             }
             // Endure volatile — PS `data/moves.ts` (Endure's volatile
             //   onDamagePriority: -10,
@@ -12996,10 +12998,6 @@ self.trigger_emergency_exits();
         // useMoveInner's `|move|` (sim/battle-actions.ts:457), held pending:
         // Focus Punch's beforeMoveCallback and Gravity's BeforeMove print
         // their `cant` before it, so they cancel it.
-        // chillyreception's onBeforeMove `-prepare` (data/moves.ts:2413-2416).
-        if move_id == data::move_id::CHILLYRECEPTION {
-            pmon!(self, "-prepare", actor_side, actor_slot, "|Chilly Reception|[premajor]");
-        }
         self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
         if matches!(
             move_id,
@@ -13397,6 +13395,11 @@ self.trigger_emergency_exits();
         // onBeforeMove, so full paralysis / sleep / freeze can't zero it.
         if self.force_move_gate_ok {
             return PreMoveOutcome::Proceed;
+        }
+        // chillyreception's onBeforeMove (priority 100) prints `-prepare`
+        // ahead of every other BeforeMove handler (data/moves.ts:2410-2416).
+        if move_id == data::move_id::CHILLYRECEPTION {
+            pmon!(self, "-prepare", actor_side, actor_slot, "|Chilly Reception|[premajor]");
         }
         // PS runs these as BeforeMove handlers in priority order
         // (sim/battle.ts runEvent, highest first) and stops at the first
