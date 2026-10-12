@@ -380,6 +380,9 @@ async function runBattle(job, maxTurns) {
   // `update` chunks with |split| resolved for that side, and that side's
   // `sideupdate` chunks (|request|, |error|), in arrival order.
   const playerChunks = { p1: [], p2: [] };
+  // Every choice string each side wrote, rejected ones included, in order
+  // (the session replay feeds them back).
+  const cmds = { p1: [], p2: [] };
   const spectatorChunks = [];
   const drainSpec = (async () => {
     for await (const chunk of sides.spectator) spectatorChunks.push(chunk);
@@ -408,6 +411,7 @@ async function runBattle(job, maxTurns) {
           const cmd = pickers[sideId](lastReq, -1, lastPhase);
           const last = choiceLog.findLastIndex((c) => c.side === sideId);
           if (last >= 0) { choiceLog[last].cmd = cmd; choiceLog[last].eng = engineCmd(sideId, cmd, lastReq); }
+          cmds[sideId].push(cmd);
           s.write(cmd);
           void turn;
         }
@@ -420,7 +424,9 @@ async function runBattle(job, maxTurns) {
       try { req = JSON.parse(reqLine.slice(9)); } catch (_) { continue; }
       if (!req || req.wait) continue;
       if (req.teamPreview) {
-        s.write('team ' + Array.from({ length: req.side.pokemon.length }, (_, i) => i + 1).join(''));
+        const tcmd = 'team ' + Array.from({ length: req.side.pokemon.length }, (_, i) => i + 1).join('');
+        cmds[sideId].push(tcmd);
+        s.write(tcmd);
         continue;
       }
       const b = stream.battle;
@@ -438,6 +444,7 @@ async function runBattle(job, maxTurns) {
       lastReq = req;
       lastPhase = phase;
       choiceLog.push({ side: sideId, turn, phase, cmd, eng: engineCmd(sideId, cmd, req) });
+      cmds[sideId].push(cmd);
       s.write(cmd);
     }
   }
@@ -522,6 +529,7 @@ async function runBattle(job, maxTurns) {
       log: logChunks.join('\n'),
       rawlog: rawLog,
       streams: { p1: playerChunks.p1, p2: playerChunks.p2, spectator: spectatorChunks, omniscient: logChunks },
+      cmds,
     },
   };
 }
