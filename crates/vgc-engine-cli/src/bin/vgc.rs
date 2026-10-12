@@ -195,6 +195,74 @@ enum Command {
         #[arg(long)]
         spread: bool,
     },
+
+    /// Play one seeded random-choice battle and print its Pokémon Showdown
+    /// protocol log: `vgc battle <p1-team> <p2-team> --protocol ps`. Teams
+    /// are JSON or Showdown exports. See docs/protocol.md.
+    Battle {
+        p1: String,
+        p2: String,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// `doubles`, `singles`, or a PS format id (e.g. gen9championsvgc2026regmc).
+        #[arg(long, default_value = "doubles")]
+        format: String,
+        /// Log flavour: `ps` (byte-exact) or `compact` (no cosmetic lines).
+        #[arg(long, default_value = "ps")]
+        protocol: String,
+        /// Whose view: omniscient | spectator | p1 | p2.
+        #[arg(long, default_value = "omniscient")]
+        view: String,
+        #[arg(long, default_value_t = 200)]
+        max_turns: u32,
+    },
+}
+
+/// A team file: JSON (`[` / `{`) or a Showdown export.
+fn load_team(path: &str, champions: bool) -> Result<Vec<vgc_engine_core::Pokemon>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    if text.trim_start().starts_with(['[', '{']) {
+        vgc_engine_core::TeamBuilder::from_json_in(&text, champions).map_err(|e| format!("parse {path}: {e}"))
+    } else {
+        vgc_engine_core::TeamBuilder::from_showdown_text(&text).map_err(|e| format!("parse {path}: {e}"))
+    }
+}
+
+/// `vgc battle`: random legal choices from a seeded picker, then the log.
+fn run_battle(p1: &str, p2: &str, seed: u64, format_id: &str, protocol: &str, view: &str, max_turns: u32) -> Result<ExitCode, String> {
+    use vgc_engine_core as core;
+    let mode = core::ProtocolMode::parse(protocol).ok_or_else(|| format!("--protocol: {protocol} (ps | compact)"))?;
+    let view = core::ProtocolView::parse(view).ok_or_else(|| format!("--view: {view} (omniscient | spectator | p1 | p2)"))?;
+    let id = format_id.to_ascii_lowercase();
+    let doubles = id == "doubles" || core::format_rules::rules_for(&id).is_some() || id.contains("doubles") || id.contains("vgc");
+    let fmt = if doubles { core::Format::Doubles } else { core::Format::Singles };
+    let champions = matches!(id.as_str(), "doubles" | "singles") || core::format_rules::is_champions_format(&id);
+    let (t1, t2) = (load_team(p1, champions)?, load_team(p2, champions)?);
+    let opts = core::ProtocolOptions::new(mode);
+    let cfg = core::BattleConfig { format: fmt, seed };
+    let mut b = core::Battle::with_protocol(cfg, core::Rng::new(seed), t1, t2, &opts, &id, None);
+    b.champions = champions;
+    let mut picker = core::Rng::new(seed ^ 0xA5A5_A5A5_5A5A_5A5A);
+    let mut lc: Vec<core::Choice> = Vec::new();
+    for _ in 0..max_turns {
+        let mut pick = |side: core::SideRef, b: &core::Battle| -> Vec<core::Choice> {
+            (0..fmt.active_count())
+                .map(|slot| {
+                    b.legal_choices_into(side, slot as u8, &mut lc);
+                    lc[picker.range(lc.len() as u32) as usize]
+                })
+                .collect()
+        };
+        let c1 = pick(core::SideRef::P1, &b);
+        let c2 = pick(core::SideRef::P2, &b);
+        if matches!(b.step(&c1, &c2), core::StepResult::Ended { .. }) {
+            break;
+        }
+    }
+    for line in b.protocol_view(view).unwrap_or_default() {
+        println!("{line}");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn parse_weather(s: &str) -> Result<Weather, String> {
@@ -275,6 +343,9 @@ fn format_result(
 fn run() -> Result<ExitCode, String> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Battle { p1, p2, seed, format, protocol, view, max_turns } => {
+            run_battle(&p1, &p2, seed, &format, &protocol, &view, max_turns)
+        }
         Command::Calc {
             attacker,
             defender,

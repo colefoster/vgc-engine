@@ -255,7 +255,8 @@ impl Battle {
     }
 
     fn protocol_champions(&self) -> bool {
-        self.protocol.log().map(|l| l.champions_hp).unwrap_or(self.champions)
+        // A caller may switch Champions rules on after construction.
+        self.champions || self.protocol.log().is_some_and(|l| l.champions_hp)
     }
 
     /// A line carrying a health field: `|tag|<ident>|<hp>{suffix}` as a
@@ -1647,5 +1648,92 @@ impl Battle {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::battle::{Battle, BattleConfig, StepResult};
+    use crate::choice::Choice;
+    use crate::format::Format;
+    use crate::protocol::{ProtocolMode, ProtocolOptions, ProtocolView};
+    use crate::rng::Rng;
+    use crate::side::SideRef;
+    use crate::team::TeamBuilder;
+
+    const P1: &str = r#"[{"species":"garchomp","level":50,"item":"lifeorb","ability":"roughskin","moves":["earthquake","dragonclaw","protect","rockslide"]},
+        {"species":"incineroar","level":50,"item":"sitrusberry","ability":"intimidate","moves":["fakeout","flareblitz","partingshot","knockoff"]},
+        {"species":"rillaboom","level":50,"item":"miracleseed","ability":"grassysurge","moves":["woodhammer","fakeout","uturn","grassyglide"]}]"#;
+    const P2: &str = r#"[{"species":"tyranitar","level":50,"item":"leftovers","ability":"sandstream","moves":["rockslide","crunch","protect","lowkick"]},
+        {"species":"amoonguss","level":50,"item":"rockyhelmet","ability":"regenerator","moves":["spore","ragepowder","pollenpuff","protect"]},
+        {"species":"dragapult","level":50,"item":"choicespecs","ability":"clearbody","moves":["shadowball","dracometeor","uturn","flamethrower"]}]"#;
+
+    /// Play the same seeded random battle with and without a log.
+    fn play(proto: Option<ProtocolMode>) -> Battle {
+        let cfg = BattleConfig { format: Format::Doubles, seed: 11 };
+        let (p1, p2) = (TeamBuilder::from_json(P1).unwrap(), TeamBuilder::from_json(P2).unwrap());
+        let mut b = match proto {
+            None => Battle::new(cfg, p1, p2),
+            Some(mode) => {
+                let opts = ProtocolOptions { timestamp: Some(1), ..ProtocolOptions::new(mode) };
+                Battle::with_protocol(cfg, Rng::new(11), p1, p2, &opts, "doubles", None)
+            }
+        };
+        let mut picker = Rng::new(5);
+        let mut lc: Vec<Choice> = Vec::new();
+        for _ in 0..30 {
+            let mut pick = |side, b: &Battle| -> Vec<Choice> {
+                (0..2)
+                    .map(|slot| {
+                        b.legal_choices_into(side, slot, &mut lc);
+                        lc[picker.range(lc.len() as u32) as usize]
+                    })
+                    .collect()
+            };
+            let (c1, c2) = (pick(SideRef::P1, &b), pick(SideRef::P2, &b));
+            if matches!(b.step(&c1, &c2), StepResult::Ended { .. }) {
+                break;
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn logging_does_not_change_the_battle_or_its_snapshots() {
+        let plain = play(None);
+        let logged = play(Some(ProtocolMode::Ps));
+        assert!(logged.protocol_log().is_some_and(|l| l.raw_lines().len() > 20));
+        // The log is `#[serde(skip)]`: snapshots are byte-identical.
+        assert_eq!(serde_json::to_string(&plain).unwrap(), serde_json::to_string(&logged).unwrap());
+        // Clones (search, solver) never carry it.
+        assert!(logged.clone().protocol_log().is_none());
+        assert!(plain.protocol_log().is_none());
+    }
+
+    #[test]
+    fn compact_drops_only_cosmetic_lines() {
+        let ps = play(Some(ProtocolMode::Ps)).protocol_view(ProtocolView::Omniscient).unwrap();
+        let compact = play(Some(ProtocolMode::Compact)).protocol_view(ProtocolView::Omniscient).unwrap();
+        let kept: Vec<&String> = ps.iter().filter(|l| !crate::protocol::is_cosmetic(l)).collect();
+        assert_eq!(compact.iter().collect::<Vec<_>>(), kept);
+        assert!(compact.iter().all(|l| !l.starts_with("|t:|") && l != "|" && !l.starts_with("|player|")));
+        assert!(compact.iter().any(|l| l.starts_with("|move|")));
+    }
+
+    #[test]
+    fn side_views_show_exact_hp_only_to_its_side() {
+        let b = play(Some(ProtocolMode::Ps));
+        let spectator = b.protocol_view(ProtocolView::Spectator).unwrap();
+        let p1 = b.protocol_view(ProtocolView::P1).unwrap();
+        assert!(spectator.iter().all(|l| !l.starts_with("|split|")));
+        // An exact `hp/maxhp` (not a `/100` percentage) on a side's mon.
+        let exact = |l: &str, side: &str| {
+            l.starts_with("|switch|")
+                && l.contains(&format!("|{side}"))
+                && l.split('|').nth(4).is_some_and(|h| h.contains('/') && !h.contains("/100"))
+        };
+        assert!(p1.iter().any(|l| exact(l, "p1")));
+        assert!(!p1.iter().any(|l| exact(l, "p2")));
+        assert!(!spectator.iter().any(|l| exact(l, "p1") || exact(l, "p2")));
     }
 }
