@@ -530,11 +530,28 @@ impl Battle {
             ..crate::damage::DamageContext::default()
         };
         let move_type = crate::damage::move_type_in_ctx(attacker, move_id, &ctx);
-        let eff = if move_type < 18 {
+        let mut eff = if move_type < 18 {
             crate::damage::effectiveness_for_attack(attacker, move_id, move_type, defender)
         } else {
             TypeEff::Neutral
         };
+        // An intact Disguise makes the hit neutral and never a crit
+        // (data/abilities.ts:979-1001; breakable).
+        let mut crit = crit;
+        let breaks_mold = matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        );
+        if !breaks_mold
+            && !defender.disguise_busted
+            && defender.effective_ability_id() == data::ability_id::DISGUISE
+            && matches!(defender.species_id, data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM)
+            && defender.substitute_hp() == 0
+            && eff != TypeEff::Immune
+        {
+            eff = TypeEff::Neutral;
+            crit = false;
+        }
         let champ = self.protocol.log().is_some_and(|l| l.champions_hp);
         match eff {
             TypeEff::DoubleX | TypeEff::QuadrupleX => {
@@ -881,7 +898,9 @@ impl Battle {
             return;
         }
         self.p_res_handler_end();
-        self.p_faint_messages();
+        if !self.protocol.log_mut().is_some_and(|l| std::mem::take(&mut l.res_defer_faint)) {
+            self.p_faint_messages();
+        }
         if let Some(l) = self.protocol.log_mut() {
             let spd = match mon {
                 Some((s, sl)) => l.res_speed[s as usize][(sl as usize).min(1)],
@@ -1427,10 +1446,28 @@ impl Battle {
         }
         let rank = self.p_rank(side, slot);
         if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
-            w.key = (w.hit as u32) << 16 | (step as u32) << 8 | (rank as u32) << 4;
+            // runEvent('TryHit') sorts every target's handlers by priority
+            // first: the priority class is the major nibble, then the rank.
+            w.key = if step == crate::protocol::step::TRYHIT {
+                (w.hit as u32) << 16 | (step as u32) << 8 | 2 << 4 | rank as u32
+            } else {
+                (w.hit as u32) << 16 | (step as u32) << 8 | (rank as u32) << 4
+            };
             if step == crate::protocol::step::CALC {
                 w.hit_ranks |= 1 << rank;
             }
+        }
+    }
+
+    /// A TryHit line from a handler with `onTryHitPriority` (class 0 =
+    /// Psychic Terrain's 4, 1 = Protect's 3; default handlers are class 2).
+    pub(crate) fn p_tag_tryhit(&mut self, class: u8, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let rank = self.p_rank(side, slot);
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.key = (w.hit as u32) << 16 | (crate::protocol::step::TRYHIT as u32) << 8 | (class as u32) << 4 | rank as u32;
         }
     }
 
