@@ -258,6 +258,13 @@ impl Battle {
     /// PS `faintMessages` (sim/battle.ts:2535): `|faint|` for every queued
     /// mon, then the win check.
     pub(crate) fn p_faint_messages(&mut self) {
+        self.p_faint_messages_win(true);
+    }
+
+    /// `faintMessages(..., checkWin)`: the hit loop's end passes
+    /// `!pokemon.hp` (data/mods/champions/scripts.ts:547), so a KO by a
+    /// surviving attacker only wins after its recoil / Life Orb.
+    pub(crate) fn p_faint_messages_win(&mut self, check_win: bool) {
         if !self.plog() {
             return;
         }
@@ -296,6 +303,21 @@ impl Battle {
             }
             last = Some(side);
         }
+        if let Some(l) = self.protocol.log_mut() {
+            l.last_faint = last.map(|s| s as u8);
+        }
+        if check_win {
+            self.p_check_win(last);
+        }
+    }
+
+    /// runMove's closing `faintMessages(); checkWin();` (sim/battle-actions.ts:347-348).
+    pub(crate) fn p_move_end_win_check(&mut self) {
+        if !self.plog() {
+            return;
+        }
+        self.p_faint_messages();
+        let last = self.protocol.log().and_then(|l| l.last_faint).map(|s| if s == 0 { SideRef::P1 } else { SideRef::P2 });
         self.p_check_win(last);
     }
 
@@ -476,7 +498,12 @@ impl Battle {
         }
         self.p_set_hit(255);
         self.p_tag_step(crate::protocol::step::LOOP_FAINT);
-        self.p_faint_messages();
+        let user_down = self
+            .protocol
+            .log()
+            .and_then(|l| l.cur_user)
+            .is_some_and(|(s, sl)| !self.side(if s == 0 { SideRef::P1 } else { SideRef::P2 }).active_mon(sl as usize).is_some_and(|m| m.is_alive()));
+        self.p_faint_messages_win(user_down);
         self.p_tag_step(crate::protocol::step::HITCOUNT);
         if let Some((s, sl, n)) = self.protocol.log_mut().and_then(|l| l.hitcount.take()) {
             let side = if s == 0 { SideRef::P1 } else { SideRef::P2 };
@@ -543,15 +570,12 @@ impl Battle {
         }
     }
 
-    /// The side of the mon whose `|move|` line is the last one.
+    /// The side of the mon whose move is running.
     fn p_user_side(&self) -> SideRef {
-        let line = self
-            .protocol
-            .log()
-            .and_then(|l| l.last_move_line.and_then(|i| l.lines.get(i)).or(l.pending_move.as_ref()))
-            .map(String::as_str)
-            .unwrap_or("|move|p1");
-        if line.starts_with("|move|p2") { SideRef::P2 } else { SideRef::P1 }
+        match self.protocol.log().and_then(|l| l.cur_user) {
+            Some((1, _)) => SideRef::P2,
+            _ => SideRef::P1,
+        }
     }
 
     /// A status move's missed accuracy roll (`-miss`, `[miss]`).
@@ -740,7 +764,7 @@ impl Battle {
         if let Some(l) = self.protocol.log_mut() {
             let spd = l.res_speed[side as usize][(slot as usize).min(1)];
             if let Some(w) = l.window.as_deref_mut() {
-                w.key = (order as u32) << 24 | (255 - 150) << 16 | ((sub as u32 + (255 - spd as u32) / 2).min(255)) << 8;
+                w.key = (order as u32) << 24 | (255 - 150) << 16 | (sub as u32) << 8 | (255 - spd as u32);
             }
         }
     }
@@ -898,6 +922,29 @@ impl Battle {
         );
         if announce {
             pmon!(self, "-ability", side, slot, "|{}", ability_name(ability));
+        }
+        // frisk onStart (data/abilities.ts frisk): each foe's item.
+        if ability == a::FRISK {
+            let foe = side.opposing();
+            for s in 0..self.format().active_count().min(2) as u8 {
+                let item = self.side(foe).active_mon(s as usize).filter(|m| m.is_alive()).map_or(u16::MAX, |m| m.item_id);
+                if item != u16::MAX {
+                    let of = self.p_ident(side, slot);
+                    pmon!(self, "-item", foe, s, "|{}|[from] ability: Frisk|[of] {of}", item_name(item));
+                }
+            }
+        }
+    }
+
+    /// Air Balloon's onStart (data/items.ts airballoon): announced with
+    /// the holder's own switch-in (same priority as abilities, next by
+    /// subOrder).
+    pub(crate) fn p_air_balloon(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() || self.gravity_turns > 0 {
+            return;
+        }
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive() && m.effective_item_id() == data::item_id::AIRBALLOON) {
+            pmon!(self, "-item", side, slot, "|Air Balloon");
         }
     }
 
@@ -1077,6 +1124,7 @@ impl Battle {
             l.flush_pending_move();
             l.pending_move = Some(line);
             l.since_move = 0;
+            l.cur_user = Some((side as u8, slot));
             l.active_move = move_id;
             l.last_move[side as usize][(slot as usize).min(1)] = move_id;
         }
@@ -1091,10 +1139,15 @@ impl Battle {
 
     /// The end of a move action: write any held `|move|` line.
     pub(crate) fn p_action_end(&mut self) {
+        let was_move = self.protocol.log().is_some_and(|l| l.active_move != u16::MAX || l.pending_move.is_some());
         if let Some(l) = self.protocol.log_mut() {
             l.flush_pending_move();
             l.window_close();
             l.active_move = u16::MAX;
+            l.cur_user = None;
+        }
+        if was_move {
+            self.p_move_end_win_check();
         }
     }
 
