@@ -10857,12 +10857,15 @@ self.trigger_emergency_exits();
         let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
     }
 
-    /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975):
-    /// Sticky Hold and a holder's own Mega Stone keep the item.
-    fn knock_off_take_item(&mut self, side: SideRef, slot: u8) {
-        let can_knock = self.side(side).active_mon(slot as usize)
-            .is_some_and(|m| m.is_alive()
-                && m.effective_ability_id() != data::ability_id::STICKYHOLD
+    /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975),
+    /// which needs `source.hp`: a holder's own Mega Stone keeps the item, and
+    /// so does Sticky Hold while its holder has HP (data/abilities.ts
+    /// stickyhold onTakeItem `if (!pokemon.hp ...) return`). A target the hit
+    /// knocked out still loses its item.
+    fn knock_off_take_item(&mut self, side: SideRef, slot: u8, user_side: SideRef, user_slot: u8) {
+        let user_up = self.side(user_side).active_mon(user_slot as usize).is_some_and(|a| a.current_hp > 0);
+        let can_knock = user_up && self.side(side).active_mon(slot as usize)
+            .is_some_and(|m| (!m.is_alive() || m.effective_ability_id() != data::ability_id::STICKYHOLD)
                 && !m.holds_own_mega_stone());
         if can_knock {
             if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -11317,7 +11320,7 @@ self.trigger_emergency_exits();
         if !hit_sub && ctx.move_id == data::move_id::KNOCKOFF {
             self.p_tag(crate::protocol::step::AFTER_HIT, ctx.tside, ctx.tslot);
             let item_before = self.side(ctx.tside).active_mon(ctx.tslot as usize).map_or(u16::MAX, |t| t.item_id);
-            self.knock_off_take_item(ctx.tside, ctx.tslot);
+            self.knock_off_take_item(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot);
             // knockoff onAfterHit (data/moves.ts knockoff): takeItem works on
             // a target the hit knocked out too.
             let knocked = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
