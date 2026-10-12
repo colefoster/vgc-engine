@@ -51,6 +51,7 @@ mod battle_protocol;
 mod protocol_residual;
 pub mod ps_request;
 pub mod ps_session;
+pub mod ps_observe;
 pub mod protocol;
 pub mod calc;
 pub mod canonical_hash;
