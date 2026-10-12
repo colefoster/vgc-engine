@@ -2,10 +2,16 @@
 
 vgc-engine can write the battle log Pokémon Showdown writes: the same lines,
 in the same order, byte for byte, including the `|split|` pairs that give
-each side its own view. This is phase 1 of making the engine a local
-drop-in for PS. Phase 2 adds per-side `|request|` JSON and partial
-observations in Python. Phase 3 adds a BattleStream-compatible stdio front
-end. Both build on the log described here.
+each side its own view (phase 1). It also produces each side's `|request|`
+JSON and the per-player streams PS's BattleStream delivers, takes choices
+in PS syntax, and builds a player's partial observation from its own stream
+(phase 2, [Requests, streams and sessions](#requests-streams-and-sessions)).
+Phase 3 adds a BattleStream-compatible stdio front end on top.
+
+**Model input.** A model that should see only its own player's view must
+read `Battle.observe(side)` (or `player_stream(side)` / `request(side)`),
+never `Battle.observe()`. `observe()` is the full engine state, both teams
+exact. See [Observations](#observations).
 
 The log is opt-in. A battle built without it carries no log, allocates
 nothing for it, and only runs a null check at each hook (see
@@ -201,19 +207,179 @@ with `default-features = false` to compile every hook out. Without the
 feature, `ProtoSlot::on()` is constant `false`. The workspace crates and
 the Python wheel build with the feature on.
 
-## What phases 2 and 3 still need
+Phase 2 adds three null-checked hooks (the stop after each `step`, the
+mid-turn stop, the randomNormal target pick) and builds requests only at
+stops. `ps-protocol-2` vs main (`91a9fd5`), 6 interleaved runs: ~452.9k vs
+~451.8k steps/s, 0 allocations per step for both.
 
-- **Per-side `|request|` JSON.** PS's request shape covers active moves
-  with PP, disabled and target fields, side pokemon with details,
-  condition, stats, item, ability and tera type, `forceSwitch` / `wait`,
-  team preview and `rqid`. The engine exposes legal choices but not this
-  shape. The side views above are the observation half.
-- **Choice parsing and errors.** `>p1 move 1 2, switch 3` parsing,
-  `|error|` replies, and team preview / mid-turn switch requests (the
-  engine's `decision_phases` mode has the hooks).
-- **Stream framing.** `update` / `sideupdate` / `end` blocks for a
-  BattleStream-compatible stdio front end.
+## Requests, streams and sessions
+
+### Python
+
+```python
+b = vgc_engine.Battle.from_teams(p1_json, p2_json, format="gen9championsvgc2026regmc",
+                                 seed=7, ps_session=True, player_names=("Alice", "Bob"))
+while not b.ended:
+    for side in ("p1", "p2"):
+        req = b.request(side)          # PS |request| JSON, or None (nothing to choose)
+        if req is None:
+            continue
+        err = b.choose(side, pick(req))  # "team 1234", "move 1 2, switch 3", "move 2 terastallize", "pass", "default"
+        if err:                          # PS's exact text: "|error|[Invalid choice] Can't move: ..."
+            ...
+lines = b.player_stream("p1", since=0)   # p1's stream: updates (p1's secrets), its |request|s and |error|s
+obs = b.observe("p1")                    # partial observation, from p1's stream only
+```
+
+`ps_session=True` implies `protocol="ps"`. The battle starts at team
+preview when the format has one (Champions, gen 9 custom games). Both sides
+answer each request; when the last one does, the battle runs to the next
+request. `request(side)` is `None` for a `wait` request, after the side's
+choice was accepted, and once the battle is over (`b.ended`). A side may
+re-choose before the other side answers (Cancel Mod). `player_stream`
+takes `"p1"`, `"p2"`, `"spectator"` or `"omniscient"` (or 0 / 1) and a line
+offset; `player_chunks` returns whole chunks (one per PS `update` /
+`sideupdate`). `force_tie()` is PS's `>forcetie`. `step_*` raise on a
+session battle; `observe()`, `legal_choices`, `protocol_log` etc. read the
+committed state (the turn's start while a mid-turn request is open).
+
+### Rust
+
+`Battle::protocol_log().unwrap().sync_points()` lists every point PS stops
+for input, with both sides' requests (`requests[side]`, the JSON string;
+`info[side]`, the same request structured as `ps_request::SideReq`).
+`ProtocolLog::stream(view, upto)` renders PS's `getPlayerStreams` chunks.
+`ps_session::PsSession` is the choose/request driver the Python binding
+wraps; it takes a builder closure (team-preview picks -> `Battle`).
+
+### What matches PS
+
+- **Requests** (`ps_request.rs`): `getRequests` (sim/battle.ts:1418-1465),
+  `getSwitchRequestData` and `getMoveRequestData` (sim/pokemon.ts:1083-1196)
+  serialized as PS's `JSON.stringify` does: key order, `teamPreview` +
+  `maxChosenTeamSize`, `forceSwitch`, `wait`, `active[].moves[]` (`move`,
+  `id`, `pp`, `maxpp`, `target`, `disabled`; locked moves, Recharge and
+  Struggle in their short forms), `trapped` / `maybeTrapped` (Shadow Tag,
+  Arena Trap and Magnet Pull hidden on the last active, species-possible
+  trappers, Shed Shell), `maybeDisabled` / `maybeLocked` (Imprison),
+  `canMegaEvo`, `canTerastallize`, `side.pokemon[]` in PS's current order
+  (team-preview picks, switches, Ally Switch) with `ident`, `details`,
+  `condition`, `active`, `stats` (baseStoredStats), `moves`, `baseAbility`,
+  `item`, `pokeball`, `ability`, `commanding`, `reviving`, and `teraType` /
+  `terastallized` outside Champions. A fainted mon shows what PS's
+  clearVolatile leaves (base ability, base moves, no Tera, volatile-free
+  disables). `noCancel` follows Cancel Mod (only when one side is asked).
+  The simulator never writes `rqid` (PS's server adds it), so neither does
+  the engine.
+- **Streams**: each `update` with `|split|` resolved for the channel, then
+  each side's `|request|` (sim/battle.ts:3267-3274: update first, then the
+  requests; PS sends nothing when the log did not grow). The preamble's
+  first two updates are split where PS's `>start` / `>player p1` inputs
+  end.
+- **Choices** (`ps_session.rs`): a port of `Side.choose`, `chooseMove`,
+  `chooseSwitch` (number or name), `choosePass`, `chooseTeam`,
+  `chooseShift` and `autoChoose` (sim/side.ts:552-1378) against the request
+  the side was sent, error texts included: `[Invalid choice]`, and
+  `[Unavailable choice]` plus the updated request (`"update":true`) when a
+  choice runs into hidden information (a `maybeTrapped` mon that is
+  trapped, an Imprisoned move). `move N` names PS's request order;
+  `switch N` names PS's current side order.
+- **Mid-turn requests** (U-turn, Volt Switch, Parting Shot, Flip Turn,
+  Eject Button, Eject Pack, Emergency Exit, Revival Blessing): the engine
+  resolves a turn in one `step` with the picks given up front, so the
+  session replays the turn from its start with the picks made so far; the
+  first unanswered stop the replay records is where PS is waiting, and
+  the streams stop there. Replays are deterministic, so what a player
+  already saw never changes.
+
+### Observations
+
+`Battle.observe(side)` (`ps_observe.rs`) reads nothing but the side's
+stream and its requests:
+
+- **Own team**: the latest request's `side.pokemon` (exact HP, status,
+  stats, item, ability, base ability, all moves, Tera type) and the
+  actives' PP (`move_slots`); boosts and volatiles from the stream.
+- **Opponent**: species from team preview (`revealed: false` until a mon
+  switches in), then name, details and HP as the stream shows them (a
+  percentage: `max_hp` 100, `hp_exact` false), status, boosts, volatiles.
+  `moves` holds only moves the mon was seen using (`|move|`, a `cant`
+  naming one); `item` / `ability` are `None` until a line names them
+  (`-item`, `-enditem` -> `""`, `-ability`, `[from] item: X` / `[from]
+  ability: X` on the source mon, Frisk, Skill Swap, a Mega Stone);
+  `terastallized` once it Terastallizes.
+- **Field**: `weather`, `terrain`, `field` (pseudo-weathers), each side's
+  `conditions` (layers for hazards), `turn`, `ended`, `winner`, and the
+  side's raw `request`.
+
+This is the observation to feed a model that must not see hidden
+information. `observe()` (no side) is unchanged: the full engine state.
+
+## Phase 2 gate
+
+```sh
+node tools/accuracy/ps-battle.js <jobs.jsonl> <outdir>      # now also records _meta.streams and _meta.cmds
+ACC_THREADS=4 ./target/release/accuracy protocol <outdir>   # log + per-side requests + streams
+ACC_THREADS=4 ./target/release/accuracy session <outdir>    # PS's choice strings through PsSession
+```
+
+`protocol` compares each side's `|request|`s position by position (the
+harness's own rejected choices and their updated requests set aside) and
+every stream chunk by chunk, after the keyed replay. `session` feeds every
+choice string PS's players sent, rejected ones included, to a `PsSession`
+under the keyed RNG and compares its four streams with PS's, `|error|`
+lines and updated requests included. Results at `ps-protocol-2` head (PS
+`a5df8274`, Champions Reg M-C, state-clean battles):
+
+| Sample | Requests byte-identical | p1+p2 streams (log stops) | p1+p2 streams (session) |
+|---|---|---|---|
+| B (development) | **34505 / 34568 (99.82%)** | 1237 / 1287 (96.1%) | **1237 / 1287 (96.1%)** |
+| C (held out) | **34337 / 34348 (99.97%)** | 1228 / 1290 (95.2%) | **1229 / 1290 (95.3%)** |
+
+In both samples, every battle whose log is byte-identical also has
+byte-identical p1, p2, spectator and omniscient streams through the
+session, which rejects exactly the choices PS rejected, with PS's text. A gen 9 Doubles
+Custom Game set (40 random battles: Tera, Shadow Tag, Arena Trap, Shed
+Shell, U-turn, rejected choices) matches 1126 / 1126 requests; its stream
+updates carry the `|debug|` lines of a `debug` format, which the log does
+not write.
+
+The phase-2 request gate also found engine state bugs, fixed on this
+branch: Champions Night Slash PP, Knock Off on a knocked-out target,
+Pressure's PP targets, and a Choice item picked up mid-charge.
+
+### Remaining request divergences
+
+All below 0.5% of a sample (battles with a first mismatch):
+
+- **Cosmetic formes, 2 (B).** Alcremie-Salted-Cream shows as Alcremie (the
+  phase-1 `|poke|` bucket).
+- **Disabled flag, 1 (B) + 2 (C).** A move PS disabled at endTurn that the
+  engine's request still offers (an Encore / lock interaction).
+- **PP, 1 (C).** After You's PP under Pressure.
+- **One-offs, 1 battle each.** A `noCancel` where PS asked both sides, a
+  transformed mon's max PP after switching, an item PS had already
+  removed, a missing `forceSwitch`.
+
+Stream divergences beyond these are the phase-1 log buckets.
+
+## What phase 3 still needs
+
+- **Stdio framing.** A `simulate-battle`-compatible front end: `>start`,
+  `>player`, `>p1` / `>p2` lines in; `update`, `sideupdate` and `end`
+  blocks out. `PsSession` already produces the update / sideupdate chunks
+  in PS's order (`stream`); the front end must split `>player` options
+  (name, team in packed or JSON form, `seed`, `formatid`) and the `end`
+  block (winner, seed, turns, score, inputLog) the engine does not build.
+- **Undo / Cancel**: `>p1 undo` and re-choosing (Cancel Mod's
+  `cantUndo` after a `maybeTrapped` switch) are not modelled.
+- **Formats.** Team preview, `|tier|` and `|rule|` lines exist for the
+  Champions formats and gen 9 custom games. Other PS formats (VGC 2025
+  Reg I, ...) fall back to a custom-game preamble without team preview;
+  `|debug|` lines of debug formats are not written.
 - **PS randomness outside replay.** Speed-tie orders the engine doesn't
-  draw (residual handlers, eachEvent) follow field order, so logs are
-  self-consistent but not PS-identical unless PS's draws are supplied.
-  The `ps-rng` feature (PS's own PRNG) is the route to that.
+  draw (residual handlers, eachEvent) follow field order, and a Struggle
+  or other random-target move with no target hits the first foe rather
+  than a random one, so logs are self-consistent but not PS-identical
+  unless PS's draws are supplied. The `ps-rng` feature (PS's own PRNG) is
+  the route to that.
