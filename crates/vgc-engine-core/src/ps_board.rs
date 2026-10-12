@@ -585,6 +585,10 @@ pub fn position_from_board(board: &Value, sets: &Value, format_id: &str, own: Si
                 }
                 b.side_mut(side).conditions.tera_used = true;
             }
+            if m.fainted && i < 8 {
+                // A board's faints are history: their Faint event ran.
+                b.side_mut(side).conditions.faint_handled |= 1 << i;
+            }
             b.side_mut(side).team[i] = m;
         }
         if megas > 1 {

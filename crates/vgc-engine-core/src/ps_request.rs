@@ -538,6 +538,11 @@ impl Battle {
                     trapped = Some(false);
                 }
             }
+            if let Some(v) = m.volatiles.get(VolatileKind::Trapped) {
+                if self.trap_source_active(v.payload) {
+                    trapped = Some(false);
+                }
+            }
             if m.volatiles.has(VolatileKind::Ingrain) {
                 trapped = Some(false);
             }

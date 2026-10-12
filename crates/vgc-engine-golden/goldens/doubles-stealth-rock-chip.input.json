@@ -1,5 +1,6 @@
 {
   "name": "doubles-stealth-rock-chip",
+  "rng_mode": "keyed",
   "format": "gen9doublescustomgame",
   "seed": [1, 2, 3, 4],
   "p1": {
@@ -10,6 +11,6 @@
   },
   "turns": [
     { "p1": "move 1, move 1", "p2": "move 4, move 4" },
-    { "p1": "move 2, move 1", "p2": "switch 3, move 4" }
+    { "p1": "move 2, move 1", "p2": "switch 3, move 2 2" }
   ]
 }

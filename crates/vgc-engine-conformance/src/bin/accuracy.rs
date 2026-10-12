@@ -67,7 +67,11 @@ fn run_parallel<F>(files: &[PathBuf], f: F) -> Vec<Result<Record, String>>
 where
     F: Fn(&AccBattle) -> Replayed + Sync,
 {
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+    // ACC_THREADS caps the workers, as in `protocol` / `session`.
+    let threads = std::env::var("ACC_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8));
     let chunk = files.len().div_ceil(threads.max(1)).max(1);
     let mut out: Vec<Result<Record, String>> = Vec::with_capacity(files.len());
     std::thread::scope(|s| {
