@@ -314,10 +314,16 @@ impl Battle {
     }
 
     /// Open the residual window and model PS's handler order.
+    #[inline(always)]
     pub(crate) fn p_res_open(&mut self) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_res_open_cold();
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_res_open_cold(&mut self) {
         let mut plan = self.p_res_plan();
         if self.weather != crate::weather::Weather::None && self.weather_turns != 1 {
             plan.each_rank = self.p_res_weather_order();
@@ -354,10 +360,16 @@ impl Battle {
     }
 
     /// Start a residual handler of a field effect (`mon` None) or a mon.
+    #[inline(always)]
     pub(crate) fn p_res(&mut self, order: u8, sub: u8, mon: Option<(SideRef, u8)>) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_res_cold(order, sub, mon);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_res_cold(&mut self, order: u8, sub: u8, mon: Option<(SideRef, u8)>) {
         let (id, k) = match mon {
             Some((s, sl)) => (ResId::Mon(s as u8, sl, order, sub), (order as i64, 0, self.p_res_speed(s, sl), sub as i64)),
             None => match (order, sub) {
@@ -372,30 +384,48 @@ impl Battle {
     }
 
     /// Start a side condition's residual handler (onSideResidualOrder 26).
+    #[inline(always)]
     pub(crate) fn p_res_side(&mut self, side: SideRef, sub: u8) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_res_side_cold(side, sub);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_res_side_cold(&mut self, side: SideRef, sub: u8) {
         let key = self.p_res_pos(ResId::Side(side as u8, sub), (26, 0, 0, sub as i64));
         self.p_res_set_key(key);
     }
 
     /// A per-mon line of the weather's eachEvent('Weather'), in that
     /// event's speed order, inside the weather handler.
+    #[inline(always)]
     pub(crate) fn p_res_each(&mut self, _order: u8, _sub: u8, side: SideRef, slot: u8) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_res_each_cold(_order, _sub, side, slot);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_res_each_cold(&mut self, _order: u8, _sub: u8, side: SideRef, slot: u8) {
         let base = self.p_res_pos(ResId::Weather, (1, 0, 0, 5));
         let rank = self.protocol.log().and_then(|l| l.res_plan.as_deref()).map_or(0, |p| p.each_rank[side as usize][(slot as usize).min(1)]);
         self.p_res_set_key(base | ((rank as u32 + 1) << 8));
     }
 
     /// The weather handler's trailing Update (berries).
+    #[inline(always)]
     pub(crate) fn p_res_update(&mut self, _order: u8) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_res_update_cold(_order);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_res_update_cold(&mut self, _order: u8) {
         let base = self.p_res_pos(ResId::Weather, (1, 0, 0, 5));
         self.p_res_set_key(base | 0xF000);
     }
@@ -403,10 +433,16 @@ impl Battle {
     /// Close the residual: each faint prints after the first handler at or
     /// after its own that runs faintMessages; one with none left waits
     /// for the faintMessages after `|upkeep|`.
+    #[inline(always)]
     pub(crate) fn p_res_close(&mut self) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_res_close_cold();
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_res_close_cold(&mut self) {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 self.p_queue_faint_if_down(side, slot);
@@ -480,10 +516,16 @@ impl Battle {
     }
 
     /// `|upkeep|`, then the faintMessages the residual left for after it.
+    #[inline(always)]
     pub(crate) fn p_upkeep(&mut self) {
-        if !self.plog() {
-            return;
+        if self.plog() {
+            self.p_upkeep_cold();
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_upkeep_cold(&mut self) {
         self.p_push("|upkeep".to_string());
         if let Some(l) = self.protocol.log_mut() {
             l.res_hold_faints = false;

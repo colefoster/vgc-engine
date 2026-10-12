@@ -1521,7 +1521,15 @@ pub fn try_consume_mirror_herb_on_foe_boost(
     }
 }
 
+#[inline]
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
+    // Raw-item prefilter: only a White Herb holder can consume one.
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
+        try_consume_white_herb_inner(battle, side, slot);
+    }
+}
+
+fn try_consume_white_herb_inner(battle: &mut Battle, side: SideRef, slot: u8) {
     if battle.white_herb_deferred() {
         return;
     }

@@ -231,7 +231,16 @@ pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
 ///
 /// Currently handles `protosynthesis` (trigger: Sun weather). Quark
 /// Drive (Electric Terrain) lands once terrain state is in.
+#[inline]
 pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| {
+        matches!(m.ability_id, data::ability_id::PROTOSYNTHESIS | data::ability_id::QUARKDRIVE)
+    }) {
+        refresh_paradox_booster_inner(battle, side, slot);
+    }
+}
+
+fn refresh_paradox_booster_inner(battle: &mut Battle, side: SideRef, slot: u8) {
     let (ability_id, currently_active, locked) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => {
             (m.ability_id, m.boosted_stat != 255, m.booster_locked)
@@ -550,7 +559,9 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
     for s in 0..n {
-        crate::item::try_consume_white_herb(battle, opp, s);
+        if battle.side(opp).active_mon(s as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
+            crate::item::try_consume_white_herb(battle, opp, s);
+        }
     }
 }
 
