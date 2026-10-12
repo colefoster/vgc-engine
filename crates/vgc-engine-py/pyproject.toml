@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "vgc-engine"
-version = "0.0.1"
-description = "Rust Pokémon battle simulator (Phase 1 stub) — pyo3 bindings"
+version = "0.2.0"
+description = "Rust Pokémon battle simulator — pyo3 bindings"
 requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
 classifiers = [
