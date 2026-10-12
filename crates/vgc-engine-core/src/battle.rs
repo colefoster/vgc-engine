@@ -5775,6 +5775,8 @@ self.trigger_emergency_exits();
                 self.shields_down_leave_field(side, actor_slot);
                 self.hunger_switch_leave_field(side, actor_slot, false);
                 self.gulp_missile_leave_field(side, actor_slot);
+                let outgoing = self.side(side).active[actor_slot as usize];
+                self.release_linked_traps(side, outgoing);
             }
         }
         let gravity_active = self.gravity_turns > 0;
@@ -15212,6 +15214,12 @@ self.trigger_emergency_exits();
                 return true;
             }
         }
+        // Spirit Shackle's `trapped` (data/conditions.ts onTrapPokemon).
+        if let Some(v) = mon.volatiles.get(crate::pokemon::VolatileKind::Trapped) {
+            if self.trap_source_active(v.payload) {
+                return true;
+            }
+        }
         // Adjacent-foe trapper abilities.
         let opp = side.opposing();
         let n_active = self.format().active_count() as u8;
@@ -17280,6 +17288,52 @@ self.trigger_emergency_exits();
 
     /// Whether the Pokemon an Octolock payload names is still on the field
     /// and able to act (PS: `source.isActive && source.hp`).
+    /// Whether the source a `Trapped` payload (`side << 16 | team index`)
+    /// names is on the field and not fainted. A fainted source's link is
+    /// gone in PS (faintMessages' clearVolatile removes linked volatiles);
+    /// a switched-out source's is removed in `do_switch`.
+    pub(crate) fn trap_source_active(&self, payload: u32) -> bool {
+        let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
+        let idx = (payload & 0xFF) as u8;
+        let s = self.side(side);
+        (0..self.format().active_count()).any(|slot| s.active[slot] == idx && s.active_mon(slot).is_some_and(|m| m.is_alive()))
+    }
+
+    /// `target.addVolatile('trapped', source, move, 'trapper')`: see the
+    /// Spirit Shackle arm of `apply_secondary_effect`.
+    fn apply_move_trap(&mut self, tside: SideRef, tslot: u8, sside: SideRef, sslot: u8) {
+        let src_idx = self.side(sside).active[sslot as usize];
+        if self.side(sside).active_mon(sslot as usize).is_none() {
+            return;
+        }
+        let Some(t) = self.side(tside).active_mon(tslot as usize) else { return };
+        let (types, n) = t.effective_types();
+        let ghost = (0..n as usize).any(|i| types[i] == 13);
+        let held = t.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| self.trap_source_active(v.payload));
+        if !t.is_alive() || ghost || held {
+            return;
+        }
+        let payload = ((sside as u32) << 16) | src_idx as u32;
+        if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+            let _ = t.volatiles.add(crate::pokemon::Volatile { kind: crate::pokemon::VolatileKind::Trapped, turns_remaining: 0, payload });
+        }
+        pmon!(self, "-activate", tside, tslot, "|trapped");
+    }
+
+    /// PS `removeLinkedVolatiles` for a leaving trapper (sim/pokemon.ts
+    /// clearVolatile): its foes' `trapped` ends.
+    fn release_linked_traps(&mut self, side: SideRef, idx: u8) {
+        let payload = ((side as u32) << 16) | idx as u32;
+        let foe = side.opposing();
+        for slot in 0..self.format().active_count() {
+            if let Some(m) = self.side_mut(foe).active_mon_mut(slot) {
+                if m.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| v.payload == payload) {
+                    m.volatiles.remove(crate::pokemon::VolatileKind::Trapped);
+                }
+            }
+        }
+    }
+
     pub(crate) fn octolock_source_active(&self, payload: u32) -> bool {
         let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
         let slot = ((payload >> 8) & 0xFF) as usize;
@@ -22781,6 +22835,15 @@ fn apply_secondary_effect(
         )
     {
         let _ = rng.percent_1_100();
+    }
+    // Spirit Shackle — PS data/moves.ts:17629 secondary (chance 100) onHit:
+    // `if (source.isActive) target.addVolatile('trapped', source, move,
+    // 'trapper')`. addVolatile fails silently on a fainted target, on an
+    // existing `trapped`, and on a Ghost (runStatusImmunity('trapped'),
+    // data/typechart.ts). The condition's onStart prints `-activate|trapped`
+    // (data/conditions.ts trapped). The 100% roll above can't fail.
+    if move_slug == "spiritshackle" {
+        battle.apply_move_trap(target_side, target_slot, attacker_side, attacker_slot);
     }
     // PS rolls each secondary independently in `secondaries[]` array
     // order — sim/battle-actions.ts:1363 `for (const secondary of
