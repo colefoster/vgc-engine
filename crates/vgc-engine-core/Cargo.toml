@@ -13,6 +13,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
+# The Showdown protocol log (docs/protocol.md). On by default; a build that
+# never logs (training, search) can turn it off (`default-features = false`)
+# to compile every log hook out of `step()`. With it on and no log
+# requested, the hooks are runtime checks only.
+default = ["protocol"]
+protocol = []
 # Internal chance-frontier branching. When enabled, exposes
 # `Battle::step_chance()` which returns the full outcome frontier of one
 # turn as `Vec<(Battle, f64)>` without a record/replay round-trip.

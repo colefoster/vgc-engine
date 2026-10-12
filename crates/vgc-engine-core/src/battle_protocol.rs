@@ -1393,7 +1393,6 @@ impl Battle {
             other => other,
         };
         match fx {
-            StatusFx::Silent => {}
             StatusFx::Plain | StatusFx::Bare => pmon!(self, "-status", side, slot, "|{st}"),
             StatusFx::Move(mv) => {
                 if status == crate::pokemon::Status::Sleep {
