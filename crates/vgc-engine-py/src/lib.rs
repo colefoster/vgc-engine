@@ -17,6 +17,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use vgc_engine_core as core;
 
+mod stream;
+
 /// Stable lowercase slug for a weather state.
 fn weather_slug(w: core::Weather) -> &'static str {
     match w {
@@ -1380,6 +1382,9 @@ fn eval_batch_py(
 #[pymodule]
 fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBattle>()?;
+    m.add_class::<stream::PyBattleStream>()?;
+    m.add_class::<stream::PyPlayerStreams>()?;
+    m.add_class::<stream::PyPlayerStream>()?;
     m.add_function(wrap_pyfunction!(parse_and_verify, m)?)?;
     m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame, m)?)?;
