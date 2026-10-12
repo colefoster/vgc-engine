@@ -531,14 +531,24 @@ fn run(job: &Job, prior: &Prior) -> Result<Value, String> {
     match reconstruct(&spect, &ro, prior) {
         Err(e) => out["hidden"] = json!({"error": e.bucket, "detail": e.detail}),
         Ok(r) => {
-            let (fields, _) = compare(&truth, &align(&truth, &r.battle));
+            let aligned = align(&truth, &r.battle);
+            let (fields, _) = compare(&truth, &aligned);
+            // Spread-prior hit: the prior's pick (nature + all six values)
+            // equals the true set's, over every mon on the team.
+            let (mut sp_hit, mut sp_n) = (0usize, 0usize);
+            for side in [SideRef::P1, SideRef::P2] {
+                for (a, b) in truth.side(side).team.iter().zip(aligned.side(side).team.iter()) {
+                    sp_n += 1;
+                    sp_hit += (a.set_species_id == b.set_species_id && a.nature_id == b.nature_id && a.evs == b.evs) as usize;
+                }
+            }
             let mut per: BTreeMap<String, (usize, usize)> = BTreeMap::new();
             for (name, ok) in &fields {
                 let e = per.entry(name.split(':').next().unwrap_or("").to_string()).or_default();
                 e.1 += 1;
                 e.0 += *ok as usize;
             }
-            out["hidden"] = json!({"per_field": per.iter().map(|(k, (a, n))| (k.clone(), json!([a, n]))).collect::<serde_json::Map<_, _>>(), "n_prior": r.report["n_prior_fields"]});
+            out["hidden"] = json!({"per_field": per.iter().map(|(k, (a, n))| (k.clone(), json!([a, n]))).collect::<serde_json::Map<_, _>>(), "n_prior": r.report["n_prior_fields"], "spread_top": [sp_hit, sp_n], "prior": r.report["prior"]});
         }
     }
     Ok(out)
@@ -680,6 +690,19 @@ fn summarize(res: &[Value]) {
     println!("hidden sets (spectator log + prior): fields matched {a} / {n} ({:.2}%)", 100.0 * a as f64 / n.max(1) as f64);
     for (k, (a, n)) in &per {
         println!("    {k:28} {a:6} / {n:6} ({:.1}%)", 100.0 * *a as f64 / (*n).max(1) as f64);
+    }
+    let (sh, sn) = ran.iter().filter_map(|v| v["hidden"]["spread_top"].as_array()).fold((0u64, 0u64), |s, x| (s.0 + x[0].as_u64().unwrap_or(0), s.1 + x[1].as_u64().unwrap_or(0)));
+    println!("  prior's top spread == true spread (nature + values): {sh} / {sn} ({:.2}%)", 100.0 * sh as f64 / sn.max(1) as f64);
+    let np: Vec<u64> = ran.iter().filter_map(|v| v["hidden"]["n_prior"].as_u64()).collect();
+    println!("  prior-filled fields per position: mean {:.2}", np.iter().sum::<u64>() as f64 / np.len().max(1) as f64);
+    let mut ids: BTreeMap<String, usize> = BTreeMap::new();
+    for v in &ran {
+        if let Some(p) = v["hidden"]["prior"].as_str() {
+            *ids.entry(p.to_string()).or_default() += 1;
+        }
+    }
+    for (k, n) in ids {
+        println!("    prior {k}: {n} positions");
     }
     for (k, n) in top(herr, 10) {
         println!("    {n:5}  (failed) {k}");

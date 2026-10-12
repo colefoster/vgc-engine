@@ -858,9 +858,11 @@ Battle.reconstruction_report() -> dict | None
 - **`stop`**: `"move"` (the default), or `"replace"` for the faint
   replacement after turn N-1's residuals. A decision file with a
   `forceSwitch` request at the end of a turn is a `"replace"` stop.
-- **`prior`**: `None` / `"default"` (embedded, below), `"none"`, or a stats
-  file path: a chaos-derived JSON (Bring Four `smogon.py` shape) or a
-  Smogon moveset `.txt`. Loaded priors are cached by path.
+- **`prior`**: `None` / `"default"` (chosen by format, below), `"none"`, an
+  embedded prior id (below), or a stats file path: a chaos-derived JSON
+  (Bring Four `smogon.py` shape) or a Smogon moveset `.txt`. `"a+b"` chains
+  ids or paths: species `a` lacks come from `b`. Loaded priors are cached
+  by spec.
 - **`viewer`**: `"p1"` / `"p2"`. Only that player's view fills the
   opponent's hidden info. The viewer's own side uses the `|split|` secret
   lines, the request and the sets when given, else the prior. Without a
@@ -893,7 +895,7 @@ prefix and the report. `--board` adds the kcheck board and sets it was
 built from. `--check` opens the session and adds both requests.
 
 ```sh
-vgc recon --log replay.json --turn 6 [--stop replace] [--viewer p1] [--prior FILE|none] \
+vgc recon --log replay.json --turn 6 [--stop replace] [--viewer p1] [--prior ID|FILE|none] \
           [--sets-p1 team.txt --sets-p2 team.txt] [--lookahead] [--board] [--check]
 ```
 
@@ -922,7 +924,11 @@ Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
   mons' prior or default fields.
 - `field`: every field effect with its turns up.
 - `n_prior_fields` / `n_fields` for the whole position, plus `turn`,
-  `stop`, `format`, `input`, `viewer`, `lookahead` and `prior`.
+  `stop`, `format`, `input`, `viewer` and `lookahead`.
+- `prior`: the prior's resolved id (`"default"` never appears: it is
+  replaced by the id it picked), and `prior_sha256`, the SHA-256 of its
+  file (`+`-joined in id order for a chain; empty for `"none"`). Passing
+  the reported `prior` back as `prior=` reproduces the position.
 
 `src` is one of:
 
@@ -963,12 +969,30 @@ is the prior's too.
 
 ### Prior policy
 
-The default prior is Smogon's `gen9championsvgc2026regmb` chaos stats for
-2026-08, cutoff 0 (`data/smogon-stats/2026-08/`, top 10 per category, from
-Bring Four's `smogon.py`). Species that list lacks are Reg M-C additions,
-like Rillaboom, Indeedee and Salamence. They fall back to Bring Four's
-Reg M-C replay reveal shares (`data/smogon-stats/2026-09/`, 280k games).
-Those reveal shares are biased and carry no spreads.
+Embedded priors have stable ids. Their files stay in the repo
+(`data/smogon-stats/README.md` has URL, month, cut, fetch date and hash):
+
+| Id | Content |
+|---|---|
+| `smogon:2026-09/gen9championsvgc2026regmc-1500` | Smogon Reg M-C chaos stats, 2026-09, 1500 cut (mimikyu's usage convention). Spreads in stat points |
+| `smogon:2026-08/gen9championsvgc2026regmb-0` | Smogon Reg M-B chaos stats, 2026-08, cut 0 |
+| `bringfour:2026-09/regmc-reveals` | Bring Four's Reg M-C replay reveal shares (280k games). Reveal-biased, no spreads |
+
+Each Smogon file keeps species at 0.1% usage or more, top 10 per category
+(`scripts/trim_smogon_chaos.py`, Bring Four `smogon.py`'s trim).
+
+`"default"` picks by the replay's format:
+
+| Format | Resolves to |
+|---|---|
+| Reg M-B | `smogon:2026-08/gen9championsvgc2026regmb-0+bringfour:2026-09/regmc-reveals` |
+| Reg M-C, and any other | `smogon:2026-09/gen9championsvgc2026regmc-1500+bringfour:2026-09/regmc-reveals` |
+
+The Reg M-C default's fallback covers the 64 rare species under the 0.1%
+trim. The Reg M-B one covers M-C additions (Rillaboom, Indeedee,
+Salamence, ...). vgc-engine 0.4.0's default, for every format, was
+`smogon:2026-08/gen9championsvgc2026regmb-0+bringfour:2026-09/regmc-reveals`.
+Pass it as `prior=` to reproduce 0.4.0 results on Reg M-C replays.
 
 The prior is conditioned on what was revealed:
 
@@ -1037,6 +1061,22 @@ Results (branch `replay-position`):
 | 2. Byte-identical continuation (true PRNG put in) | **961 / 1000 (96.1%)**; with the true hidden counters too, 967 / 1000 (96.7%) |
 | 3. Held-out Reg M-C, 2026-10-03 .. 10-11 (200,119 replays, 86,555 usable) | **951,980 / 952,256 positions (99.97%)**: move stops 686,226 / 686,405; 86,456 replays rebuilt at every stop |
 | 3. Dev window (`mimikyu/data/replays/.../2026-09-*`, 279 usable) | 3,120 / 3,123 |
+
+Reg M-C prior swap (0.4.1, branch `regmc-prior`): the 0.4.0 default
+(`smogon:2026-08/...regmb-0+bringfour:...`) against the per-format default.
+Gates 1 and 2 are unchanged (99.84%, 96.1%). The held-out sample is every
+38th replay of 2026-10-03 .. 10-11 (5,266 replays, 2,261 usable).
+
+| Measure | 0.4.0 default | 0.4.1 default |
+|---|---|---|
+| Hidden sets, fields matched (1000 battles) | 80.09% | **80.20%** |
+| Hidden sets, Reg M-C half (500) | 80.1% | **80.4%**: item 59.4 -> 60.9, ability 77.9 -> 78.1, stats 18.0 -> 20.6 |
+| Prior's top spread == true spread (nature + 6 values), Reg M-C half | 18.0% | **20.6%** |
+| Prior's top spread == true spread, all 1000 | 17.41% | **18.74%** |
+| Held-out sample, positions rebuilt | 24,804 / 24,810 (99.976%) | 24,804 / 24,810 (99.976%) |
+| Held-out sample, prior-filled fields per position (mean of 88.1) | 49.68 | 49.62 |
+
+The Reg M-B half uses the same prior as before, so it is unchanged.
 
 - **Gate 1 misses.** The 249 misses come mostly from about a dozen
   positions where an Illusion holder was never revealed before the stop:

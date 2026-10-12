@@ -1607,7 +1607,7 @@ fn position_from_board(py: Python<'_>, board: &Bound<'_, PyAny>, sets: Option<&B
     serde_json::to_string(&v).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Priors loaded so far, by spec (the embedded one under "default").
+/// Priors loaded so far, by spec ("default" resolves per format at use).
 fn prior_for(spec: &str) -> PyResult<std::sync::Arc<vgc_engine_replay::prior::Prior>> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
@@ -1647,8 +1647,11 @@ fn py_sets(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<Vec<core::TeamMembe
 /// `log`: a replay's `log` text, a replay JSON dict, PS's raw `battle.log`
 /// (`|split|` pairs), one player's stream (a list of lines or text), or a
 /// mimikyu ps_bot decision dict (`decide_payload.live`). `prior`: `None` /
-/// `"default"` (embedded Reg M-B 2026-08 usage), `"none"`, or a stats file
-/// path. `viewer`: `"p1"` / `"p2"` fills the opponent's hidden info from that
+/// `"default"` (per format: Reg M-C -> Smogon 2026-09 M-C at 1500, Reg M-B ->
+/// 2026-08 M-B), `"none"`, an embedded prior id such as
+/// `"smogon:2026-09/gen9championsvgc2026regmc-1500"` (`a+b` chains a
+/// fallback), or a stats file path. The report names the resolved id and
+/// its SHA-256 (`prior`, `prior_sha256`). `viewer`: `"p1"` / `"p2"` fills the opponent's hidden info from that
 /// player's view only. `stop="replace"` stops at the faint replacement
 /// before turn `turn`. `sets`: `{"p1": export | [dicts], "p2": ...}`.
 /// `request`: a `|request|` dict (its `side.id` says whose) or

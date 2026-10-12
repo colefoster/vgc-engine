@@ -38,6 +38,7 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         None => tier.as_deref().and_then(format_from_tier).unwrap_or_else(|| "gen9championsvgc2026regmc".into()),
     };
     let fmt = vgc_engine_core::ps_formats::lookup(&fid).ok_or_else(|| err("format", format!("unknown format {fid}")))?;
+    let prior = prior.for_format(&fid);
     let champions = fmt.champions();
     let n_active = if fmt.doubles { 2 } else { 1 };
 
@@ -672,6 +673,7 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         "viewer": opts.viewer.map(side_key),
         "lookahead": opts.lookahead,
         "prior": prior.source,
+        "prior_sha256": prior.sha256,
         "sides": Value::Object(sides),
         "field": Value::Object(field_rep),
         "active_prior_fields": Value::Object(active_prior),
