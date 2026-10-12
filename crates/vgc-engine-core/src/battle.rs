@@ -12863,6 +12863,17 @@ self.trigger_emergency_exits();
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
+                // A Choice item picked up mid-charge (Trick) locks on the
+                // release turn too: choicescarf onModifyMove adds
+                // `choicelock` on every move use (data/items.ts choiceband
+                // / choicescarf / choicespecs).
+                let choice_item = matches!(
+                    mon.item_id,
+                    data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+                ) || mon.effective_ability_id() == data::ability_id::GORILLATACTICS;
+                if choice_item && mon.locked_move_slot() == 255 {
+                    mon.set_locked_move_slot(move_slot);
+                }
             }
         }
         // Choice items AND Gorilla Tactics lock the holder into its first
