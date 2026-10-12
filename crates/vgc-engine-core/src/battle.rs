@@ -651,6 +651,10 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_fainted_transform_moves: [[[u16; 4]; 2]; 2],
+    /// Whether any mon in either team starts with Receiver / Power of
+    /// Alchemy (`faint_events`); computed on first use.
+    #[serde(skip)]
+    pub(crate) receiver_possible: Option<bool>,
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
@@ -880,6 +884,7 @@ impl Battle {
             ps_scripted_pick: [[255; 2]; 2],
             #[cfg(feature = "ps-rng")]
             ps_fainted_transform_moves: [[[u16::MAX; 4]; 2]; 2],
+            receiver_possible: None,
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
@@ -1534,14 +1539,34 @@ impl Battle {
     #[inline(always)]
     fn hit_loop_end(&mut self) {
         self.p_loop_end();
-        self.faint_events();
+        if self.receiver_possible != Some(false) {
+            self.faint_events();
+        }
     }
 
     /// PS faintMessages' `runEvent('Faint', pokemon)` (sim/battle.ts:2555)
     /// once per faint, for every active mon down since the last call:
     /// Receiver / Power of Alchemy on its ally. Called where the engine
     /// prints faints: the hit loop's end and after every action.
+    #[inline(never)]
     fn faint_events(&mut self) {
+        // Only Receiver / Power of Alchemy read the Faint event, and only a
+        // battle where some mon starts with one can ever have a holder
+        // (Trace / Role Play / Entrainment can't copy them; Skill Swap and
+        // Transform only move an existing one). Cached per Battle object.
+        let possible = match self.receiver_possible {
+            Some(p) => p,
+            None => {
+                let p = [SideRef::P1, SideRef::P2].iter().any(|&s| {
+                    self.side(s).team.iter().any(|m| matches!(m.ability_id, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY))
+                });
+                self.receiver_possible = Some(p);
+                p
+            }
+        };
+        if !possible {
+            return;
+        }
         let n = self.format().active_count();
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
@@ -1608,7 +1633,9 @@ impl Battle {
     /// fainted on the bench.
     fn faint_forme_cleanup(&mut self) {
         self.p_faint_messages();
-        self.faint_events();
+        if self.receiver_possible != Some(false) {
+            self.faint_events();
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 if self.side(side).active_mon(slot as usize).is_some_and(|m| m.fainted) {
