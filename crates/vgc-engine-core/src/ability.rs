@@ -575,6 +575,16 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // flag for free.
     recompute_neutralizing_gas(battle);
     on_start(battle, side, slot);
+    // zerotohero: onSwitchIn arms its onStart's message for a Hero
+    // (data/abilities.ts zerotohero).
+    if battle.plog() && battle.side(side).active_mon(slot as usize).is_some_and(|m| {
+        m.effective_ability_id() == data::ability_id::ZEROTOHERO && m.species_id == data::species_id::PALAFINHERO
+    }) {
+        let bit = 1u16 << (side as u16 * 8 + battle.side(side).active[slot as usize] as u16);
+        if battle.protocol.log_mut().is_some_and(|l| l.hero_shown & bit == 0 && { l.hero_shown |= bit; true }) {
+            pmon!(battle, "-activate", side, slot, "|ability: Zero to Hero");
+        }
+    }
     battle.p_air_balloon(side, slot);
 }
 
@@ -1198,6 +1208,10 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             battle.set_forme(side, slot, data::species_id::PALAFINHERO, true);
             // formeChange(..., isPermanent): `detailschange` (data/abilities.ts zerotohero).
             battle.p_permanent_forme(side, slot, data::species_id::PALAFINHERO);
+            let bit = 1u16 << (side as u16 * 8 + battle.side(side).active[slot as usize] as u16);
+            if let Some(l) = battle.protocol.log_mut() {
+                l.hero_shown &= !bit;
+            }
         }
     }
     // Stance Change reverts on switch-out — PS `formeChange` for Aegislash

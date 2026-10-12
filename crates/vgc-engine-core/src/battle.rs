@@ -1867,6 +1867,21 @@ impl Battle {
                     data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
                 )
             });
+        // The block's message, unless the drop is a move secondary
+        // (flowerveil onAllyTryBoost; mist onTryBoost).
+        if (mist_blocks || veil_blocks) && self.plog() && fx != crate::protocol::BoostFx::MoveSecondary && deltas.iter().any(|&(_, d)| d < 0) {
+            if veil_blocks {
+                let holder = (0..self.format().active_count() as u8).find(|&s| {
+                    self.side(target_side).active_mon(s as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::FLOWERVEIL)
+                });
+                if let Some(h) = holder {
+                    let of = self.p_ident(target_side, h);
+                    pmon!(self, "-block", target_side, target_slot, "|ability: Flower Veil|[of] {of}");
+                }
+            } else {
+                pmon!(self, "-activate", target_side, target_slot, "|move: Mist");
+            }
+        }
         let mist_blocks = mist_blocks || veil_blocks;
         // When Mist is up, strip the negative deltas and keep only the
         // positives in a fixed-size stack buffer (≤ 7 stat indices — no
@@ -5944,6 +5959,8 @@ self.trigger_emergency_exits();
                 m.fainted = true;
             }
         }
+        // stealthrock onSwitchIn: damage(..., effect stealthrock).
+        self.p_damage(side, slot, "|[from] Stealth Rock");
     }
 
     /// Toxic Spikes poison on switch-in. PS data/moves.ts:toxicspikes
@@ -5998,6 +6015,12 @@ self.trigger_emergency_exits();
             Outcome::None => {}
             Outcome::Absorb => {
                 self.side_mut(side).conditions.toxic_spikes_layers = 0;
+                // removeSideCondition's onSideEnd (data/moves.ts toxicspikes).
+                if self.plog() {
+                    let s = self.p_side_ident(side);
+                    let of = self.p_ident(side, slot);
+                    self.p_push(format!("|-sideend|{s}|move: Toxic Spikes|[of] {of}"));
+                }
             }
             // Toxic Spikes — PS `toxicspikes.onSwitchIn` sets the status
             // with `pokemon.side.foe.active[0]` as source, so Safeguard on
@@ -6056,6 +6079,7 @@ self.trigger_emergency_exits();
                 m.fainted = true;
             }
         }
+        self.p_damage(side, slot, "|[from] Spikes");
     }
 
     /// Sticky Web speed drop on switch-in. PS data/moves.ts:stickyweb
@@ -6100,6 +6124,8 @@ self.trigger_emergency_exits();
         // and White Herb restore ride through from here.
         let source_side = side.opposing();
         let before = self.side(side).active_mon(slot as usize).map(|m| m.boosts);
+        // stickyweb onSwitchIn: `-activate`, then the boost.
+        pmon!(self, "-activate", side, slot, "|move: Sticky Web");
         self.apply_boosts(side, slot, &[(4, -1)], source_side, 0);
         // A foe-sourced drop: Defiant / Competitive, Eject Pack, White Herb.
         if let Some(before) = before {
@@ -10122,8 +10148,13 @@ self.trigger_emergency_exits();
                     let tgt = target.filter(|t| t.side == opp2 && matches!(m.target, 0 | 4 | 10)).map(|t| t.slot)
                         .or_else(|| (0..n).find(|&s| self.side(opp2).active_mon(s as usize).is_some_and(|d| d.is_alive())));
                     if let Some(ts) = tgt {
-                        self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
-                        pmon!(self, "-immune", opp2, ts);
+                        // Protect's TryHit (priority 3) runs before hitStepTryImmunity.
+                        if m.blocked_by_protect && self.side(opp2).active_mon(ts as usize).is_some_and(|d| d.is_protected_this_turn()) {
+                            pmon!(self, "-activate", opp2, ts, "|move: Protect");
+                        } else {
+                            self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                            pmon!(self, "-immune", opp2, ts);
+                        }
                     }
                 }
                 return;
@@ -10208,7 +10239,12 @@ self.trigger_emergency_exits();
                         .map(|tm| tm.is_alive() && tm.effective_ability_id() == data::ability_id::GOODASGOLD)
                         .unwrap_or(false);
                     if !is_self && target_good_as_gold {
-                        pmon!(self, "-immune", tside, tslot, "|[from] ability: Good as Gold");
+                        // Protect's TryHit (priority 3) precedes Good as Gold's.
+                        if m.blocked_by_protect && self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.is_protected_this_turn()) {
+                            pmon!(self, "-activate", tside, tslot, "|move: Protect");
+                        } else {
+                            pmon!(self, "-immune", tside, tslot, "|[from] ability: Good as Gold");
+                        }
                         return;
                     }
                     // Sap Sipper / Soundproof / Oblivious onTryHit block
@@ -10657,6 +10693,13 @@ self.trigger_emergency_exits();
         if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
             d.disguise_busted = true;
             d.current_hp = d.current_hp.saturating_sub(chip);
+        }
+        // disguise onUpdate: formeChange(..., isPermanent) then
+        // damage(..., species) (data/abilities.ts:1002-1007).
+        if let Some(busted_id) = busted_id.filter(|_| self.plog()) {
+            self.p_permanent_forme(ctx.tside, ctx.tslot, busted_id);
+            let name = data::SPECIES[busted_id as usize].name;
+            self.p_damage(ctx.tside, ctx.tslot, &format!("|[from] pokemon: {name}"));
         }
         let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
     }
@@ -13987,6 +14030,9 @@ self.trigger_emergency_exits();
         self.p_loop_end();
         self.p_emergency_exit_targets(actor_side, actor_slot);
         self.p_close_move_window();
+        // The Update after the hit step: Attract ends once its source fainted
+        // (data/moves.ts attract onUpdate), before AfterMoveSecondarySelf.
+        self.attract_update();
         if attacker_item_id == data::item_id::LIFEORB && (any_damage_dealt > 0 || self.disguise_hit_this_move) {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
             // gates the whole `AfterMoveSecondarySelf` step on
@@ -14254,6 +14300,14 @@ self.trigger_emergency_exits();
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
         let fired = crate::order::quick_fractional_roll(self, side, actor_slot, move_id, &mut rng);
         self.rng = rng;
+        // quickdraw / quickclaw onFractionalPriority's `-activate`.
+        if fired && self.plog() {
+            let draw = self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
+                m.effective_ability_id() == data::ability_id::QUICKDRAW && data::MOVES.get(move_id as usize).is_some_and(|mv| mv.category != 2)
+            }) && self.side(side).active_mon(actor_slot as usize).is_some_and(|m| m.item_id != data::item_id::QUICKCLAW);
+            let what = if draw { "ability: Quick Draw" } else { "item: Quick Claw" };
+            pmon!(self, "-activate", side, actor_slot, "|{what}");
+        }
         if let Some(q) = self.quick_frac.as_mut() {
             q[side as usize][actor_slot as usize] = fired;
         }
@@ -14836,6 +14890,11 @@ self.trigger_emergency_exits();
         m.fainted = false;
         m.status = Status::None;
         m.current_hp = (m.stats.hp / 2).max(1);
+        // `-heal` names it as an inactive mon (`p1: Name`), then it is back.
+        self.p_hp_idx("-heal", side, idx, "|[from] move: Revival Blessing");
+        if let Some(l) = self.protocol.log_mut() {
+            l.fainted_logged &= !(1u16 << (side as u16 * 8 + idx as u16));
+        }
         if let Some(sl) = active_slot {
             self.sync_status_dot_bit(side, sl as u8);
             crate::ability::on_switch_in(self, side, sl as u8);
@@ -16106,6 +16165,7 @@ self.trigger_emergency_exits();
             }
             // The weather's eachEvent('Update'): HP berries eat before the
             // later residuals (Grassy Terrain, Leftovers).
+            self.p_res_update(1);
             self.update_hp_berries();
         }
         // Solar Power / Dry Skin onWeather, in the same eachEvent('Weather').
@@ -17882,6 +17942,13 @@ self.trigger_emergency_exits();
                     .active_mon(ally_slot as usize)
                     .is_some_and(|p| p.is_alive());
                 if !ally_alive {
+                    // No target: the line names the fainted ally, then
+                    // `[notarget]` and `-fail` (sim/battle-actions.ts:510-513).
+                    if self.plog() && self.side(actor_side).active_mon(ally_slot as usize).is_some() {
+                        self.p_retarget(actor_side, ally_slot);
+                        self.p_attr("[notarget]");
+                        pmon!(self, "-fail", actor_side, actor_slot);
+                    }
                     return;
                 }
                 let boosts: &[(u8, i8)] = &[(0, 1), (1, 1)];
@@ -18040,6 +18107,8 @@ self.trigger_emergency_exits();
                 if !partner_alive {
                     return;
                 }
+                // swapPosition's `|swap|` (sim/battle.ts:1595).
+                pmon!(self, "swap", actor_side, actor_slot, "|{partner_slot}|[from] move: Ally Switch");
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
                 // PR-EOT3: the two active slots' DOT bits swap with them.
                 self.sync_status_dot_bit(actor_side, actor_slot);
@@ -19497,6 +19566,8 @@ self.trigger_emergency_exits();
                 let behind_sub = self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::SIMPLE) {
                     self.ps_status_failed();
+                } else {
+                    self.p_ability_change(ts, tslot, data::ability_id::SIMPLE, cur, move_id, None);
                 }
             }
             data::move_id::ENTRAINMENT => {
@@ -19528,6 +19599,7 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                     return;
                 }
+                self.p_ability_change(ts, tslot, src, cur, move_id, Some((actor_side, actor_slot)));
                 crate::ability::on_start(self, ts, tslot);
             }
             data::move_id::WORRYSEED => {
@@ -19556,6 +19628,7 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                     return;
                 }
+                self.p_ability_change(ts, tslot, data::ability_id::INSOMNIA, cur, move_id, None);
                 if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                     if matches!(t.status, Status::Sleep) {
                         t.status = Status::None;
