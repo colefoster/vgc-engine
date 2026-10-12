@@ -1159,6 +1159,8 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) if m.is_alive() => m.effective_ability_id(),
         _ => return,
     };
+    // The ability's End on switch-out (sim/battle-actions.ts:103).
+    battle.p_ability_end_lines(side, slot, false);
     if ability_id == data::ability_id::REGENERATOR {
         let mut healed = false;
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -1384,6 +1386,8 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 m.item_id = item;
                 m.sync_can_mega_evolve();
             }
+            // pickup onResidual's setItem message.
+            battle.p_item_line("-item", side, slot, item, "|[from] ability: Pickup");
         }
     }
 
@@ -2451,6 +2455,11 @@ pub fn on_damaging_hit(
                     .active_mon_mut(attacker_slot as usize)
                 {
                     a.ability_override = rep;
+                }
+                // setAbility from Mummy / Lingering Aroma (sim/pokemon.ts:1928-1931).
+                if battle.plog() {
+                    let src = battle.p_ident(attacker_side, attacker_slot);
+                    pmon!(battle, "-activate", target_side, target_slot, "|ability: {}|{src}|[ability] {}", crate::battle_protocol::ability_name(rep), crate::battle_protocol::ability_name(attacker_curr_id));
                 }
             }
         }

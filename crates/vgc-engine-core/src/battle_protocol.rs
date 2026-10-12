@@ -53,6 +53,15 @@ pub(crate) fn weather_id(w: crate::weather::Weather) -> &'static str {
 }
 
 /// `move: Electric Terrain` etc. (`-fieldstart` / `-fieldend`).
+/// A terrain's onFieldEnd label: Misty Terrain's lacks the `move:` prefix
+/// (data/moves.ts mistyterrain onFieldEnd).
+pub(crate) fn terrain_end_name(t: crate::terrain::Terrain) -> &'static str {
+    match t {
+        crate::terrain::Terrain::Misty => "Misty Terrain",
+        other => terrain_name(other),
+    }
+}
+
 pub(crate) fn terrain_name(t: crate::terrain::Terrain) -> &'static str {
     use crate::terrain::Terrain;
     match t {
@@ -427,6 +436,10 @@ impl Battle {
             }
             let id = self.p_ident_idx(side, idx);
             self.p_push(format!("|faint|{id}"));
+            // faintMessages runs the ability's End while still active.
+            if let Some(slot) = self.side(side).active.iter().position(|&a| a == idx).filter(|&s| s < self.format().active_count()) {
+                self.p_ability_end_lines(side, slot as u8, true);
+            }
             if let Some(l) = self.protocol.log_mut() {
                 l.fainted_logged |= 1u16 << (s as u16 * 8 + idx as u16);
                 // faintMessages clears the disguise (sim/battle.ts:2565).
@@ -828,6 +841,28 @@ impl Battle {
         pmon!(self, "-ability", side, slot, "|{}|{}|[from] move: {}{of}", ability_name(new), ability_name(old), move_name(move_id));
     }
 
+    /// Silent `-end` lines an ability's End prints when its holder leaves
+    /// (switch-out or faint): Flash Fire's boost, Supreme Overlord's count
+    /// (data/abilities.ts flashfire onEnd, supremeoverlord onEnd).
+    pub(crate) fn p_ability_end_lines(&mut self, side: SideRef, slot: u8, fainting: bool) {
+        if !self.plog() {
+            return;
+        }
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        match m.effective_ability_id() {
+            // (Not on a faint: PS prints nothing there.)
+            data::ability_id::FLASHFIRE if !fainting && m.volatiles.has(crate::pokemon::VolatileKind::FlashFire) => {
+                pmon!(self, "-end", side, slot, "|ability: Flash Fire|[silent]");
+            }
+            data::ability_id::SUPREMEOVERLORD => {
+                let n = m.supreme_overlord_fallen;
+                let fallen = if n == 0 || n == u8::MAX { "undefined".to_string() } else { n.to_string() };
+                pmon!(self, "-end", side, slot, "|fallen{fallen}|[silent]");
+            }
+            _ => {}
+        }
+    }
+
     /// PS `Side.toString()`: `p1: <player name>`.
     pub(crate) fn p_side_ident(&self, side: SideRef) -> String {
         let name = self.protocol.log().map(|l| l.player_names[side as usize].as_str()).unwrap_or("");
@@ -1133,7 +1168,7 @@ impl Battle {
         }
         if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
             self.p_res(27, 7, None);
-            let t = terrain_name(self.terrain);
+            let t = terrain_end_name(self.terrain);
             self.p_push(format!("|-fieldend|{t}"));
         }
     }
@@ -1429,6 +1464,15 @@ impl Battle {
                     display = Some(r[0]);
                 }
             }
+        }
+        // frz onModifyMove: a defrost move thaws its user before `|move|`
+        // (data/conditions.ts frz).
+        if self.protocol.log_mut().is_some_and(|l| std::mem::take(&mut l.defrost_pending)) {
+            pmon!(self, "-curestatus", side, slot, "|frz|[from] move: {}", move_name(move_id));
+        }
+        // Curse from a non-Ghost targets itself (data/moves.ts curse onModifyMove).
+        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) {
+            display = Some((side, slot));
         }
         // struggle onModifyMove, before the `|move|` line (data/moves.ts:18226).
         if move_id == data::move_id::STRUGGLE {

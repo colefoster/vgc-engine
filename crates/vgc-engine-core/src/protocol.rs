@@ -321,6 +321,8 @@ pub struct ProtocolLog {
     pub(crate) cur_turn: u32,
     /// Zero to Hero's `heroMessageDisplayed` per (side, team index) bit.
     pub(crate) hero_shown: u16,
+    /// Wish's wisher (team index) per [side][slot], for `[wisher]`.
+    pub(crate) wishers: [[u8; 2]; 2],
     /// PS `side.pokemon` order (position -> team index); switches swap.
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
@@ -454,6 +456,7 @@ impl ProtocolLog {
             oracle_shuffles: Vec::new(),
             cur_turn: 0,
             hero_shown: 0,
+            wishers: [[255; 2]; 2],
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
         }
