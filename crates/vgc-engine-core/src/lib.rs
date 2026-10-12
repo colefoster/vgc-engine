@@ -48,6 +48,7 @@ pub mod ability;
 mod accuracy;
 pub mod battle;
 mod battle_protocol;
+mod protocol_residual;
 pub mod protocol;
 pub mod calc;
 pub mod canonical_hash;

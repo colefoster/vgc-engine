@@ -1576,6 +1576,28 @@ fn sig_line(lines: &[String], i: usize) -> Option<&str> {
 }
 
 /// Keyed replay with the protocol log on, diffed against PS's raw log.
+/// PS's residual tie shuffles from the raw trace, for the protocol log's
+/// residual order: `fieldEvent('Residual')`'s speedSort (kind 0) and the
+/// weather's `eachEvent('Weather')` (kind 1).
+fn residual_shuffles(acc: &AccBattle) -> Vec<(u32, u8, u32, u32, u32)> {
+    let mut out = Vec::new();
+    for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
+        if d.op != "shuffle" {
+            continue;
+        }
+        let at = |i: usize, p: &str| d.site.get(i).is_some_and(|s| s.starts_with(p));
+        let kind = if at(1, "Battle.fieldEvent@") && at(2, "Battle.runAction@") {
+            0
+        } else if at(1, "Battle.eachEvent@") && d.site.get(2).is_some_and(|s| s.contains("onFieldResidual@")) {
+            1
+        } else {
+            continue;
+        };
+        out.push((d.turn, kind, d.a as u32, d.b as u32, d.result as u32));
+    }
+    out
+}
+
 pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
     let (table, _repaired, b, res, misses) = repaired_table(acc);
     let state_clean = matches!(&res, Ok((_, _, None, _))) && misses.is_empty();
@@ -1598,7 +1620,18 @@ pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
         ..vgc_engine_core::ProtocolOptions::new(vgc_engine_core::ProtocolMode::Ps)
     };
     let rng = Rng::oracle_keyed(table, 0xC0FFEE);
-    let (mut b, _res) = drive_with(acc, rng, |_, _| {}, Some(&opts));
+    let shuffles = residual_shuffles(acc);
+    let mut fed = false;
+    let (mut b, _res) = drive_with(
+        acc,
+        rng,
+        |b, _| {
+            if !std::mem::replace(&mut fed, true) {
+                b.protocol_set_oracle_shuffles(shuffles.clone());
+            }
+        },
+        Some(&opts),
+    );
     let ps: Vec<String> = raw.split('\n').map(norm_proto_line).collect();
     if ps.last().is_some_and(|l| l == "|tie") {
         b.protocol_force_tie();

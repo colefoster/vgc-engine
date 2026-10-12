@@ -121,7 +121,7 @@ impl Battle {
             .unwrap_or("")
     }
 
-    fn p_faint_logged(&self, side: SideRef, idx: u8) -> bool {
+    pub(crate) fn p_faint_logged(&self, side: SideRef, idx: u8) -> bool {
         idx < 8 && self.protocol.log().is_some_and(|l| l.fainted_logged & (1 << (side as u16 * 8 + idx as u16)) != 0)
     }
 
@@ -337,6 +337,10 @@ impl Battle {
         if !self.plog() {
             return;
         }
+        // The residual flushes its own faints (protocol_residual.rs).
+        if self.protocol.log().is_some_and(|l| l.res_plan.is_some() || l.res_hold_faints) {
+            return;
+        }
         // Any active mon that went down without a queued line (a direct
         // faint) joins in slot order.
         for side in [SideRef::P1, SideRef::P2] {
@@ -344,6 +348,12 @@ impl Battle {
                 self.p_queue_faint_if_down(side, slot);
             }
         }
+        self.p_faint_print(check_win);
+    }
+
+    /// Print the queued `|faint|` lines in queue-key order, then (with
+    /// `check_win`) the win check.
+    pub(crate) fn p_faint_print(&mut self, check_win: bool) {
         let queue = match self.protocol.log_mut() {
             Some(l) => {
                 let keys = std::mem::take(&mut l.faint_keys);
@@ -856,99 +866,6 @@ impl Battle {
         }
     }
 
-    /// Open the residual window: rank the actives by PS `speed`
-    /// (getActionSpeed, negated under Trick Room; sim/battle.ts:1594).
-    pub(crate) fn p_res_open(&mut self) {
-        if !self.plog() {
-            return;
-        }
-        let tr = self.trick_room_turns > 0;
-        let mut v: [(i64, u8, u8); 4] = [(0, 0, 0); 4];
-        let mut k = 0;
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..self.format().active_count().min(2) as u8 {
-                if let Some(m) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()) {
-                    let tw = self.side(side).conditions.tailwind_turns > 0;
-                    let spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
-                    v[k] = (if tr { -spe } else { spe }, side as u8, slot);
-                    k += 1;
-                }
-            }
-        }
-        // Faster first; ties keep slot order.
-        let mut order: [usize; 4] = [0, 1, 2, 3];
-        order[..k].sort_by(|&a, &b| v[b].0.cmp(&v[a].0));
-        let mut speeds = [[0u8; 2]; 2];
-        for (rank, &i) in order[..k].iter().enumerate() {
-            let (spe, s, sl) = v[i];
-            // Field / side handlers have speed 0: between positive and
-            // negative (Trick Room) mon speeds.
-            speeds[s as usize][sl as usize] = if spe > 0 { 200 - rank as u8 } else { 100 - rank as u8 };
-        }
-        if let Some(l) = self.protocol.log_mut() {
-            l.window_open();
-            l.res_speed = speeds;
-        }
-    }
-
-    /// Start a residual handler: earlier handlers' faints print first
-    /// (faintMessages after each handler), then the key is set.
-    pub(crate) fn p_res(&mut self, order: u8, sub: u8, mon: Option<(SideRef, u8)>) {
-        if !self.plog() {
-            return;
-        }
-        self.p_res_handler_end();
-        if !self.protocol.log_mut().is_some_and(|l| std::mem::take(&mut l.res_defer_faint)) {
-            self.p_faint_messages();
-        }
-        if let Some(l) = self.protocol.log_mut() {
-            let spd = match mon {
-                Some((s, sl)) => l.res_speed[s as usize][(sl as usize).min(1)],
-                None => 150,
-            };
-            if let Some(w) = l.window.as_deref_mut() {
-                w.key = (order as u32) << 24 | (255 - spd as u32) << 16 | (sub as u32) << 8;
-            }
-        }
-    }
-
-    /// The previous handler's faints sort after all of its lines, however
-    /// the engine ordered its per-mon work.
-    fn p_res_handler_end(&mut self) {
-        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
-            w.key |= 0xFFFF;
-        }
-    }
-
-    /// A per-mon line inside a field handler's eachEvent (weather damage):
-    /// after the handler's own line, in speed order.
-    pub(crate) fn p_res_each(&mut self, order: u8, sub: u8, side: SideRef, slot: u8) {
-        if let Some(l) = self.protocol.log_mut() {
-            let spd = l.res_speed[side as usize][(slot as usize).min(1)];
-            if let Some(w) = l.window.as_deref_mut() {
-                w.key = (order as u32) << 24 | (255 - 150) << 16 | (sub as u32) << 8 | (255 - spd as u32);
-            }
-        }
-    }
-
-    /// A field handler's trailing Update (berries) lines.
-    pub(crate) fn p_res_update(&mut self, order: u8) {
-        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
-            w.key = (order as u32) << 24 | (255 - 150) << 16 | 255 << 8;
-        }
-    }
-
-    pub(crate) fn p_res_close(&mut self) {
-        if !self.plog() {
-            return;
-        }
-        self.p_res_handler_end();
-        self.p_faint_messages();
-        if let Some(l) = self.protocol.log_mut() {
-            l.window_close();
-        }
-    }
-
     /// Grassy Terrain's per-mon residual heal (data/moves.ts grassyterrain
     /// onResidual): printed when HP moved.
     pub(crate) fn p_grassy_heal(&mut self, side: SideRef, slot: u8) {
@@ -1029,7 +946,7 @@ impl Battle {
                 (c.aurora_veil_turns, 10, "move: Aurora Veil"),
             ] {
                 if turns == 1 {
-                    self.p_res(26, sub, None);
+                    self.p_res_side(side, sub);
                     self.p_push(format!("|-sideend|{sid}|{label}"));
                 }
             }
