@@ -1907,8 +1907,13 @@ pub fn on_damaging_hit(
             // Crossed the half line: pre > half AND post <= half.
             if pre > half && post <= half && dmg > 0 {
                 battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
+                // berserk onAfterMoveSecondary: after the hit loop's Update.
+                let saved = battle.p_key_save();
+                battle.p_set_hit(255);
+                battle.p_tag(crate::protocol::step::AFTER_SECONDARY, target_side, target_slot);
                 // Berserk self-boost (+1 SpA) on crossing 50%.
                 battle.apply_boosts(target_side, target_slot, &[(2, 1)], target_side, target_slot);
+                battle.p_key_restore(saved);
             }
         }
     }

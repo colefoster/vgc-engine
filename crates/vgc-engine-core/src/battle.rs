@@ -4396,7 +4396,13 @@ self.trigger_emergency_exits();
         //     `set_forme`) governs this turn's move order, matching PS where
         //     a mon that Mega-Evolves into higher Speed moves accordingly.
         //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
+        let any_mega = megas.1 > 0;
         self.apply_megas(megas);
+        // The megaEvo action's runAction ends with eachEvent('Update')
+        // (sim/battle.ts:2861): a berry already in range is eaten now.
+        if any_mega {
+            self.update_hp_berries();
+        }
 
         // 1b'. Terastallization — PS `terastallize` action, order 106
         //      (sim/battle-queue.ts:188, :230-235), after switches and Mega
@@ -4422,6 +4428,7 @@ self.trigger_emergency_exits();
                 else {
                     continue;
                 };
+                let mut charged = false;
                 if let Some(a) = self.side_mut(side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() && a.moves.get(move_slot as usize) == Some(&data::move_id::BEAKBLAST) {
                         let _ = a.volatiles.add(crate::pokemon::Volatile {
@@ -4429,7 +4436,12 @@ self.trigger_emergency_exits();
                             turns_remaining: 1,
                             payload: 0,
                         });
+                        charged = true;
                     }
+                }
+                // beakblast condition onStart (data/moves.ts beakblast).
+                if charged {
+                    pmon!(self, "-singleturn", side, actor_slot, "|move: Beak Blast");
                 }
                 // Every priorityChargeMove action (Beak Blast, Chilly Reception,
                 // Focus Punch, Shell Trap) ends with runAction's
@@ -9566,7 +9578,10 @@ self.trigger_emergency_exits();
             // damage-modifier the holder's item can do — it runs before
             // Sub interception so the sub sees the halved value too.
             if fixed_dmg_snapshot.is_none() && dmg > 0 {
-                self.p_tag(crate::protocol::step::CALC_ITEM, tside, tslot);
+                // The berry's onSourceModifyDamage, in this target's damage
+                // calc after its effectiveness line.
+                self.p_tag(crate::protocol::step::CALC, tside, tslot);
+                self.p_sub(1);
                 let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
                     weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
                     terrain: self.terrain,
@@ -9743,7 +9758,7 @@ self.trigger_emergency_exits();
             }
             // `-hitcount` after the hit loop (data/mods/champions/scripts.ts:548-551).
             // Dragon Darts (smartTarget) never prints it (scripts.ts:548).
-            if self.plog() && (m.multihit_min > 0 || ctx.hits == 2) && hits_done > 0 && move_id != data::move_id::DRAGONDARTS {
+            if self.plog() && (m.multihit_min > 0 || ctx.hits == 2 || move_id == data::move_id::BEATUP) && hits_done > 0 && move_id != data::move_id::DRAGONDARTS {
                 let single_bond = m.multihit_min == 0 && hits_done == 1;
                 if !single_bond {
                     if let Some(l) = self.protocol.log_mut() {
@@ -10923,7 +10938,13 @@ self.trigger_emergency_exits();
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
         }
-        let attacker_hp_at_hit = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).map_or(0, |a| a.current_hp);
+        // Every active's HP at the hit's start, for its Update below.
+        let mut hp_at_hit = [[0u16; 2]; 2];
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                hp_at_hit[side as usize][slot] = self.side(side).active_mon(slot).map_or(0, |a| a.current_hp);
+            }
+        }
         // Per-hit damage — Beat Up per-ally arm + normal-move
         // per-hit re-roll arm, both threading through the
         // DamagePipeline (attacker item + Friend Guard). Lifted
@@ -11213,15 +11234,26 @@ self.trigger_emergency_exits();
         if !hit_sub {
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
-            crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
-            // The same Update reaches the attacker: a berry it dropped below
-            // its threshold on Rocky Helmet / Rough Skin is eaten here, before
-            // recoil and Life Orb.
-            // (Only when this hit cost it HP: else its berry already had its chance.)
-            if (ctx.actor_side, ctx.actor_slot) != (ctx.tside, ctx.tslot)
-                && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.current_hp < attacker_hp_at_hit)
-            {
-                crate::item::on_after_damage(self, ctx.actor_side, ctx.actor_slot, &mut rng);
+            // eachEvent('Update') over the actives in speed order: the
+            // target, and any other mon this hit cost HP (the attacker on
+            // Rocky Helmet / Rough Skin), eat their berries here, before
+            // recoil and Life Orb. A mon the hit spared already had its turn.
+            let hurt = |b: &Battle, s: SideRef, sl: u8| {
+                (s, sl) != (ctx.tside, ctx.tslot)
+                    && b.side(s).active_mon(sl as usize).is_some_and(|a| a.current_hp < hp_at_hit[s as usize][(sl as usize).min(1)])
+            };
+            let others = [SideRef::P1, SideRef::P2]
+                .into_iter()
+                .any(|s| (0..self.format().active_count().min(2) as u8).any(|sl| hurt(self, s, sl)));
+            if !others {
+                crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
+            } else {
+                let (order, k) = self.actives_by_speed();
+                for &(s, sl) in &order[..k] {
+                    if (s, sl) == (ctx.tside, ctx.tslot) || hurt(self, s, sl) {
+                        crate::item::on_after_damage(self, s, sl, &mut rng);
+                    }
+                }
             }
             self.rng = rng;
         }
@@ -20089,6 +20121,9 @@ self.trigger_emergency_exits();
                             }
                         }
                     }
+                    if k < 2 {
+                        self.p_drop_blocked(opp, slot, &[0, 2]);
+                    }
                     if k > 0 {
                         // Opposing drop — source is the Parting Shot user.
                         let before = self.side(opp).active_mon(slot as usize).map_or([0; 7], |t| t.boosts);
@@ -20382,6 +20417,9 @@ self.trigger_emergency_exits();
                 // Atk-only onTryBoost, data/abilities.ts hypercutter).
                 let blocked = self.side(opp).active_mon(ts as usize)
                     .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, 0));
+                if blocked {
+                    self.p_drop_blocked(opp, ts, &[0]);
+                }
                 if !blocked {
                     // Opposing drop — source is the Strength Sap user.
                     self.apply_boosts(opp, ts, &[(0, -1)], actor_side, actor_slot);
