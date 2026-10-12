@@ -344,6 +344,9 @@ pub struct ProtocolLog {
     pub(crate) illusion: [[u8; 6]; 2],
     /// `pickedTeamSize` (team preview's `maxChosenTeamSize`), 0 = none.
     pub(crate) picked_team_size: u8,
+    /// A keyed replay's random target for a `randomNormal` move (Struggle)
+    /// chosen without one: the `|move|` line's pick, which the hit uses too.
+    pub(crate) random_pick: Option<(crate::side::SideRef, u8)>,
     /// Points where PS stops for input: `sendUpdates` flushes the log so far
     /// as an `update`, then each side's `|request|` (sim/battle.ts:3267-3274).
     pub(crate) sync: Vec<SyncPoint>,
@@ -529,6 +532,7 @@ impl ProtocolLog {
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
             picked_team_size: 0,
+            random_pick: None,
             sync: Vec::new(),
             cuts: Vec::new(),
         }

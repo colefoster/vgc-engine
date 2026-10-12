@@ -21813,6 +21813,15 @@ fn enumerate_targets(
                     return TargetBuf::single((t.side, t.slot));
                 }
             }
+            // A randomNormal move (Struggle) hits the foe its `|move|` line
+            // showed when a keyed replay supplied that pick.
+            if m.target == 13 && chosen.is_none() {
+                if let Some((s, sl)) = battle.protocol.log().and_then(|l| l.random_pick) {
+                    if s == opp && alive(s, sl) {
+                        return TargetBuf::single((s, sl));
+                    }
+                }
+            }
             // Fallback: first alive opposing active slot.
             for slot in 0..active_n {
                 if alive(opp, slot) {

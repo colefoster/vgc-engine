@@ -1456,7 +1456,14 @@ impl Battle {
         }
         let actor = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
         let key = crate::rng::RngKey { turn: self.turn + 1, actor, target: crate::rng::NO_SLOT, move_id, decision: crate::rng::RngDecision::Range };
-        let pick = self.rng.log_pick(key, n as u32).unwrap_or(0) as usize;
+        let keyed = self.rng.log_pick(key, n as u32);
+        let pick = keyed.unwrap_or(0) as usize;
+        if tcode == 13 && chosen.is_none() {
+            let rp = keyed.map(|_| (foe, live[pick.min(n - 1)]));
+            if let Some(l) = self.protocol.log_mut() {
+                l.random_pick = rp;
+            }
+        }
         Some((foe, live[pick.min(n - 1)]))
     }
 
@@ -1997,6 +2004,14 @@ impl Battle {
         if pre.team_preview {
             self.p_sync_cold(SyncKind::TeamPreview);
         }
+    }
+
+    /// A clone that keeps the protocol log (`Clone` drops it, so search
+    /// clones stay cheap). For the PS session's turn replays.
+    pub fn clone_with_log(&self) -> Battle {
+        let mut b = self.clone();
+        b.protocol.0 = self.protocol.0.clone();
+        b
     }
 
     /// Record an input stop (PS makeRequest + sendUpdates) with both
