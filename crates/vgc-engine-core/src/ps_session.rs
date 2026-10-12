@@ -24,7 +24,7 @@ use crate::side::SideRef;
 
 /// Builds the battle from team-preview picks (`None` = no picks yet; the
 /// battle is only read up to its team-preview stop then).
-pub type BattleBuilder = Box<dyn Fn(Option<&[Vec<u8>; 2]>) -> Battle + Send>;
+pub type BattleBuilder = Box<dyn Fn(Option<&[Vec<u8>; 2]>) -> Battle + Send + Sync>;
 
 const VIEWS: [ProtocolView; 4] = [ProtocolView::P1, ProtocolView::P2, ProtocolView::Spectator, ProtocolView::Omniscient];
 
