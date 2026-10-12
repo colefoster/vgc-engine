@@ -14675,14 +14675,13 @@ self.trigger_emergency_exits();
             mon.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
         };
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-        let fired = crate::order::quick_fractional_roll(self, side, actor_slot, move_id, &mut rng);
+        let src = crate::order::quick_fractional_source(self, side, actor_slot, move_id, &mut rng);
+        let fired = src != 0;
         self.rng = rng;
-        // quickdraw / quickclaw onFractionalPriority's `-activate`.
+        // quickdraw / quickclaw onFractionalPriority's `-activate`, for the
+        // one that fired.
         if fired && self.plog() {
-            let draw = self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
-                m.effective_ability_id() == data::ability_id::QUICKDRAW && data::MOVES.get(move_id as usize).is_some_and(|mv| mv.category != 2)
-            }) && self.side(side).active_mon(actor_slot as usize).is_some_and(|m| m.item_id != data::item_id::QUICKCLAW);
-            let what = if draw { "ability: Quick Draw" } else { "item: Quick Claw" };
+            let what = if src == 1 { "ability: Quick Draw" } else { "item: Quick Claw" };
             let id = self.p_ident(side, actor_slot);
             if let Some(l) = self.protocol.log_mut() {
                 l.push_before_turn_start(format!("|-activate|{id}|{what}"));

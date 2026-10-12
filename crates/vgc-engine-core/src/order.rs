@@ -300,22 +300,28 @@ type MoveEntry = (i32, i8, i64, u16, ScheduledAction);
 /// PS's `FractionalPriority` rolls for one move action: Quick Draw, then
 /// Quick Claw unless Quick Draw fired. Returns whether either fired (+0.1).
 pub(crate) fn quick_fractional_roll(battle: &Battle, side: SideRef, actor_slot: u8, move_id: u16, rng: &mut Rng) -> bool {
-    let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return false };
+    quick_fractional_source(battle, side, actor_slot, move_id, rng) != 0
+}
+
+/// [`quick_fractional_roll`], saying which fired: 1 Quick Draw, 2 Quick
+/// Claw, 0 neither (a holder of both rolls Quick Draw first).
+pub(crate) fn quick_fractional_source(battle: &Battle, side: SideRef, actor_slot: u8, move_id: u16, rng: &mut Rng) -> u8 {
+    let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return 0 };
     let status = move_id == u16::MAX || data::MOVES[move_id as usize].category == 2;
     if m.effective_ability_id() == data::ability_id::QUICKDRAW && !status {
         // Keyed by the holder (RngDecision::Ability, docs/conformance-key-contract.md).
         let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
         if rng.ability_chance(battle.turn() + 1, holder, data::ability_id::QUICKDRAW, 3, 10) {
-            return true;
+            return 1;
         }
     }
     if m.item_id == data::item_id::QUICKCLAW
         && !(status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
     {
         let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
-        return rng.item_chance(battle.turn() + 1, holder, data::item_id::QUICKCLAW, 1, 5);
+        return if rng.item_chance(battle.turn() + 1, holder, data::item_id::QUICKCLAW, 1, 5) { 2 } else { 0 };
     }
-    false
+    0
 }
 
 /// The fractional-priority sub-bucket of `side`/`actor_slot` using move
