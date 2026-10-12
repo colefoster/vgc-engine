@@ -7231,6 +7231,12 @@ self.trigger_emergency_exits();
         }
         if move_id == data::move_id::SHELLSIDEARM {
             self.shell_side_arm_modify_move(actor_side, &attacker, target, &mut m_owned);
+            // onPrepareHit: `attrLastMove('[anim] Shell Side Arm ' + category)`
+            // unless aimed at an ally (data/moves.ts shellsidearm).
+            if target.is_none_or(|t| t.side != actor_side) {
+                let cat = if m_owned.category == 0 { "Physical" } else { "Special" };
+                self.p_attr(&format!("[anim] Shell Side Arm {cat}"));
+            }
         }
         let m = &m_owned;
 
@@ -11122,6 +11128,13 @@ self.trigger_emergency_exits();
         // with HP takes the target's Berry (takeItem; Sticky Hold blocks while
         // its holder has HP) and eats it (singleEvent 'Eat', no Unnerve check).
         // Losing it triggers the target's Unburden (onTakeItem), not Symbiosis.
+        // Shell Side Arm onHit: `this.hint(move.category + " Shell Side Arm")`
+        // unless the target is an ally (data/moves.ts shellsidearm).
+        if ctx.move_id == data::move_id::SHELLSIDEARM && ctx.tside != ctx.actor_side && self.plog() {
+            self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+            let cat = if ctx.move_def.category == 0 { "Physical" } else { "Special" };
+            self.p_push(format!("|-hint|{cat} Shell Side Arm"));
+        }
         if matches!(ctx.move_id, data::move_id::BUGBITE | data::move_id::PLUCK) {
             let user_alive = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive());
             let berry = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
@@ -21341,6 +21354,17 @@ self.trigger_emergency_exits();
                         }
                     }
                     let mut acc_hit = [true; 2];
+                    // hitStepTryImmunity (before accuracy): a powder-immune
+                    // target gets `-immune` and leaves the move's targets
+                    // (sim/battle-actions.ts:669-672), so `[spread]` omits it.
+                    if m.is_powder {
+                        for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
+                            if self.target_is_powder_immune(ts, tslot) {
+                                acc_hit[i] = false;
+                                pmon!(self, "-immune", ts, tslot);
+                            }
+                        }
+                    }
                     if per_target_acc {
                         let (mut any_rolled, mut any_hit) = (false, false);
                         let user_noguard = self
