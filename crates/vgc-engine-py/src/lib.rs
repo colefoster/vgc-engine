@@ -312,6 +312,7 @@ fn choice_from_tuple(c: &LegalChoice) -> PyResult<core::Choice> {
         }
         "switch" => core::Choice::Switch { actor_slot, team_index: arg },
         "pass" => core::Choice::Pass { actor_slot },
+        "recharge" => core::Choice::Move { actor_slot, move_slot: core::RECHARGE_MOVE_SLOT, target: None },
         other => return Err(PyValueError::new_err(format!("unknown choice kind: {other}"))),
     })
 }
@@ -850,7 +851,7 @@ impl PyBattle {
     /// `legal_choices` returns — `(kind, actor_slot, arg, target_side,
     /// target_slot)` — so a caller round-trips: read legal choices, pick
     /// one per active slot, pass them straight back here. `kind` is one of
-    /// `"move"`, `"tera"`, `"mega"`, `"switch"`, `"pass"`. Doubles take up
+    /// `"move"`, `"tera"`, `"mega"`, `"switch"`, `"pass"`, `"recharge"`. Doubles take up
     /// to two choices per side (one per active slot); singles take one.
     /// Returns the step result string (`"continue"` / `"p1_win"` /
     /// `"p2_win"` / `"tie"`). This is the general stepping primitive;
@@ -941,17 +942,24 @@ impl PyBattle {
     /// Return a list of (kind, actor_slot, move_slot_or_team_index, target_side, target_slot)
     /// tuples describing legal choices for one slot. Phase 2 wire-level Python API;
     /// will be replaced with a proper Choice object once mechanics land.
+    /// A mon that must recharge has exactly `[("recharge", actor_slot, 0, -1, -1)]`
+    /// (PS `move 1`); a locked two-turn or Outrage-style move is its one `"move"`.
     fn legal_choices(&self, side: u8, actor_slot: u8) -> PyResult<Vec<LegalChoice>> {
         let s = match side {
             0 => core::SideRef::P1,
             1 => core::SideRef::P2,
             _ => return Err(PyValueError::new_err("side must be 0 or 1")),
         };
+        let recharging =
+            self.inner.side(s).active_mon(actor_slot as usize).is_some_and(|m| m.must_recharge && m.is_alive());
         Ok(self
             .inner
             .legal_choices(s, actor_slot)
             .into_iter()
             .map(|c| match c {
+                core::Choice::Move { actor_slot, move_slot, target: None } if recharging => {
+                    ("recharge".to_string(), actor_slot, move_slot, -1, -1)
+                }
                 core::Choice::Move { actor_slot, move_slot, target } => {
                     let (ts, tl) = target.map_or((-1, -1), |t| {
                         (
