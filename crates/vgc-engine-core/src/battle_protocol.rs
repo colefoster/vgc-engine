@@ -470,6 +470,13 @@ impl Battle {
     #[cold]
     #[inline(never)]
     fn p_check_win_cold(&mut self, last_faint: Option<SideRef>) {
+        let winner = self.p_winner(last_faint);
+        self.p_print_win(winner);
+    }
+
+    /// PS `checkWin` by the faints already printed (`pokemonLeft`):
+    /// `Some(winner)` (`Some(None)` a tie) once a side has none left.
+    pub(crate) fn p_winner(&self, last_faint: Option<SideRef>) -> Option<Option<SideRef>> {
         let left = |b: &Battle, s: SideRef| {
             let bit_base = s as u16 * 8;
             let logged = b.protocol.log().map(|l| l.fainted_logged).unwrap_or(0);
@@ -481,12 +488,15 @@ impl Battle {
                 .count()
         };
         let (l1, l2) = (left(self, SideRef::P1), left(self, SideRef::P2));
-        let winner = match (l1, l2) {
+        match (l1, l2) {
             (0, 0) => Some(last_faint),
             (0, _) => Some(Some(SideRef::P2)),
             (_, 0) => Some(Some(SideRef::P1)),
             _ => None,
-        };
+        }
+    }
+
+    fn p_print_win(&mut self, winner: Option<Option<SideRef>>) {
         if let Some(w) = winner {
             // The win ends the log: it sorts after everything an open
             // window holds, and the window flushes now.
