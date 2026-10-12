@@ -930,6 +930,7 @@ impl Battle {
                 None => b.lead_switch_in_order(),
             };
             b.defer_white_herb = true;
+            b.p_pre_announce(&leads[..k]);
             for &(side, slot) in &leads[..k] {
                 crate::ability::on_switch_in(&mut b, side, slot);
             }
@@ -5494,6 +5495,13 @@ self.trigger_emergency_exits();
         // before the item handlers (seeds / Booster Energy / Room Service
         // carry `onSwitchInPriority` -1 or -2, data/items.ts).
         self.defer_white_herb = true;
+        if self.plog() {
+            let mut order = [(SideRef::P1, 0u8); 4];
+            for (o, &(_, s, sl)) in order.iter_mut().zip(&entered[..n]) {
+                *o = (s, sl);
+            }
+            self.p_pre_announce(&order[..n]);
+        }
         for &(_, side, slot) in &entered[..n] {
             crate::ability::on_switch_in(self, side, slot);
         }
@@ -10960,6 +10968,14 @@ self.trigger_emergency_exits();
                     if t.is_alive() && t.effective_ability_id() == data::ability_id::UNBURDEN {
                         t.unburden_active = true;
                     }
+                }
+                // bugbite / pluck onHit: `-enditem|[from] stealeat`, then the
+                // berry's Eat on the user (data/moves.ts bugbite).
+                if self.plog() {
+                    self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+                    let of = self.p_ident(ctx.actor_side, ctx.actor_slot);
+                    let mv = crate::battle_protocol::move_name(ctx.move_id);
+                    self.p_item_line("-enditem", ctx.tside, ctx.tslot, berry, &format!("|[from] stealeat|[move] {mv}|[of] {of}"));
                 }
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::item::cud_chew_reeat(self, ctx.actor_side, ctx.actor_slot, berry, &mut rng);

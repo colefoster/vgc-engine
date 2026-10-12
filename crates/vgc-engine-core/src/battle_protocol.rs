@@ -863,6 +863,23 @@ impl Battle {
         }
     }
 
+    /// Unnerve's onSwitchInPriority 1: in a batch of switch-ins its
+    /// announcement precedes every priority-0 ability (data/abilities.ts
+    /// unnerve; sim/battle-actions.ts runSwitch fieldEvent('SwitchIn')).
+    pub(crate) fn p_pre_announce(&mut self, order: &[(SideRef, u8)]) {
+        if !self.plog() || order.len() < 2 {
+            return;
+        }
+        for &(s, sl) in order {
+            if self.side(s).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::UNNERVE) {
+                pmon!(self, "-ability", s, sl, "|Unnerve");
+                if let Some(l) = self.protocol.log_mut() {
+                    l.pre_announced |= 1 << (s as u8 * 2 + sl.min(1));
+                }
+            }
+        }
+    }
+
     /// PS `Side.toString()`: `p1: <player name>`.
     pub(crate) fn p_side_ident(&self, side: SideRef) -> String {
         let name = self.protocol.log().map(|l| l.player_names[side as usize].as_str()).unwrap_or("");
@@ -1185,6 +1202,16 @@ impl Battle {
     #[inline(never)]
     fn p_ability_announce_cold(&mut self, side: SideRef, slot: u8, ability: u16) {
         use data::ability_id as a;
+        let bit = 1u8 << (side as u8 * 2 + slot.min(1));
+        if ability == a::UNNERVE
+            && self.protocol.log_mut().is_some_and(|l| {
+                let was = l.pre_announced & bit != 0;
+                l.pre_announced &= !bit;
+                was
+            })
+        {
+            return;
+        }
         let announce = matches!(
             ability,
             a::MOLDBREAKER
