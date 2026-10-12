@@ -8012,6 +8012,23 @@ self.trigger_emergency_exits();
                 pmon!(self, "-activate", tside, tslot, "|move: Psychic Terrain");
                 continue;
             }
+            // psychicterrain onTryHit's hint for an airborne target
+            // (data/moves.ts:14119-14123).
+            if m.priority > 0
+                && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+                && tside != actor_side
+                && defender.semi_invuln == 0
+                && self.plog()
+            {
+                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                self.p_push("|-hint|Psychic Terrain doesn't affect airborne Pokémon.".to_string());
+            }
+            // poltergeist onTryHit (data/moves.ts:13607-13609).
+            if move_id == data::move_id::POLTERGEIST && self.plog() {
+                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                let item = crate::battle_protocol::item_name(defender.item_id);
+                pmon!(self, "-activate", tside, tslot, "|move: Poltergeist|{item}");
+            }
 
             // OHKO moves — Fissure, Horn Drill, Guillotine, Sheer Cold.
             // PS data/moves.ts: each carries `ohko: true` (Sheer Cold:
@@ -9571,7 +9588,20 @@ self.trigger_emergency_exits();
             move_hit = true;
             let mut hits_done = 0u8;
             for hit_idx in 0..ctx.hits {
-                self.p_set_hit(hit_idx as u8);
+                // Dragon Darts over two targets: hit n strikes targets[n-1]
+                // (data/mods/champions/scripts.ts:467-480).
+                let hit_no = if darts_phase[ti] == 2 { (ti - 2) as u8 } else { hit_idx as u8 };
+                self.p_set_hit(hit_no);
+                if move_id == data::move_id::DRAGONDARTS && self.plog() {
+                    self.p_tag(crate::protocol::step::PRE, tside, tslot);
+                    if hit_no == 0 {
+                        self.p_retarget(tside, tslot);
+                    } else {
+                        let id = self.p_ident(actor_side, actor_slot);
+                        let tgt = self.p_ident(tside, tslot);
+                        self.p_push(format!("|-anim|{id}|Dragon Darts|{tgt}"));
+                    }
+                }
                 self.p_tag(crate::protocol::step::CALC, tside, tslot);
                 // Each hit's getDamage reads the live mons: a burn, Weak
                 // Armor or Stamina from an earlier hit applies to the next
@@ -9627,7 +9657,8 @@ self.trigger_emergency_exits();
                 hit_target = Some((tside, tslot));
             }
             // `-hitcount` after the hit loop (data/mods/champions/scripts.ts:548-551).
-            if self.plog() && (m.multihit_min > 0 || ctx.hits == 2) && hits_done > 0 && darts_phase[ti] == 0 {
+            // Dragon Darts (smartTarget) never prints it (scripts.ts:548).
+            if self.plog() && (m.multihit_min > 0 || ctx.hits == 2) && hits_done > 0 && move_id != data::move_id::DRAGONDARTS {
                 let single_bond = m.multihit_min == 0 && hits_done == 1;
                 if !single_bond {
                     if let Some(l) = self.protocol.log_mut() {
@@ -11131,6 +11162,16 @@ self.trigger_emergency_exits();
             // tick on a KO hit too). Individual ability arms in
             // `on_damaging_hit` gate on `target_is_alive` when
             // relevant (Stamina only boosts a live target).
+            // DamagingHit order: Rough Skin / Iron Barbs (order 1), Rocky
+            // Helmet (2), then the unordered abilities (Flame Body, Static…)
+            // (data/items.ts rockyhelmet onDamagingHitOrder; data/abilities.ts).
+            let contact = crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker);
+            let order1 = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                matches!(d.effective_ability_id(), data::ability_id::ROUGHSKIN | data::ability_id::IRONBARBS)
+            });
+            if contact && !order1 {
+                crate::item::on_attacker_contact_hit(self, tside, tslot, actor_side, actor_slot);
+            }
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             crate::ability::on_damaging_hit(
                 self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
@@ -11148,7 +11189,7 @@ self.trigger_emergency_exits();
             // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
             // Skin / Iron Barbs: contact-only, attacker not Magic-
             // Guarded. PS `data/items.ts:rockyhelmet`.
-            if crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker) {
+            if contact && order1 {
                 crate::item::on_attacker_contact_hit(
                     self, tside, tslot, actor_side, actor_slot,
                 );
@@ -13524,10 +13565,19 @@ self.trigger_emergency_exits();
         }
         // Double Shock's self.onHit: Electric becomes '???'.
         if move_id == data::move_id::DOUBLESHOCK && any_damage_dealt > 0 {
+            // setType(types with Electric -> "???") (data/moves.ts doubleshock).
+            let shown = self.plog().then(|| {
+                self.side(actor_side).active_mon(actor_slot as usize).map(|a| {
+                    let (t, n) = a.effective_types();
+                    t[..n as usize].iter().map(|&x| if x == 3 { "???" } else { crate::battle_protocol::type_name(x) }).collect::<Vec<_>>().join("/")
+                })
+            }).flatten();
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.lose_type(3);
             }
-            self.p_typechange(actor_side, actor_slot, "|[from] move: Double Shock");
+            if let Some(types) = shown {
+                pmon!(self, "-start", actor_side, actor_slot, "|typechange|{types}|[from] move: Double Shock");
+            }
         }
 
         if move_id == data::move_id::FINALGAMBIT && any_damage_dealt > 0 {
@@ -18514,6 +18564,11 @@ self.trigger_emergency_exits();
                             t.stats.spe = us;
                         }
                     }
+                    // speedswap onHit (data/moves.ts:17443).
+                    if self.plog() {
+                        let of = self.p_ident(tside, tslot);
+                        pmon!(self, "-activate", actor_side, actor_slot, "|move: Speed Swap|[of] {of}");
+                    }
                 } else {
                     // Boost-stage indices to exchange: [atk,def,spa,spd,spe,
                     // acc,eva].
@@ -18543,6 +18598,16 @@ self.trigger_emergency_exits();
                                 t.boosts[i] = ub[i];
                             }
                         }
+                    }
+                    // `-swapboost` (data/moves.ts:7994, :8469, :13804).
+                    if self.plog() {
+                        let stats = match move_id {
+                            data::move_id::POWERSWAP => "|atk, spa",
+                            data::move_id::GUARDSWAP => "|def, spd",
+                            _ => "",
+                        };
+                        let of = self.p_ident(tside, tslot);
+                        pmon!(self, "-swapboost", actor_side, actor_slot, "|{of}{stats}|[from] move: {}", m.name);
                     }
                 }
             }
@@ -21118,7 +21183,7 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         "bulkup" => &[(0, 1), (1, 1)],
         "cosmicpower" => &[(1, 1), (3, 1)],
         "dragondance" => &[(0, 1), (4, 1)],
-        "shiftgear" => &[(0, 1), (4, 2)],
+        "shiftgear" => &[(4, 2), (0, 1)], // PS key order
         // Three-stat:
         "coil" => &[(0, 1), (1, 1), (5, 1)],
         "quiverdance" => &[(2, 1), (3, 1), (4, 1)],
@@ -21127,7 +21192,7 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         // Pack (handled at the call site) react to the negative stages.
         // PS data/moves.ts:shellsmash `boosts {atk:+2, spa:+2, spe:+2,
         // def:-1, spd:-1}`, target self.
-        "shellsmash" => &[(0, 2), (2, 2), (4, 2), (1, -1), (3, -1)],
+        "shellsmash" => &[(1, -1), (3, -1), (0, 2), (2, 2), (4, 2)], // PS key order
         _ => return None,
     })
 }
@@ -21945,6 +22010,8 @@ fn apply_secondary_effect(
                         payload: dur,
                     });
                 }
+                // confusion onStart (data/conditions.ts confusion).
+                pmon!(battle, "-start", target_side, target_slot, "|confusion");
                 // Persim / Lum Berry onUpdate cures it at once.
                 crate::item::try_consume_persim_berry(battle, target_side, target_slot);
             }
