@@ -7565,6 +7565,8 @@ self.trigger_emergency_exits();
         // `darts_phase[i]`: 0 normal, 1 probe, 2 hits.
         let mut darts_phase = [0u8; 4];
         let mut darts_pass = [false; 2];
+        // PS `move.smartTarget`: silences the first Protect / immunity.
+        let mut darts_smart = true;
         if move_id == data::move_id::DRAGONDARTS && targets.len() == 1 && self.format().active_count() > 1 {
             let (ts, tsl) = targets[0];
             let other = (ts, tsl ^ 1);
@@ -8237,6 +8239,20 @@ self.trigger_emergency_exits();
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(capped);
+                // The OHKO hit's `-damage`, then (after the loop's faints)
+                // `-ohko` (data/mods/champions/scripts.ts:570).
+                if self.plog() {
+                    self.p_tag(crate::protocol::step::DAMAGE, tside, tslot);
+                    self.p_damage(tside, tslot, "");
+                    if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.current_hp == 0) {
+                        let saved = self.p_key_save();
+                        self.p_set_hit(255);
+                        self.p_tag_step(crate::protocol::step::RECOIL);
+                        self.p_sub(15);
+                        self.p_push("|-ohko".to_string());
+                        self.p_key_restore(saved);
+                    }
+                }
                 self.apply_destiny_bond_counter_faint(actor_side, actor_slot, tside, tslot);
                 continue;
             }
@@ -8385,7 +8401,10 @@ self.trigger_emergency_exits();
                     let variant = defender.protect_variant();
                     // protect et al. onTryHit (data/moves.ts protect condition):
                     // a smartTarget move (Dragon Darts) is blocked silently.
-                    if darts_phase[ti] != 1 {
+                    // The first such block clears smartTarget; later ones print.
+                    if darts_phase[ti] == 1 && darts_smart {
+                        darts_smart = false;
+                    } else {
                         pmon!(self, "-activate", tside, tslot, "|move: Protect");
                     }
                     if variant != 0
@@ -8794,7 +8813,14 @@ self.trigger_emergency_exits();
             if m.type_ == 8 && !defender_grounded && move_id != data::move_id::THOUSANDARROWS {
                 // runImmunity's Ground check (sim/pokemon.ts runImmunity).
                 self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
-                if defender.effective_ability_id() == data::ability_id::LEVITATE && !attacker_breaks_mold {
+                // runImmunity: isGrounded() is null (Levitate) only for a
+                // non-Flying holder (sim/pokemon.ts:2256-2262, isGrounded).
+                let flying = {
+                    let (t, n) = defender.effective_types();
+                    t[..n as usize].contains(&9)
+                };
+                if darts_phase[ti] == 1 && darts_smart {
+                } else if defender.effective_ability_id() == data::ability_id::LEVITATE && !attacker_breaks_mold && !flying {
                     pmon!(self, "-immune", tside, tslot, "|[from] ability: Levitate");
                 } else {
                     pmon!(self, "-immune", tside, tslot);
@@ -8822,7 +8848,10 @@ self.trigger_emergency_exits();
                     && crate::damage::effectiveness_for_attack(&attacker, move_id, move_type, &defender).is_immune()
                 {
                     self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
-                    pmon!(self, "-immune", tside, tslot);
+                    // runImmunity(move, !move.smartTarget).
+                    if !(darts_phase[ti] == 1 && darts_smart) {
+                        pmon!(self, "-immune", tside, tslot);
+                    }
                     continue;
                 }
             }
@@ -10108,10 +10137,11 @@ self.trigger_emergency_exits();
                     a.fainted = true;
                 }
             }
-            // jumpkick / highjumpkick / axekick / supercellslam onMoveFail.
+            // jumpkick / highjumpkick / axekick / supercellslam onMoveFail:
+            // damage(..., conditions.get(<move name>)), shown by id.
             if self.plog() {
-                let name = self.protocol.log().map(|l| crate::battle_protocol::move_name(l.active_move)).unwrap_or("");
-                self.p_damage(actor_side, actor_slot, &format!("|[from] {name}"));
+                let id = self.protocol.log().map(|l| l.active_move).filter(|&m| m != u16::MAX).map(|m| data::MOVES[m as usize].slug).unwrap_or("");
+                self.p_damage(actor_side, actor_slot, &format!("|[from] {id}"));
             }
         }
     }
@@ -11314,9 +11344,17 @@ self.trigger_emergency_exits();
             // target, and any other mon this hit cost HP (the attacker on
             // Rocky Helmet / Rough Skin), eat their berries here, before
             // recoil and Life Orb. A mon the hit spared already had its turn.
+            // (Any other active holding a berry that is in range: eachEvent
+            // reaches every mon, e.g. one already low from earlier.)
             let hurt = |b: &Battle, s: SideRef, sl: u8| {
                 (s, sl) != (ctx.tside, ctx.tslot)
-                    && b.side(s).active_mon(sl as usize).is_some_and(|a| a.current_hp < hp_at_hit[s as usize][(sl as usize).min(1)])
+                    && b.side(s).active_mon(sl as usize).is_some_and(|a| {
+                        a.is_alive()
+                            && (a.current_hp < hp_at_hit[s as usize][(sl as usize).min(1)]
+                                || (a.item_id != u16::MAX
+                                    && data::ITEMS[a.item_id as usize].is_berry
+                                    && a.current_hp <= a.stats.hp / 2))
+                    })
             };
             let others = [SideRef::P1, SideRef::P2]
                 .into_iter()
@@ -17912,7 +17950,8 @@ self.trigger_emergency_exits();
                 // stops spread (`allAdjacent` / `allAdjacentFoes`) moves,
                 // Quick Guard priority > 0 moves.
                 // onTry `!!this.queue.willAct()`: nothing left to act fails it.
-                if pending_kind.iter().flatten().all(|&k| k == 0) {
+                // (Turn-start switches already ran: only moves can still act.)
+                if pending_kind.iter().flatten().all(|&k| !matches!(k, 1 | 2)) {
                     self.p_try_fail(actor_side, actor_slot);
                     self.ps_status_failed();
                     return;
@@ -18611,16 +18650,18 @@ self.trigger_emergency_exits();
                         let immune = match self.side(s).active_mon(slot as usize) {
                             Some(mon) if mon.is_alive() => {
                                 let is_source = s == actor_side && slot == actor_slot;
+                                // Soundproof, and Good as Gold against another's
+                                // status move (data/abilities.ts goodasgold onTryHit).
                                 !is_source
                                     && !breaks_mold
-                                    && mon.effective_ability_id()
-                                        == data::ability_id::SOUNDPROOF
+                                    && matches!(mon.effective_ability_id(), data::ability_id::SOUNDPROOF | data::ability_id::GOODASGOLD)
                             }
                             _ => true, // empty / fainted slot — skip
                         };
                         if immune {
                             if self.plog() && self.side(s).active_mon(slot as usize).is_some_and(|mon| mon.is_alive()) {
-                                pmon!(self, "-immune", s, slot, "|[from] ability: Soundproof");
+                                let ab = self.side(s).active_mon(slot as usize).map_or(0, |mon| mon.effective_ability_id());
+                                pmon!(self, "-immune", s, slot, "|[from] ability: {}", crate::battle_protocol::ability_name(ab));
                                 perish_result = true;
                             }
                             continue;
@@ -21184,6 +21225,20 @@ self.trigger_emergency_exits();
                                 .is_some_and(|p| p.is_alive());
                             if ally_alive {
                                 self.apply_boosts(actor_side, ally_slot, &[(0, 1)], actor_side, actor_slot);
+                                // Howl's targets are the side's actives in slot
+                                // order, as a spread (sim/battle-actions.ts:618).
+                                if self.plog() {
+                                    if actor_slot == 1 {
+                                        if let Some(mut two) = self.protocol.log_mut().and_then(|l| l.pop_tail_lines(2, "|-boost|")) {
+                                            two.swap(0, 1);
+                                            for line in two {
+                                                self.p_push(line);
+                                            }
+                                        }
+                                    }
+                                    let s = actor_side as u8 + 1;
+                                    self.p_attr(&format!("[spread] p{s}a,p{s}b"));
+                                }
                             }
                             // Howl also raises an ally's Atk — Mirror
                             // Herb on a foe should copy.
