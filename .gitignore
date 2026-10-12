@@ -14,3 +14,4 @@ Cargo.lock.bak
 .env
 .env.*
 !.env.example
+/dist/
