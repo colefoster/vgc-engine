@@ -20179,12 +20179,21 @@ self.trigger_emergency_exits();
             }
             data::move_id::SOAK => {
                 // PS data/moves.ts:soak — set the target's typing to pure
-                // Water (type code 2). 100% accuracy. Idempotent if the
-                // target is already pure Water (PS -fails for the animation;
-                // the resulting typing is identical, so we just re-set it).
+                // Water (type code 2). 100% accuracy. onHit fails with
+                // `-fail|<target>` when the target is already pure Water or
+                // setType refuses (Terastallized, sim/pokemon.ts:2119).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Soak_(move)>
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((opp, slot)) = opp_target {
+                    let fails = self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                        let (types, n) = t.effective_types();
+                        t.is_alive() && (t.terastallized || (n == 1 && types[0] == 2))
+                    });
+                    if fails {
+                        pmon!(self, "-fail", opp, slot);
+                        self.ps_status_failed();
+                        return;
+                    }
                     if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                         if t.is_alive() {
                             t.set_type_override(2, None);
