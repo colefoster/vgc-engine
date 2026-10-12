@@ -45,6 +45,9 @@ pub struct StreamOptions {
     pub keep_alive: bool,
     /// A fixed `|t:|` value (tests); `None` is wall-clock seconds, as PS.
     pub timestamp: Option<u64>,
+    /// `ps-rng`: keep the PRNG draw trace ([`BattleStream::draw_spans`]),
+    /// for the sim-diff gate's draw-order check.
+    pub trace: bool,
 }
 
 struct Player {
@@ -200,6 +203,20 @@ impl BattleStream {
     /// PS `battle.inputLog`.
     pub fn input_log(&self) -> &[String] {
         &self.input_log
+    }
+
+    /// With [`StreamOptions::trace`] under `ps-rng`: each PRNG draw of the
+    /// committed battle so far as PS's `random(m, n)` span (`n - m`; `n`
+    /// for `random(n)` and `randomChance(_, n)`; 0 for `random()`).
+    pub fn draw_spans(&self) -> Vec<u32> {
+        #[cfg(feature = "ps-rng")]
+        if let Some(s) = self.session.as_ref() {
+            let mut b = s.battle().clone_with_log();
+            if let Some(t) = b.rng_mut().ps_mut().and_then(|p| p.take_trace()) {
+                return t.iter().map(|d| d.span).collect();
+            }
+        }
+        Vec::new()
     }
 
     /// PS `BattleStream._write` (sim/battle-stream.ts:35-54): every `>`
@@ -472,8 +489,17 @@ impl BattleStream {
         let id = format.id;
         let seed = self.seed.clone();
         let [p1, p2] = teams;
+        let trace = self.opts.trace;
         let builder = move |picks: Option<&[Vec<u8>; 2]>| {
-            let rng = make_rng(&seed).expect("seed checked at >start");
+            #[allow(unused_mut)]
+            let mut rng = make_rng(&seed).expect("seed checked at >start");
+            #[cfg(feature = "ps-rng")]
+            if trace {
+                if let Some(p) = rng.ps_mut() {
+                    p.enable_trace();
+                }
+            }
+            let _ = trace;
             let mut b = Battle::with_protocol(cfg.clone(), rng, p1.clone(), p2.clone(), &opts, id, picks);
             b.decision_phases = true;
             b.champions = champions;
@@ -669,7 +695,14 @@ pub fn run_simulate_battle(opts: StreamOptions, mut input: impl std::io::Read, m
     let mut buf = vec![0u8; 1 << 16];
     loop {
         let n = match input.read(&mut buf) {
-            Ok(0) => return Ok(()),
+            Ok(0) => {
+                // The sim-diff gate's draw-order check (tools/protocol/sim-diff.js).
+                if let Some(path) = std::env::var_os("VGC_DRAW_TRACE") {
+                    let spans: Vec<String> = s.draw_spans().iter().map(u32::to_string).collect();
+                    let _ = std::fs::write(path, spans.join("\n"));
+                }
+                return Ok(());
+            }
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e.to_string()),

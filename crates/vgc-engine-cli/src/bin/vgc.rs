@@ -249,7 +249,8 @@ fn run_sim(a: &SimArgs) -> Result<ExitCode, String> {
     let mode = vgc_engine_core::ProtocolMode::parse(&a.protocol).ok_or_else(|| format!("unknown --protocol {} (ps | compact)", a.protocol))?;
     let replay = if a.spectate { Replay::Spectator } else if a.replay { Replay::Omniscient } else { Replay::Off };
     let _ = (a.debug, a.skip_build);
-    let opts = StreamOptions { replay, mode, ..Default::default() };
+    let trace = std::env::var_os("VGC_DRAW_TRACE").is_some();
+    let opts = StreamOptions { replay, mode, trace, ..Default::default() };
     run_simulate_battle(opts, std::io::stdin().lock(), std::io::stdout().lock())?;
     Ok(ExitCode::SUCCESS)
 }

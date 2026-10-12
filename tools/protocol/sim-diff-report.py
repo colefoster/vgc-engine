@@ -2,12 +2,13 @@
 """Summarize a sim-diff.js run: identical full streams, and for the rest the
 first divergence, split into
 
-  formatting  every |request| and the end record match PS (the battle state
-              never diverged): only log text / line order differs;
-  draw        the state diverged and the first differing line is a random
-              outcome (damage roll, crit, miss, secondary, speed-tie order,
-              random target): PS's PRNG draw order the engine doesn't follow;
-  other       the state diverged on a deterministic line (a mechanic).
+  draw        PS's and the engine's PRNG draws (as random(m, n) spans) part
+              before the write whose output first differs: PS's draw order
+              the engine doesn't follow (or a mechanic that draws differently);
+  formatting  the draws agree and every |request| and the end record match
+              PS: only log text / line order differs;
+  other       the draws agree but the battle state differs: a mechanic.
+  (Runs without draw traces fall back to line-shape heuristics.)
 
 usage: python3 tools/protocol/sim-diff-report.py <out-dir> [--list bucket]
 """
@@ -31,6 +32,12 @@ def strip_nums(s):
     return re.sub(r'\d+/\d+|\b\d+\b', '#', s or '')
 
 def kind(r):
+    # The PRNG draw check (sim-diff.js `draw_order`): PS's and the engine's
+    # draw sequences part before the first differing output.
+    if 'draw_order' in r:
+        if r['draw_order']:
+            return 'draw'
+        return 'formatting' if r.get('state_equal') else 'other'
     if r.get('state_equal'):
         return 'formatting'
     ps, vg = r.get('ps') or '', r.get('vgc') or ''
