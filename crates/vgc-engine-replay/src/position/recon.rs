@@ -52,6 +52,25 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
             requests[own as usize] = embedded_request(lines, cut);
         }
     }
+    let know = |s: usize| opts.viewer.is_none_or(|v| v as usize == s);
+    // A request names the real actives: an Illusion the log has not
+    // revealed yet is one.
+    for side in 0..2 {
+        let Some(r) = requests[side].as_ref().filter(|_| know(side)) else { continue };
+        let list: Vec<Value> = r.pointer("/side/pokemon").and_then(Value::as_array).cloned().unwrap_or_default();
+        for k in 0..n_active {
+            let Some(rm) = list.get(k).filter(|x| x.get("active").and_then(Value::as_bool) == Some(true)) else { continue };
+            let name = rm.get("ident").and_then(Value::as_str).and_then(|x| x.split_once(": ")).map(|x| x.1.to_string()).unwrap_or_default();
+            let det = rm.get("details").and_then(Value::as_str).unwrap_or("").to_string();
+            let Some(cur) = tr.slots[side][k] else { continue };
+            let c = &tr.mons[side][cur];
+            if c.name.as_deref() == Some(name.as_str()) && same_family(&c.preview, &parse_details(&det).0) {
+                continue;
+            }
+            let real = tr.illusion_target(side, &name, &det, usize::MAX);
+            tr.illusion_swap(side, k, real);
+        }
+    }
     let later = if opts.lookahead {
         let (full_view, ex) = channel_view(lines, kind, opts.viewer);
         let mut t2 = Tracker::new(champions);
@@ -84,7 +103,6 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         return Err(err(&format!("unsupported: {u}"), unsupported.join(", ")));
     }
 
-    let know = |s: usize| opts.viewer.is_none_or(|v| v as usize == s);
     let mut team_orders: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     let mut picks: [Vec<SetPick>; 2] = [Vec::new(), Vec::new()];
     let mut team_src = [Src::Exact; 2];
@@ -179,6 +197,12 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         let leads: Vec<usize> = (0..n_active).filter_map(|k| tr.leads[side][k]).collect();
         if leads.len() != n_active {
             return Err(err("parse", format!("{}: no leads in the log", side_key(side_ref(side)))));
+        }
+        for &l in &leads {
+            if !brought.contains(&l) {
+                brought.push(l);
+                bsrc.push((Src::Exact, None));
+            }
         }
         let mut rest: Vec<usize> = brought.iter().copied().filter(|i| !leads.contains(i)).collect();
         rest.sort_by_key(|&i| (tr.mons[side][i].first_seen.unwrap_or(usize::MAX), i));
@@ -392,10 +416,7 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
             let pm = &mut sd.team[k];
             // PS `lastItem` (Recycle, Belch) lasts the active stint: an item
             // used up since the mon last came in. A knocked-off item is not one.
-            let used_up = m.item_lost && !m.item_knocked && m.item_lost_line.is_some_and(|l| l > m.switch_line);
-            if !used_up {
-                pm.consumed_item = u16::MAX;
-            }
+            pm.consumed_item = m.used_item.as_deref().and_then(|x| data::ITEMS.iter().position(|d| d.slug == slug(x))).map(|x| x as u16).unwrap_or(u16::MAX);
             // A board skips a fainted mon's PP.
             for (j, v) in board_pp[side][k].as_array().into_iter().flatten().enumerate().take(4) {
                 if let Some(x) = v.as_u64() {
@@ -440,6 +461,15 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
                     pm.last_used_move_target = if matches!(single, 0 | 4 | 10 | 13) { foe_alive[side].first().copied().unwrap_or(255) } else { 255 };
                 }
             }
+            if let Some(v) = m.vols.iter().find(|v| v.name == "?DRAGONCHEER") {
+                let _ = v;
+                let (types, nt) = pm.effective_types();
+                let boost: u8 = if (0..nt as usize).any(|t| types[t] == 14) { 2 } else { 1 };
+                if !pm.volatiles.has(VolatileKind::DragonCheer) {
+                    let _ = pm.volatiles.add(vgc_engine_core::Volatile { kind: VolatileKind::DragonCheer, turns_remaining: 0, payload: boost as u32 });
+                    pm.crit_stage_volatile = pm.crit_stage_volatile.saturating_add(boost);
+                }
+            }
             // Last Resort's record: the moves used since it came in.
             pm.moves_used = 0;
             for mv in &m.stint_moves {
@@ -464,6 +494,48 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
             }
         }
     }
+    // Speed Swap, Power / Guard Split and Power Trick, in log order.
+    let mut ops: Vec<(usize, String, (usize, usize), Option<(usize, usize)>)> = Vec::new();
+    for side in 0..2 {
+        for (i, m) in tr.mons[side].iter().enumerate() {
+            if m.active.is_some() {
+                for (line, kind, other) in &m.stat_ops {
+                    if !ops.iter().any(|o| o.0 == *line && o.1 == *kind) {
+                        ops.push((*line, kind.clone(), (side, i), *other));
+                    }
+                }
+            }
+        }
+    }
+    ops.sort_by_key(|o| o.0);
+    for (_, kind, a, other) in ops {
+        let pos = |(s, i): (usize, usize)| team_orders[s].iter().position(|&x| x == i).map(|k| (s, k));
+        let Some((sa, ka)) = pos(a) else { continue };
+        let get = |b: &Battle, s: usize, k: usize| b.side(side_ref(s)).team[k].stats;
+        let mut x = get(&b, sa, ka);
+        let other_k = other.and_then(pos);
+        let mut y = other_k.map(|(s, k)| get(&b, s, k));
+        match (kind.as_str(), y.as_mut()) {
+            ("speedswap", Some(y)) => std::mem::swap(&mut x.spe, &mut y.spe),
+            ("powersplit", Some(y)) => {
+                let (at, sa2) = ((x.atk + y.atk) / 2, (x.spa + y.spa) / 2);
+                (x.atk, y.atk, x.spa, y.spa) = (at, at, sa2, sa2);
+            }
+            ("guardsplit", Some(y)) => {
+                let (d, sd) = ((x.def + y.def) / 2, (x.spd + y.spd) / 2);
+                (x.def, y.def, x.spd, y.spd) = (d, d, sd, sd);
+            }
+            ("powertrick", _) => std::mem::swap(&mut x.atk, &mut x.def),
+            _ => continue,
+        }
+        let set = |b: &mut Battle, s: usize, k: usize, st| if s == 0 { b.p1.team[k].stats = st } else { b.p2.team[k].stats = st };
+        set(&mut b, sa, ka, x);
+        if let (Some((s, k)), Some(y)) = (other_k, y) {
+            if tr.mons[s][team_orders[s][k]].active.is_some() {
+                set(&mut b, s, k, y);
+            }
+        }
+    }
     for fx in &tr.pseudo {
         let e = field_elapsed(&view, fx.line).clamp(1, 255) as u8;
         let left = vgc_engine_core::ps_board::remaining(5, e);
@@ -484,6 +556,19 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
                 _ => {}
             }
         }
+    }
+    // Future Sight / Doom Desire: the target slot's pending hit (3 end-of-turn
+    // ticks from the use). Set through the snapshot form: the field is the
+    // engine's own.
+    if !tr.futures.is_empty() {
+        let mut v = serde_json::to_value(&b).map_err(|e| err("board", e.to_string()))?;
+        for (ts, tslot, (ss, si), mv, line) in &tr.futures {
+            let turns = 3 - (field_elapsed(&view, *line) - 1).clamp(0, 2);
+            let src = team_orders[*ss].iter().position(|x| x == si).unwrap_or(0);
+            let id = data::MOVES.iter().position(|d| d.slug == slug(mv)).unwrap_or(0);
+            v["future_pending"][*ts][*tslot] = json!({"turns": turns, "source_side": ss, "source_team_idx": src, "move_id": id});
+        }
+        b = serde_json::from_value(v).map_err(|e| err("board", e.to_string()))?;
     }
     b.rehydrate_caches();
 

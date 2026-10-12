@@ -322,6 +322,8 @@ pub struct PyBattle {
     /// A PS choice/request session (`ps_session=True`); `inner` mirrors its
     /// committed battle.
     session: Option<Box<core::ps_session::PsSession>>,
+    /// `position_from_replay`'s provenance report (JSON).
+    report: Option<String>,
 }
 
 /// `0` / `1` / `"p1"` / `"p2"` -> side.
@@ -361,6 +363,125 @@ impl PyBattle {
         }
         Ok(())
     }
+}
+
+impl PyBattle {
+    /// Attach a prefix to a position and open its PS session (the shared
+    /// tail of `from_position` and `position_from_replay`).
+    #[allow(clippy::too_many_arguments)]
+    fn open_position(
+        mut inner: core::Battle,
+        json_format: Option<String>,
+        ps_seed: Option<&str>,
+        prefix: core::ps_position::Prefix,
+        reveals: Option<&Bound<'_, PyAny>>,
+        switch_in_effects: bool,
+        protocol: &str,
+        format: Option<&str>,
+        player_names: Option<(String, String)>,
+    ) -> PyResult<Self> {
+        inner.rehydrate_caches();
+        match ps_seed {
+            None => {}
+            #[cfg(feature = "ps-rng")]
+            Some(s) => inner.set_rng(core::Rng::ps(s).map_err(|e| PyValueError::new_err(e.to_string()))?),
+            #[cfg(not(feature = "ps-rng"))]
+            Some(_) => return Err(PyValueError::new_err("ps_seed needs vgc-engine built with the ps-rng feature")),
+        }
+        let mode = core::ProtocolMode::parse(protocol)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown protocol mode: {protocol} (ps | compact)")))?;
+        let raw = core::ps_position::prefix_raw_lines(&prefix).map_err(PyValueError::new_err)?;
+        let mut opts = core::ProtocolOptions::new(mode);
+        let from_prefix = core::ps_position::prefix_player_names(&raw);
+        let names = match player_names {
+            Some((a, b)) => [a, b],
+            None => [
+                from_prefix[0].clone().unwrap_or_else(|| "Player 1".into()),
+                from_prefix[1].clone().unwrap_or_else(|| "Player 2".into()),
+            ],
+        };
+        opts.player_names = names;
+        let fid = match format.map(str::to_string).or(json_format) {
+            Some(f) => f.to_ascii_lowercase(),
+            None => core::ps_position::default_format_id(&inner).to_string(),
+        };
+        let support_cancel = core::ps_formats::lookup(&fid).map(|f| f.support_cancel).unwrap_or(true);
+        inner.attach_position_log(&opts, &fid, raw, switch_in_effects).map_err(PyValueError::new_err)?;
+        let mut session = core::ps_session::PsSession::from_battle(inner);
+        session.set_support_cancel(support_cancel);
+        if let Some(r) = reveals.filter(|r| !r.is_none()) {
+            let d = r.downcast::<PyDict>().map_err(|_| PyValueError::new_err("reveals is a dict {\"p1\": {...}, \"p2\": {...}}"))?;
+            for (k, v) in d.iter() {
+                let side = parse_side(&k)?;
+                let per = v.downcast::<PyDict>().map_err(|_| PyValueError::new_err("reveals[side] is a dict {opponent team index: {...}}"))?;
+                let n_opp = session.battle().side(side.opposing()).team.len();
+                let mut list = Vec::new();
+                for (idx, info) in per.iter() {
+                    let i: usize = match idx.extract::<usize>() {
+                        Ok(i) => i,
+                        Err(_) => idx.extract::<String>()?.trim().parse().map_err(|_| PyValueError::new_err("reveals keys are opponent team indices"))?,
+                    };
+                    if i >= n_opp {
+                        return Err(PyValueError::new_err(format!("reveals: opponent team index {i} out of range (team of {n_opp})")));
+                    }
+                    let info = info.downcast::<PyDict>().map_err(|_| PyValueError::new_err("a reveal is a dict {species, moves, item, ability, tera}"))?;
+                    let get_s = |k: &str| -> PyResult<Option<String>> {
+                        match info.get_item(k)? {
+                            Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
+                            _ => Ok(None),
+                        }
+                    };
+                    for key in info.keys() {
+                        let key: String = key.extract()?;
+                        if !matches!(key.as_str(), "species" | "moves" | "item" | "ability" | "tera") {
+                            return Err(PyValueError::new_err(format!("reveal key {key:?} (species, moves, item, ability, tera)")));
+                        }
+                    }
+                    let moves: Vec<String> = match info.get_item("moves")? {
+                        Some(v) if !v.is_none() => v.extract()?,
+                        _ => Vec::new(),
+                    };
+                    list.push((i, core::ps_observe::Reveal {
+                        species: get_s("species")?,
+                        moves,
+                        item: get_s("item")?,
+                        ability: get_s("ability")?,
+                        tera: get_s("tera")?,
+                    }));
+                }
+                list.sort_by_key(|(i, _)| *i);
+                session.set_reveals(side, list);
+            }
+        }
+        Ok(Self { inner: session.battle().clone_with_log(), session: Some(Box::new(session)), report: None })
+    }
+}
+
+/// A `prefix` argument: `None`, `{"p1": [...], "p2": [...]}` or a raw line list.
+fn prefix_value(prefix: Option<&Bound<'_, PyAny>>) -> PyResult<core::ps_position::Prefix> {
+    Ok(match prefix {
+        None => core::ps_position::Prefix::None,
+        Some(p) if p.is_none() => core::ps_position::Prefix::None,
+        Some(p) => {
+            if let Ok(d) = p.downcast::<PyDict>() {
+                let get = |k: &str| -> PyResult<Vec<String>> {
+                    match d.get_item(k)? {
+                        Some(v) if !v.is_none() => v.extract(),
+                        _ => Ok(Vec::new()),
+                    }
+                };
+                for k in d.keys() {
+                    let k: String = k.extract()?;
+                    if k != "p1" && k != "p2" {
+                        return Err(PyValueError::new_err(format!("prefix keys are \"p1\" and \"p2\", got {k:?}")));
+                    }
+                }
+                core::ps_position::Prefix::PerSide([get("p1")?, get("p2")?])
+            } else {
+                core::ps_position::Prefix::Raw(p.extract()?)
+            }
+        }
+    })
 }
 
 #[pymethods]
@@ -472,7 +593,7 @@ impl PyBattle {
             inner.p2.conditions.tera_used = true;
         }
         if !ps_session {
-            return Ok(Self { inner, session: None });
+            return Ok(Self { inner, session: None, report: None });
         }
         // The session rebuilds the battle from the team-preview picks: same
         // seed, same construction, so the preamble it already showed holds.
@@ -497,7 +618,7 @@ impl PyBattle {
             b
         };
         let session = core::ps_session::PsSession::new(Box::new(builder));
-        Ok(Self { inner: session.battle().clone_with_log(), session: Some(Box::new(session)) })
+        Ok(Self { inner: session.battle().clone_with_log(), session: Some(Box::new(session)), report: None })
     }
 
     /// Start a PS session from a mid-game position (docs/protocol.md, "Start
@@ -554,103 +675,19 @@ impl PyBattle {
         let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
         let json_format = value.get("format_id").and_then(|v| v.as_str()).map(str::to_string);
         let mut inner: core::Battle = serde_json::from_value(value).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
-        inner.rehydrate_caches();
-        match ps_seed {
-            None => {}
-            #[cfg(feature = "ps-rng")]
-            Some(s) => inner.set_rng(core::Rng::ps(s).map_err(|e| PyValueError::new_err(e.to_string()))?),
-            #[cfg(not(feature = "ps-rng"))]
-            Some(_) => return Err(PyValueError::new_err("ps_seed needs vgc-engine built with the ps-rng feature")),
+        Self::open_position(inner, json_format, ps_seed, prefix_value(prefix)?, reveals, switch_in_effects, protocol, format, player_names)
+    }
+
+    /// `position_from_replay`'s report: per side and mon, every field's
+    /// value and provenance (`exact` / `inferred` / `prior` / `default`, with
+    /// the prior's probability `p`), `active_prior_fields` per active slot
+    /// (`"p1a"`, ...), and the counts `n_prior_fields` / `n_fields`. `None`
+    /// for a battle built otherwise.
+    fn reconstruction_report(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        match &self.report {
+            None => Ok(None),
+            Some(r) => Ok(Some(py.import("json")?.call_method1("loads", (r,))?.unbind())),
         }
-        let mode = core::ProtocolMode::parse(protocol)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown protocol mode: {protocol} (ps | compact)")))?;
-        let prefix = match prefix {
-            None => core::ps_position::Prefix::None,
-            Some(p) if p.is_none() => core::ps_position::Prefix::None,
-            Some(p) => {
-                if let Ok(d) = p.downcast::<PyDict>() {
-                    let get = |k: &str| -> PyResult<Vec<String>> {
-                        match d.get_item(k)? {
-                            Some(v) if !v.is_none() => v.extract(),
-                            _ => Ok(Vec::new()),
-                        }
-                    };
-                    for k in d.keys() {
-                        let k: String = k.extract()?;
-                        if k != "p1" && k != "p2" {
-                            return Err(PyValueError::new_err(format!("prefix keys are \"p1\" and \"p2\", got {k:?}")));
-                        }
-                    }
-                    core::ps_position::Prefix::PerSide([get("p1")?, get("p2")?])
-                } else {
-                    core::ps_position::Prefix::Raw(p.extract()?)
-                }
-            }
-        };
-        let raw = core::ps_position::prefix_raw_lines(&prefix).map_err(PyValueError::new_err)?;
-        let mut opts = core::ProtocolOptions::new(mode);
-        let from_prefix = core::ps_position::prefix_player_names(&raw);
-        let names = match player_names {
-            Some((a, b)) => [a, b],
-            None => [
-                from_prefix[0].clone().unwrap_or_else(|| "Player 1".into()),
-                from_prefix[1].clone().unwrap_or_else(|| "Player 2".into()),
-            ],
-        };
-        opts.player_names = names;
-        let fid = match format.map(str::to_string).or(json_format) {
-            Some(f) => f.to_ascii_lowercase(),
-            None => core::ps_position::default_format_id(&inner).to_string(),
-        };
-        let support_cancel = core::ps_formats::lookup(&fid).map(|f| f.support_cancel).unwrap_or(true);
-        inner.attach_position_log(&opts, &fid, raw, switch_in_effects).map_err(PyValueError::new_err)?;
-        let mut session = core::ps_session::PsSession::from_battle(inner);
-        session.set_support_cancel(support_cancel);
-        if let Some(r) = reveals.filter(|r| !r.is_none()) {
-            let d = r.downcast::<PyDict>().map_err(|_| PyValueError::new_err("reveals is a dict {\"p1\": {...}, \"p2\": {...}}"))?;
-            for (k, v) in d.iter() {
-                let side = parse_side(&k)?;
-                let per = v.downcast::<PyDict>().map_err(|_| PyValueError::new_err("reveals[side] is a dict {opponent team index: {...}}"))?;
-                let n_opp = session.battle().side(side.opposing()).team.len();
-                let mut list = Vec::new();
-                for (idx, info) in per.iter() {
-                    let i: usize = match idx.extract::<usize>() {
-                        Ok(i) => i,
-                        Err(_) => idx.extract::<String>()?.trim().parse().map_err(|_| PyValueError::new_err("reveals keys are opponent team indices"))?,
-                    };
-                    if i >= n_opp {
-                        return Err(PyValueError::new_err(format!("reveals: opponent team index {i} out of range (team of {n_opp})")));
-                    }
-                    let info = info.downcast::<PyDict>().map_err(|_| PyValueError::new_err("a reveal is a dict {species, moves, item, ability, tera}"))?;
-                    let get_s = |k: &str| -> PyResult<Option<String>> {
-                        match info.get_item(k)? {
-                            Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
-                            _ => Ok(None),
-                        }
-                    };
-                    for key in info.keys() {
-                        let key: String = key.extract()?;
-                        if !matches!(key.as_str(), "species" | "moves" | "item" | "ability" | "tera") {
-                            return Err(PyValueError::new_err(format!("reveal key {key:?} (species, moves, item, ability, tera)")));
-                        }
-                    }
-                    let moves: Vec<String> = match info.get_item("moves")? {
-                        Some(v) if !v.is_none() => v.extract()?,
-                        _ => Vec::new(),
-                    };
-                    list.push((i, core::ps_observe::Reveal {
-                        species: get_s("species")?,
-                        moves,
-                        item: get_s("item")?,
-                        ability: get_s("ability")?,
-                        tera: get_s("tera")?,
-                    }));
-                }
-                list.sort_by_key(|(i, _)| *i);
-                session.set_reveals(side, list);
-            }
-        }
-        Ok(Self { inner: session.battle().clone_with_log(), session: Some(Box::new(session)) })
     }
 
     /// Side `side`'s current Pokémon Showdown `|request|` JSON (byte-identical
@@ -836,7 +873,7 @@ impl PyBattle {
     /// clone (or the original) never affects the other — for MCTS-style
     /// state branching in mimikyu.
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), session: None }
+        Self { inner: self.inner.clone(), session: None, report: self.report.clone() }
     }
 
     /// `copy.deepcopy(battle)` support — same as `clone()`. The `_memo`
@@ -844,13 +881,13 @@ impl PyBattle {
     /// to track).
     #[pyo3(signature = (_memo = None))]
     fn __deepcopy__(&self, _memo: Option<PyObject>) -> Self {
-        Self { inner: self.inner.clone(), session: None }
+        Self { inner: self.inner.clone(), session: None, report: self.report.clone() }
     }
 
     /// `copy.copy(battle)` support — `Battle` has no interior sharing, so
     /// a shallow copy is a full independent clone too.
     fn __copy__(&self) -> Self {
-        Self { inner: self.inner.clone(), session: None }
+        Self { inner: self.inner.clone(), session: None, report: self.report.clone() }
     }
 
     /// Serialize the full battle state to bincode bytes (compact, fast).
@@ -868,7 +905,7 @@ impl PyBattle {
             .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
         // See `from_json`: recompute the `#[serde(skip)]` derived caches.
         inner.rehydrate_caches();
-        Ok(Self { inner, session: None })
+        Ok(Self { inner, session: None, report: None })
     }
 
     /// Serialize the full battle state to a JSON string. Slower / larger
@@ -887,7 +924,7 @@ impl PyBattle {
         // cached weather+terrain) come back at their Default after a
         // round-trip; recompute them from canonical state.
         inner.rehydrate_caches();
-        Ok(Self { inner, session: None })
+        Ok(Self { inner, session: None, report: None })
     }
 
     /// Current HP of the active mon in `(side, slot)`, or `None` if the
@@ -1570,6 +1607,131 @@ fn position_from_board(py: Python<'_>, board: &Bound<'_, PyAny>, sets: Option<&B
     serde_json::to_string(&v).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Priors loaded so far, by spec (the embedded one under "default").
+fn prior_for(spec: &str) -> PyResult<std::sync::Arc<vgc_engine_replay::prior::Prior>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<vgc_engine_replay::prior::Prior>>>> = OnceLock::new();
+    let key = if spec.is_empty() { "default".to_string() } else { spec.to_string() };
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(p) = cache.lock().unwrap().get(&key) {
+        return Ok(p.clone());
+    }
+    let p = Arc::new(vgc_engine_replay::prior::Prior::load(&key).map_err(PyValueError::new_err)?);
+    cache.lock().unwrap().insert(key, p.clone());
+    Ok(p)
+}
+
+/// Any JSON-able Python value (or a JSON string) -> `serde_json::Value`.
+fn py_json(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    let text: String = match v.extract::<String>() {
+        Ok(s) => s,
+        Err(_) => py.import("json")?.call_method1("dumps", (v,))?.extract()?,
+    };
+    serde_json::from_str(&text).map_err(|e| PyValueError::new_err(format!("json: {e}")))
+}
+
+/// Full sets: a Showdown export, a JSON team list, or a list of dicts.
+fn py_sets(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<Vec<core::TeamMember>> {
+    if let Ok(text) = v.extract::<String>() {
+        if !text.trim_start().starts_with('[') {
+            return core::parse_showdown_export(&text).map_err(|e| PyValueError::new_err(format!("sets: {e}")));
+        }
+    }
+    serde_json::from_value(py_json(py, v)?).map_err(|e| PyValueError::new_err(format!("sets: {e}")))
+}
+
+/// Rebuild the battle at the start of turn `turn` of a real replay (docs/protocol.md,
+/// "Start from a real replay") and open its PS session there.
+///
+/// `log`: a replay's `log` text, a replay JSON dict, PS's raw `battle.log`
+/// (`|split|` pairs), one player's stream (a list of lines or text), or a
+/// mimikyu ps_bot decision dict (`decide_payload.live`). `prior`: `None` /
+/// `"default"` (embedded Reg M-B 2026-08 usage), `"none"`, or a stats file
+/// path. `viewer`: `"p1"` / `"p2"` fills the opponent's hidden info from that
+/// player's view only. `stop="replace"` stops at the faint replacement
+/// before turn `turn`. `sets`: `{"p1": export | [dicts], "p2": ...}`.
+/// `request`: a `|request|` dict (its `side.id` says whose) or
+/// `{"p1": ..., "p2": ...}`. `lookahead=True` also uses set facts revealed
+/// after the stop. The report is `battle.reconstruction_report()`.
+#[pyfunction]
+#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = "move", sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None))]
+#[allow(clippy::too_many_arguments)]
+fn position_from_replay(
+    py: Python<'_>,
+    log: &Bound<'_, PyAny>,
+    turn: Option<u32>,
+    prior: Option<&str>,
+    ps_seed: Option<&str>,
+    viewer: Option<&str>,
+    stop: &str,
+    sets: Option<&Bound<'_, PyAny>>,
+    request: Option<&Bound<'_, PyAny>>,
+    lookahead: bool,
+    format: Option<&str>,
+    protocol: &str,
+    player_names: Option<(String, String)>,
+) -> PyResult<PyBattle> {
+    use vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions, Stop};
+    let text: String = if let Ok(s) = log.extract::<String>() {
+        s
+    } else if let Ok(lines) = log.extract::<Vec<String>>() {
+        lines.join("\n")
+    } else {
+        py.import("json")?.call_method1("dumps", (log,))?.extract()?
+    };
+    let input = parse_input(&text).map_err(PyValueError::new_err)?;
+    let turn = turn.or(input.turn).ok_or_else(|| PyValueError::new_err("turn is required"))?;
+    let mut o = ReconOptions::new(turn);
+    o.stop = match stop {
+        "move" => Stop::Move,
+        "replace" => Stop::Replace,
+        s => return Err(PyValueError::new_err(format!("stop={s:?} (\"move\" | \"replace\")"))),
+    };
+    o.viewer = match viewer {
+        None => None,
+        Some("p1") => Some(core::SideRef::P1),
+        Some("p2") => Some(core::SideRef::P2),
+        Some(v) => return Err(PyValueError::new_err(format!("viewer={v:?} (\"p1\" | \"p2\")"))),
+    };
+    o.lookahead = lookahead;
+    o.format = format.map(str::to_string);
+    if let Some((side, r)) = input.request.clone() {
+        o.requests[side as usize] = Some(r);
+    }
+    if let Some(r) = request.filter(|r| !r.is_none()) {
+        let v = py_json(py, r)?;
+        if v.get("side").is_some() {
+            let k = if v.pointer("/side/id").and_then(|x| x.as_str()) == Some("p2") { 1 } else { 0 };
+            o.requests[k] = Some(v);
+        } else {
+            for (k, key) in ["p1", "p2"].iter().enumerate() {
+                if let Some(x) = v.get(*key).filter(|x| !x.is_null()) {
+                    o.requests[k] = Some(x.clone());
+                }
+            }
+        }
+    }
+    if let Some(sd) = sets.filter(|x| !x.is_none()) {
+        let d = sd.downcast::<PyDict>().map_err(|_| PyValueError::new_err("sets is a dict {\"p1\": ..., \"p2\": ...}"))?;
+        for (k, key) in ["p1", "p2"].iter().enumerate() {
+            if let Some(v) = d.get_item(*key)?.filter(|v| !v.is_none()) {
+                o.sets[k] = Some(py_sets(py, &v)?);
+            }
+        }
+    }
+    let prior = prior_for(prior.unwrap_or("default"))?;
+    let rec = py.allow_threads(|| reconstruct(&input.lines, &o, &prior)).map_err(|e| PyValueError::new_err(format!("position_from_replay: {e}")))?;
+    let report = serde_json::to_string(&rec.report).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let names = player_names.or_else(|| match (&rec.player_names[0], &rec.player_names[1]) {
+        (Some(a), Some(b)) => Some((a.clone(), b.clone())),
+        _ => None,
+    });
+    let mut b = PyBattle::open_position(rec.battle, Some(rec.format_id.clone()), ps_seed, rec.prefix, None, false, protocol, Some(&rec.format_id), names)?;
+    b.report = Some(report);
+    Ok(b)
+}
+
 #[pymodule]
 fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBattle>()?;
@@ -1578,6 +1740,7 @@ fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stream::PyPlayerStream>()?;
     m.add_function(wrap_pyfunction!(parse_and_verify, m)?)?;
     m.add_function(wrap_pyfunction!(position_from_board, m)?)?;
+    m.add_function(wrap_pyfunction!(position_from_replay, m)?)?;
     m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame_exact, m)?)?;

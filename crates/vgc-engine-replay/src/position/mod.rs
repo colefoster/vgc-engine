@@ -544,6 +544,8 @@ struct Mon {
     item_knocked: bool,
     item_lost_line: Option<usize>,
     item_changed: bool,
+    /// PS `lastItem`: the item it used up (ate, consumed) this stint.
+    used_item: Option<String>,
     ability_base: Option<String>,
     ability_now: Option<String>,
     moves: Vec<String>,
@@ -581,6 +583,15 @@ struct Mon {
     charging: Option<String>,
     /// The chosen target of its last move (`side * 2 + slot`), if single-target.
     last_target: Option<u8>,
+    /// PP used per move during the current stint, and the line each move
+    /// was first shown (an Illusion reveal hands them to the real mon).
+    stint_pp: Vec<(String, u32)>,
+    move_line: Vec<usize>,
+    /// Its state before the current switch-in (an Illusion reveal restores it).
+    pre_switch: Option<Box<Mon>>,
+    /// Stat swaps / splits since it came in (Speed Swap, Power Split, ...):
+    /// (line, kind, the other mon).
+    stat_ops: Vec<(usize, String, Option<(usize, usize)>)>,
     unsupported: Vec<String>,
 }
 
@@ -618,6 +629,11 @@ struct Tracker {
     last_mover: Option<(usize, usize)>,
     /// The move being resolved: (side, mon, damaging, hit a foe, Life Orb shown).
     action: Option<(usize, usize, bool, bool, bool)>,
+    /// The last `|move|` line's target slot (side, slot).
+    last_move_slot_target: Option<(usize, usize)>,
+    /// Pending Future Sight / Doom Desire hits: (target side, target slot,
+    /// source (side, mon), move, line).
+    futures: Vec<(usize, usize, (usize, usize), String, usize)>,
     lines: Vec<String>,
     unsupported: Vec<String>,
 }
@@ -829,7 +845,13 @@ impl Tracker {
                     }
                     self.switches.push((side, slot, i));
                     let (sp, lvl, g) = parse_details(det);
+                    let mut snap = self.mons[side][i].clone();
+                    snap.pre_switch = None;
                     let m = &mut self.mons[side][i];
+                    m.pre_switch = Some(Box::new(snap));
+                    m.used_item = None;
+                    m.stint_pp.clear();
+                    m.stat_ops.clear();
                     m.seen = true;
                     if self.champions {
                         // Champions' clearVolatile resets Rage Fist's count.
@@ -853,12 +875,22 @@ impl Tracker {
                         }
                     }
                     m.species = sp;
+                    // Shed Tail hands its doll to the incoming mon.
+                    if p.iter().any(|x| *x == "[from] Shed Tail") {
+                        m.sub = true;
+                    }
                     if let Some(hp) = p.get(4) {
                         self.set_hp(side, i, hp, exact_side);
                     }
                 }
                 "replace" => {
-                    self.unsupported.push("illusion".into());
+                    let (Some(id), Some(det)) = (p.get(2), p.get(3)) else { continue };
+                    let Some((side, Some(slot), name)) = parse_ident(id) else { continue };
+                    let real = self.illusion_target(side, &name, det, li);
+                    self.illusion_swap(side, slot, real);
+                    if let Some(hp) = p.get(4) {
+                        self.set_hp(side, real, hp, exact_side);
+                    }
                 }
                 "detailschange" | "-formechange" => {
                     let (Some(id), Some(det)) = (p.get(2), p.get(3)) else { continue };
@@ -901,6 +933,7 @@ impl Tracker {
                     }
                     let mslug = slug(mv);
                     let target_id = p.get(4).and_then(|t| self.mon_by_ident(t));
+                    self.last_move_slot_target = p.get(4).and_then(|t| parse_ident(t)).and_then(|(ts, sl, _)| sl.map(|sl| (ts, sl)));
                     // Pressure: one more PP per Pressure foe targeted.
                     let extra = if locked { 0 } else { self.pressure_extra(side, &mslug, target_id) };
                     let target_enc = target_id.and_then(|(ts, ti)| self.mons[ts][ti].active.map(|sl| (ts * 2 + sl) as u8));
@@ -919,11 +952,16 @@ impl Tracker {
                         None => {
                             m.moves.push(mname.clone());
                             m.pp_used.push(0);
+                            m.move_line.push(li);
                             m.moves.len() - 1
                         }
                     };
                     if !locked {
                         m.pp_used[k] += 1 + extra;
+                        match m.stint_pp.iter_mut().find(|x| slug(&x.0) == mslug) {
+                            Some(x) => x.1 += 1 + extra,
+                            None => m.stint_pp.push((mname.clone(), 1 + extra)),
+                        }
                     }
                     m.last_move = Some(mname.clone());
                     if !m.stint_moves.iter().any(|x| slug(x) == mslug) {
@@ -968,6 +1006,7 @@ impl Tracker {
                         if move_def(mv).is_some() && !m.moves.iter().any(|x| slug(x) == mslug) {
                             m.moves.push(move_name(mv).unwrap_or(mv).to_string());
                             m.pp_used.push(0);
+                            m.move_line.push(li);
                         }
                     }
                 }
@@ -1186,6 +1225,10 @@ impl Tracker {
                         self.mons[side][i].sub = true;
                         continue;
                     }
+                    if label == "Power Trick" {
+                        self.mons[side][i].stat_ops.push((li, "powertrick".into(), None));
+                        continue;
+                    }
                     let name = match label {
                         "move: Taunt" => "TAUNT",
                         "Encore" => "ENCORE",
@@ -1212,10 +1255,22 @@ impl Tracker {
                         _ => {
                             // Not a board volatile: a turn-scoped effect, or one
                             // the reconstruction does not carry.
-                            if !matches!(label, "move: Future Sight" | "move: Doom Desire") && !label.is_empty() {
+                            if matches!(label, "move: Future Sight" | "move: Doom Desire") {
+                                // A slot condition on the target's slot (the line names the user).
+                                if let Some((ts, tslot)) = self.last_move_slot_target {
+                                    self.futures.retain(|f| (f.0, f.1) != (ts, tslot));
+                                    self.futures.push((ts, tslot, (side, i), label.trim_start_matches("move: ").to_string(), li));
+                                }
+                                continue;
+                            }
+                            if label == "move: Dragon Cheer" {
+                                let m = &mut self.mons[side][i];
+                                m.vols.retain(|v| v.name != "?DRAGONCHEER");
+                                m.vols.push(Vol { name: "?DRAGONCHEER".into(), line: li, arg });
+                                continue;
+                            }
+                            if !label.is_empty() {
                                 self.mons[side][i].unsupported.push(format!("volatile {label}"));
-                            } else if !label.is_empty() {
-                                self.unsupported.push(format!("slot condition {label}"));
                             }
                             self.mons[side][i].vols.push(Vol { name: format!("?{label}"), line: li, arg });
                             continue;
@@ -1230,8 +1285,14 @@ impl Tracker {
                     self.from_reveals(&p, Some((side, i)), tag);
                 }
                 "-end" => {
-                    let Some((side, i)) = p.get(2).and_then(|id| self.mon_by_ident(id)) else { continue };
                     let label = p.get(3).copied().unwrap_or("");
+                    if matches!(label, "move: Future Sight" | "move: Doom Desire" | "Future Sight" | "Doom Desire") {
+                        if let Some((ts, Some(tslot), _)) = p.get(2).and_then(|id| parse_ident(id)) {
+                            self.futures.retain(|f| (f.0, f.1) != (ts, tslot));
+                        }
+                        continue;
+                    }
+                    let Some((side, i)) = p.get(2).and_then(|id| self.mon_by_ident(id)) else { continue };
                     let low = label.to_ascii_lowercase();
                     let m = &mut self.mons[side][i];
                     if label == "Substitute" {
@@ -1306,7 +1367,14 @@ impl Tracker {
                         m.item_now = Some(None);
                         m.item_lost = true;
                         m.item_lost_line = Some(li);
-                        m.item_knocked = from.contains("Knock Off") || from.contains("stealeat") || from.contains("Thief") || from.contains("Covet");
+                        let taken = ["Knock Off", "stealeat", "Thief", "Covet", "move: Trick", "Switcheroo", "Bestow", "Corrosive Gas", "Incinerate"].iter().any(|x| from.contains(x));
+                        m.item_knocked = taken;
+                        if !taken {
+                            m.used_item = Some(it.clone());
+                        }
+                        if from.contains("move: Trick") || from.contains("Switcheroo") {
+                            m.item_changed = true;
+                        }
                     }
                     if from.contains("ability: ") {
                         let of = p.iter().find_map(|x| x.strip_prefix("[of] ")).and_then(|id| self.mon_by_ident(id));
@@ -1343,6 +1411,16 @@ impl Tracker {
                 "-activate" | "-fieldactivate" => {
                     let subject = p.get(2).and_then(|id| self.mon_by_ident(id));
                     if let (Some((side, i)), Some(lbl)) = (subject, p.get(3)) {
+                        if matches!(*lbl, "move: Speed Swap" | "move: Power Split" | "move: Guard Split" | "move: Power Swap" | "move: Guard Swap" | "move: Heart Swap") {
+                            let of = p.iter().find_map(|x| x.strip_prefix("[of] ")).and_then(|id| self.mon_by_ident(id));
+                            let kind = slug(lbl.trim_start_matches("move: "));
+                            if matches!(kind.as_str(), "speedswap" | "powersplit" | "guardsplit") {
+                                self.mons[side][i].stat_ops.push((li, kind.clone(), of));
+                                if let Some((s2, i2)) = of {
+                                    self.mons[s2][i2].stat_ops.push((li, kind, Some((side, i))));
+                                }
+                            }
+                        }
                         if *lbl == "move: Substitute" && p.iter().any(|x| *x == "[damage]") && self.action.is_some_and(|a| (a.0, a.1) != (side, i)) {
                             self.mons[side][i].times_attacked += 1;
                         }
@@ -1428,9 +1506,102 @@ impl Tracker {
                     }
                 }
                 "turn" => {
+                    // Glaive Rush's weakness lasts until the end of the next turn.
+                    let prev = self.turn_lines.last().copied().unwrap_or(0);
+                    for side in 0..2 {
+                        for m in self.mons[side].iter_mut() {
+                            m.vols.retain(|v| !(v.name == "GLAIVERUSH" && v.line < prev));
+                        }
+                    }
                     self.turn_lines.push(li);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// The real mon behind an Illusion (`|replace|` / a request).
+    fn illusion_target(&mut self, side: usize, name: &str, details: &str, line: usize) -> usize {
+        let sp = parse_details(details).0;
+        if let Some(i) = (0..self.mons[side].len()).find(|&i| self.mons[side][i].name.as_deref() == Some(name) && same_family(&self.mons[side][i].preview, &sp)) {
+            return i;
+        }
+        let i = self.mons[side]
+            .iter()
+            .position(|m| m.name.is_none() && slug(&m.preview) == slug(&sp))
+            .or_else(|| self.mons[side].iter().position(|m| m.name.is_none() && same_family(&m.preview, &sp)))
+            .unwrap_or_else(|| {
+                self.mons[side].push(Mon { preview: sp.clone(), species: sp.clone(), set_species: sp.clone(), level: 50, ..Default::default() });
+                self.mons[side].len() - 1
+            });
+        let m = &mut self.mons[side][i];
+        m.name = Some(name.to_string());
+        m.species = sp.clone();
+        m.set_species = sp;
+        m.first_seen.get_or_insert(line);
+        i
+    }
+
+    /// The mon in `slot` was `real` in disguise: it takes over the stint
+    /// (HP, boosts, volatiles, the moves and PP used since it came in), and
+    /// the disguise's mon goes back to its state before that switch-in.
+    fn illusion_swap(&mut self, side: usize, slot: usize, real: usize) {
+        let Some(fake) = self.slots[side][slot] else { return };
+        if fake == real {
+            return;
+        }
+        let d = self.mons[side][fake].clone();
+        let mut r = std::mem::take(&mut self.mons[side][real]);
+        for (mv, used) in &d.stint_pp {
+            match r.moves.iter().position(|x| slug(x) == slug(mv)) {
+                Some(k) => r.pp_used[k] += used,
+                None => {
+                    r.moves.push(mv.clone());
+                    r.pp_used.push(*used);
+                    r.move_line.push(d.switch_line);
+                }
+            }
+        }
+        r.seen = true;
+        r.hp = d.hp;
+        r.fainted = d.fainted;
+        r.status = d.status.clone();
+        r.boosts = d.boosts;
+        r.vols = d.vols.clone();
+        r.sub = d.sub;
+        r.active = d.active;
+        r.switch_line = d.switch_line;
+        r.turns_active = d.turns_active;
+        r.move_actions = d.move_actions;
+        r.stint_moves = d.stint_moves.clone();
+        r.stint_pp = d.stint_pp.clone();
+        r.last_move = d.last_move.clone();
+        r.last_target = d.last_target;
+        r.stall_count = d.stall_count;
+        r.stall_used = d.stall_used;
+        r.stall_ok = d.stall_ok;
+        r.stall_used_last = d.stall_used_last;
+        r.charging = d.charging.clone();
+        r.must_recharge = d.must_recharge;
+        r.times_attacked = d.times_attacked;
+        r.ability_base = Some("Illusion".into());
+        r.first_seen = Some(r.first_seen.unwrap_or(d.switch_line).min(d.switch_line));
+        self.mons[side][real] = r;
+        // The disguise: back to before that switch-in.
+        let mut back = d.pre_switch.clone().map(|b| *b).unwrap_or_default();
+        back.name = d.name.clone();
+        back.pre_switch = None;
+        self.mons[side][fake] = back;
+        self.slots[side][slot] = Some(real);
+        for sw in self.switches.iter_mut().rev() {
+            if sw.0 == side && sw.1 == slot && sw.2 == fake {
+                sw.2 = real;
+                break;
+            }
+        }
+        for l in self.leads[side].iter_mut() {
+            if *l == Some(fake) && self.mons[side][fake].first_seen.is_none() {
+                *l = Some(real);
             }
         }
     }

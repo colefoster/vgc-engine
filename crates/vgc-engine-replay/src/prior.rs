@@ -20,6 +20,10 @@ use serde_json::Value;
 use crate::smogon_stats;
 
 const EMBEDDED: &str = include_str!("../../../data/smogon-stats/2026-08/gen9championsvgc2026regmb-0.json");
+/// Species the Reg M-B stats lack (Reg M-C additions: Rillaboom,
+/// Indeedee, Salamence, ...) fall back to Bring Four's Reg M-C replay
+/// reveal shares (no spreads; reveal-biased).
+const EMBEDDED_FALLBACK: &str = include_str!("../../../data/smogon-stats/2026-09/bringfour-regmc-reveals.json");
 
 /// One spread: nature slug, six stat values, probability. `sp` = the values
 /// are Champions stat points (0-32), else EVs.
@@ -47,6 +51,8 @@ pub struct Prior {
     /// Where it came from (`embedded:...`, a path, or `none`).
     pub source: String,
     species: HashMap<String, SpeciesPrior>,
+    /// Consulted for species this prior lacks.
+    fallback: Option<Box<Prior>>,
 }
 
 pub fn slug(s: &str) -> String {
@@ -74,13 +80,14 @@ fn pairs(v: Option<&Value>) -> Vec<(String, f64)> {
 impl Prior {
     /// No prior: every hidden field falls back to the documented defaults.
     pub fn none() -> Self {
-        Prior { source: "none".into(), species: HashMap::new() }
+        Prior { source: "none".into(), species: HashMap::new(), fallback: None }
     }
 
     /// The embedded default (Reg M-B 2026-08, cutoff 0).
     pub fn embedded() -> Self {
         let mut p = Self::from_json_text(EMBEDDED).expect("embedded prior parses");
-        p.source = "embedded:smogon gen9championsvgc2026regmb 2026-08 cutoff 0".into();
+        p.source = "embedded:smogon gen9championsvgc2026regmb 2026-08 cutoff 0 + bringfour regmc reveals".into();
+        p.fallback = Some(Box::new(Self::from_json_text(EMBEDDED_FALLBACK).expect("embedded fallback parses")));
         p
     }
 
@@ -136,7 +143,7 @@ impl Prior {
                 },
             );
         }
-        Ok(Prior { source: "json".into(), species })
+        Ok(Prior { source: "json".into(), species, fallback: None })
     }
 
     /// A Smogon moveset `.txt`. Its spread numbers are Champions stat points
@@ -161,13 +168,17 @@ impl Prior {
                 SpeciesPrior { usage: 4.0 * s.raw_count as f64 / total, items: f(&s.items), abilities: f(&s.abilities), moves: f(&s.moves), spreads },
             );
         }
-        Ok(Prior { source: "txt".into(), species })
+        Ok(Prior { source: "txt".into(), species, fallback: None })
     }
 
     /// The prior for a species (display name or slug). A forme the stats
     /// don't list falls back to its base species (`Salamence-Mega` ->
     /// `Salamence`, `Indeedee-F` stays `indeedeef`).
     pub fn get(&self, species: &str) -> Option<&SpeciesPrior> {
+        self.get_own(species).or_else(|| self.fallback.as_deref().and_then(|f| f.get(species)))
+    }
+
+    fn get_own(&self, species: &str) -> Option<&SpeciesPrior> {
         let s = slug(species);
         if let Some(p) = self.species.get(&s) {
             return Some(p);
@@ -190,12 +201,17 @@ impl Prior {
         let s = slug(species);
         let mega = format!("{s}mega");
         let mut out: Vec<(String, f64)> = self.species.iter().filter(|(k, _)| **k == s || k.starts_with(&mega)).map(|(k, v)| (k.clone(), v.usage)).collect();
+        if out.is_empty() {
+            if let Some(f) = &self.fallback {
+                return f.keys_for(species);
+            }
+        }
         out.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         out
     }
 
     pub fn is_empty(&self) -> bool {
-        self.species.is_empty()
+        self.species.is_empty() && self.fallback.as_ref().is_none_or(|f| f.is_empty())
     }
 }
 
@@ -211,6 +227,7 @@ mod tests {
         assert_eq!(k.abilities[0].0, "defiant");
         assert!(k.spreads[0].sp);
         assert!(p.get("Charizard-Mega-Y").is_some());
-        assert!(p.get("Salamence-Mega").is_some());
+        assert!(p.get("Salamence-Mega").is_some(), "Reg M-C fallback");
+        assert!(p.get("Rillaboom").is_some_and(|r| r.moves[0].0 == "fakeout"));
     }
 }
