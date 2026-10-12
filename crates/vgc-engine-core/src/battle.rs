@@ -15722,23 +15722,17 @@ self.trigger_emergency_exits();
     }
 
     /// Duration to set for a freshly-created screen (Reflect / Light Screen
-    /// / Aurora Veil) on `setter_side`. PS `data/items.ts:lightclay`
-    /// `onModifyDuration(duration, source, effect)`: when `effect.id` is
-    /// `reflect` / `lightscreen` / `auroraveil`, `duration = 8`. The check
-    /// reads the SETTER's held item — we approximate by accepting any
-    /// active slot on the setter's side that holds Light Clay (singles:
-    /// the active mon IS the setter; doubles: same — only one slot can
-    /// be the setter of a given screen, and we ignore the bench).
-    /// The item is NOT consumed.
+    /// / Aurora Veil) by the mon in `setter_slot`. PS data/moves.ts reflect /
+    /// lightscreen / auroraveil `durationCallback(target, source)`:
+    /// `source?.hasItem('lightclay') ? 8 : 5` — the SETTER's own item, not
+    /// its ally's. The item is NOT consumed.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Light_Clay>.
-    fn screen_duration(&self, setter_side: SideRef) -> u8 {
-        let n = self.format().active_count();
-        let any_light_clay = (0..n).any(|s| {
-            self.side(setter_side).active_mon(s)
-                .map(|m| m.is_alive() && m.item_id == data::item_id::LIGHTCLAY)
-                .unwrap_or(false)
-        });
-        if any_light_clay { 8 } else { 5 }
+    fn screen_duration(&self, setter_side: SideRef, setter_slot: u8) -> u8 {
+        let clay = self
+            .side(setter_side)
+            .active_mon(setter_slot as usize)
+            .is_some_and(|m| m.effective_item_id() == data::item_id::LIGHTCLAY);
+        if clay { 8 } else { 5 }
     }
 
     /// Self-sourced status entry point (Rest, Flame/Toxic Orb, etc.).
@@ -18613,7 +18607,7 @@ self.trigger_emergency_exits();
                 // ConditionData duration is 5; Light Clay's onModifyDuration
                 // (data/items.ts:lightclay) bumps to 8 when the SETTER
                 // holds it.
-                let dur = self.screen_duration(actor_side);
+                let dur = self.screen_duration(actor_side, actor_slot);
                 self.p_side_start(actor_side, self.side(actor_side).conditions.reflect_turns == 0, "Reflect", actor_slot);
                 let s = self.side_mut(actor_side);
                 if s.conditions.reflect_turns == 0 {
@@ -18623,7 +18617,7 @@ self.trigger_emergency_exits();
             data::move_id::LIGHTSCREEN => {
                 // Mirror of Reflect for special damage. Duration 5 (8 with
                 // Light Clay). PS data/conditions.ts:lightscreen.
-                let dur = self.screen_duration(actor_side);
+                let dur = self.screen_duration(actor_side, actor_slot);
                 self.p_side_start(actor_side, self.side(actor_side).conditions.light_screen_turns == 0, "move: Light Screen", actor_slot);
                 let s = self.side_mut(actor_side);
                 if s.conditions.light_screen_turns == 0 {
@@ -18670,7 +18664,7 @@ self.trigger_emergency_exits();
                     self.p_try_fail(actor_side, actor_slot);
                     return;
                 }
-                let dur = self.screen_duration(actor_side);
+                let dur = self.screen_duration(actor_side, actor_slot);
                 self.p_side_start(actor_side, self.side(actor_side).conditions.aurora_veil_turns == 0, "move: Aurora Veil", actor_slot);
                 let s = self.side_mut(actor_side);
                 if s.conditions.aurora_veil_turns == 0 {
@@ -46373,6 +46367,27 @@ mod tests {
         assert_eq!(mk("lightclay", 1), 7, "Light Screen 8→7 with Light Clay");
         assert_eq!(mk("leftovers", 2), 4, "Aurora Veil 5→4 baseline");
         assert_eq!(mk("lightclay", 2), 7, "Aurora Veil 8→7 with Light Clay");
+    }
+
+    #[test]
+    fn light_clay_only_extends_its_holders_screens() {
+        // PS durationCallback reads the setter's item (`source.hasItem`):
+        // an ally's Light Clay does not extend the user's Reflect.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","moves":["reflect"]},
+            {"species":"grimmsnarl","level":50,"ability":"prankster","item":"lightclay","moves":["lightscreen"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["rest"]},
+            {"species":"chansey","level":50,"ability":"naturalcure","moves":["rest"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.conditions.reflect_turns, 4, "Blissey's own Reflect: 5 turns");
+        assert_eq!(b.p1.conditions.light_screen_turns, 7, "Grimmsnarl's Light Screen with its Light Clay: 8");
     }
 
     #[test]
