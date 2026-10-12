@@ -1479,6 +1479,70 @@ impl Battle {
         }
     }
 
+    /// The hit loop's end (data/mods/champions/scripts.ts:547): its
+    /// faintMessages, then each new faint's Faint event.
+    #[inline(always)]
+    fn hit_loop_end(&mut self) {
+        self.p_loop_end();
+        self.faint_events();
+    }
+
+    /// PS faintMessages' `runEvent('Faint', pokemon)` (sim/battle.ts:2555)
+    /// once per faint, for every active mon down since the last call:
+    /// Receiver / Power of Alchemy on its ally. Called where the engine
+    /// prints faints: the hit loop's end and after every action.
+    fn faint_events(&mut self) {
+        let n = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let idx = self.side(side).active[slot];
+                let Some(bit) = 1u8.checked_shl(idx as u32) else { continue };
+                let down = self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive());
+                if !down || self.side(side).conditions.faint_handled & bit != 0 {
+                    continue;
+                }
+                self.side_mut(side).conditions.faint_handled |= bit;
+                if n == 2 {
+                    self.receiver_on_ally_faint(side, 1 - slot as u8, slot as u8);
+                }
+            }
+        }
+    }
+
+    /// Receiver / Power of Alchemy — PS data/abilities.ts:3787 receiver,
+    /// :3400 powerofalchemy onAllyFaint: if the holder has HP, take the
+    /// fainted ally's `getAbility()` unless it is `noreceiver` (the same set
+    /// as `noentrain`) or noability, through `setAbility(ability, target)`
+    /// (sim/pokemon.ts:1908): fails on a `cantsuppress` ability either way
+    /// or an Ability Shield, prints `-ability|<holder>|<new>|<old>|[from]
+    /// ability: Receiver|[of] <ally>`, then runs the new ability's Start.
+    fn receiver_on_ally_faint(&mut self, side: SideRef, holder: u8, fainted: u8) {
+        let Some(h) = self.side(side).active_mon(holder as usize) else { return };
+        let old = h.effective_ability_id();
+        if !h.is_alive() || !matches!(old, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY) {
+            return;
+        }
+        let Some(f) = self.side(side).active_mon(fainted as usize) else { return };
+        let gained = current_ability(f);
+        if gained == u16::MAX || ps_noentrain(gained) {
+            return;
+        }
+        if !self.set_ability_by_move(side, holder, gained) {
+            return;
+        }
+        if self.plog() {
+            self.p_tag_step(crate::protocol::step::AFTER_FAINT);
+            // Still `isActive` inside faintMessages: `p2a: Name`.
+            let idx = self.side(side).active[fainted as usize];
+            let tag = crate::battle_protocol::slot_tag(side, fainted);
+            let of = format!("{}: {}", std::str::from_utf8(&tag).unwrap_or("p1a"), self.p_name(side, idx));
+            let (new, from) = (crate::battle_protocol::ability_name(gained), crate::battle_protocol::ability_name(old));
+            pmon!(self, "-ability", side, holder, "|{new}|{from}|[from] ability: {from}|[of] {of}");
+        }
+        crate::ability::on_start(self, side, holder);
+        self.p_tag_step(crate::protocol::step::HITCOUNT);
+    }
+
     /// PS faintMessages runs `clearVolatile(false)` on each fainted mon
     /// (sim/battle.ts:2563) after every action, after the pre-move phase and
     /// after the residuals, whether or not anything replaces it. Run the
@@ -1494,6 +1558,7 @@ impl Battle {
     /// fainted on the bench.
     fn faint_forme_cleanup(&mut self) {
         self.p_faint_messages();
+        self.faint_events();
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 if self.side(side).active_mon(slot as usize).is_some_and(|m| m.fainted) {
@@ -5804,6 +5869,7 @@ self.trigger_emergency_exits();
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);
+            s.conditions.faint_handled &= !1u8.checked_shl(team_index as u32).unwrap_or(0);
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
@@ -14184,7 +14250,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scale_Shot_(move)>.
         if m.slug == "scaleshot" && any_damage_dealt > 0 {
             // After the whole hit step (sim/battle-actions.ts:520).
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1), (4, 1)], actor_side, actor_slot);
             // Mirror Herb copies the spe raise onto a foe.
@@ -14204,7 +14270,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Clanging_Scales_(move)>.
         if m.slug == "clangingscales" && any_damage_dealt > 0 {
             // After the whole hit step (sim/battle-actions.ts:520).
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1)], actor_side, actor_slot);
             crate::item::try_consume_white_herb(self, actor_side, actor_slot);
@@ -14328,7 +14394,7 @@ self.trigger_emergency_exits();
         }
 
         if m.recoil_num > 0 && any_damage_dealt > 0 {
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
             let skip_recoil = attacker_post.is_some_and(crate::ability::has_magic_guard)
@@ -14356,7 +14422,7 @@ self.trigger_emergency_exits();
         // NOT block (PS scopes Rock Head to the `recoil` effect id only).
         // PS data/moves.ts:steelbeam,mindblown,chloroblast.
         if matches!(move_id, data::move_id::STEELBEAM | data::move_id::MINDBLOWN | data::move_id::CHLOROBLAST) {
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
             let skip = attacker_post.is_some_and(crate::ability::has_magic_guard);
@@ -14388,7 +14454,7 @@ self.trigger_emergency_exits();
         // Magic Guard nor Rock Head reduces it.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
         if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 let recoil = ((a.stats.hp + 2) / 4).max(1);
@@ -14409,7 +14475,7 @@ self.trigger_emergency_exits();
         // routes through the standard onDamage event.
         // The hit loop is over: faintMessages, `-hitcount`, then the
         // AfterMoveSecondary lines; the window closes before AfterMoveSecondarySelf.
-        self.p_loop_end();
+        self.hit_loop_end();
         self.p_emergency_exit_targets(actor_side, actor_slot);
         self.p_close_move_window();
         // The Update after the hit step: Attract ends once its source fainted
