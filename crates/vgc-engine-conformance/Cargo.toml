@@ -9,13 +9,14 @@ repository.workspace = true
 [dependencies]
 vgc-engine-core = { workspace = true }
 vgc-engine-data = { workspace = true }
+vgc-engine-replay = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
 # Enables the `accuracy psrng` mode (engine on PS's own PRNG). See
 # docs/accuracy/ps-rng.md.
-ps-rng = ["vgc-engine-core/ps-rng"]
+ps-rng = ["vgc-engine-core/ps-rng", "vgc-engine-replay/ps-rng"]
 
 [[bin]]
 name = "conformance"
@@ -28,4 +29,9 @@ path = "src/bin/accuracy.rs"
 [[bin]]
 name = "resume_gate"
 path = "src/bin/resume_gate.rs"
+required-features = ["ps-rng"]
+
+[[bin]]
+name = "recon_gate"
+path = "src/bin/recon_gate.rs"
 required-features = ["ps-rng"]

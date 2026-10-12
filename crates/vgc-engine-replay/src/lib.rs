@@ -12,6 +12,8 @@ mod choices;
 mod event;
 mod oracle;
 mod parser;
+pub mod position;
+pub mod prior;
 mod recon;
 mod recon_smogon;
 mod replay;

@@ -12,3 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 vgc-engine-core = { workspace = true }
 vgc-engine-data = { workspace = true }
+
+[features]
+# `Reconstruction::session` with a PS seed (PS's own PRNG).
+ps-rng = ["vgc-engine-core/ps-rng"]
