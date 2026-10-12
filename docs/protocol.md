@@ -6,7 +6,9 @@ each side its own view (phase 1). It also produces each side's `|request|`
 JSON and the per-player streams PS's BattleStream delivers, takes choices
 in PS syntax, and builds a player's partial observation from its own stream
 (phase 2, [Requests, streams and sessions](#requests-streams-and-sessions)).
-Phase 3 adds a BattleStream-compatible stdio front end on top.
+Phase 3 puts PS's BattleStream on top: `vgc sim` speaks `pokemon-showdown
+simulate-battle`'s stdio protocol, and `vgc_engine.BattleStream` is the
+same in-process ([Use as a local Showdown replacement](#use-as-a-local-showdown-replacement)).
 
 **Model input.** A model that should see only its own player's view must
 read `Battle.observe(side)` (or `player_stream(side)` / `request(side)`),
@@ -133,12 +135,14 @@ them back in PS's order.
   fainted, runMove's end always checks, and residual faints check after
   their handler.
 
-Speed ties. PS breaks speed ties with its PRNG, inside `speedSort`. The
-engine does not draw those shuffles, so tied residual handlers and
-eachEvent order fall back to field order. A harness that replays PS can
-pass PS's recorded shuffles in with `Battle::protocol_set_oracle_shuffles`.
-The conformance harness does this. With them, residual ties come out
-exactly as PS ordered them.
+Speed ties. PS breaks speed ties with its PRNG, inside `speedSort`. On
+PS's own PRNG (`ps-rng`, `Rng::Ps`) the engine draws the residual
+handler sort's and the weather's eachEvent shuffles itself and orders the
+residual lines by them, as it orders Terastallization and a spread move's
+`|move|` target by its own draws. On any other RNG those ties fall back to
+field order; a harness that replays PS can pass PS's recorded shuffles in
+with `Battle::protocol_set_oracle_shuffles` (the conformance harness
+does).
 
 ## Conformance gate
 
@@ -363,23 +367,173 @@ All below 0.5% of a sample (battles with a first mismatch):
 
 Stream divergences beyond these are the phase-1 log buckets.
 
-## What phase 3 still needs
+## Use as a local Showdown replacement
 
-- **Stdio framing.** A `simulate-battle`-compatible front end: `>start`,
-  `>player`, `>p1` / `>p2` lines in; `update`, `sideupdate` and `end`
-  blocks out. `PsSession` already produces the update / sideupdate chunks
-  in PS's order (`stream`); the front end must split `>player` options
-  (name, team in packed or JSON form, `seed`, `formatid`) and the `end`
-  block (winner, seed, turns, score, inputLog) the engine does not build.
-- **Undo / Cancel**: `>p1 undo` and re-choosing (Cancel Mod's
-  `cantUndo` after a `maybeTrapped` switch) are not modelled.
-- **Formats.** Team preview, `|tier|` and `|rule|` lines exist for the
-  Champions formats and gen 9 custom games. Other PS formats (VGC 2025
-  Reg I, ...) fall back to a custom-game preamble without team preview;
-  `|debug|` lines of debug formats are not written.
-- **PS randomness outside replay.** Speed-tie orders the engine doesn't
-  draw (residual handlers, eachEvent) follow field order, and a Struggle
-  or other random-target move with no target hits the first foe rather
-  than a random one, so logs are self-consistent but not PS-identical
-  unless PS's draws are supplied. The `ps-rng` feature (PS's own PRNG) is
-  the route to that.
+`vgc sim` is a drop-in for `pokemon-showdown simulate-battle`: the same
+stdin protocol (PS's `BattleStream`, sim/battle-stream.ts) and the same
+stdout bytes (`BattleTextStream`: each message, a newline, a blank line).
+The release CLI builds with `ps-rng` by default, so the `>start` seed
+drives PS's own PRNG and a battle plays out as PS plays it.
+
+```sh
+cargo build --release -p vgc-engine-cli          # target/release/vgc, target/release/vgc-showdown
+
+# instead of:  node pokemon-showdown simulate-battle --skip-build
+target/release/vgc sim                            # --protocol ps (default) | compact
+target/release/vgc-showdown simulate-battle       # the same, with PS's command shape
+```
+
+Flags: `--protocol ps` writes PS's bytes; `--protocol compact` drops the
+cosmetic lines from `update`s (see [Modes](#modes)). `--replay` and
+`--spectate` are PS's (only the omniscient / spectator log). `--debug` and
+`--skip-build` are accepted and ignored.
+
+Input, as PS takes it (one `read()` of stdin is one chunk: its lines run,
+then one update goes out):
+
+| Line | Effect |
+|---|---|
+| `>start {"formatid":"gen9vgc2025regi","seed":"sodium,<hex>"}` | `seed` may also be `"gen5,<hex>"`, `"a,b,c,d"` or `[a,b,c,d]`; none draws a random one |
+| `>player p1 {"name":"Alice","avatar":"1","team":"<packed>"}` | `team` packed (`Teams.pack`) or a JSON array of sets; PS's set edits apply (default name, level, EVs / IVs) |
+| `>p1 move 1 2, move 3 terastallize` / `>p1 switch 3` / `>p1 team 1234` / `>p1 default` / `>p1 pass` | PS's choice syntax and `|error|` texts (phase 2) |
+| `>p1 undo` | drop p1's choice (Cancel Mod formats), or PS's `Can't undo` error after a trapped / locked reveal |
+| `>forcewin p1` / `>forcetie` / `>forcelose p2` / `>tiebreak` | end the battle as PS does, at any stop (team preview, mid-turn) |
+| `>chat text` / `>chat-inputlogonly text` | `|chat|text` in the log / input log only |
+| `>eval code` | logged like PS, answered `||<<< error: vgc-engine has no JavaScript to evaluate` |
+| `>requestlog` / `>requestexport` / `>requestteam p1` | `requesteddata` |
+| `>reseed <seed>` | the battle draws from the new seed |
+
+Output: `update\n<log lines>` (with `|split|pN` pairs, `|t:|` wall-clock
+seconds), `sideupdate\npN\n|request|<json>` / `|error|...`, and at the end
+`end\n{"winner":...,"seed":...,"turns":...,"p1":...,"p2":...,"p1team":[...],"p2team":[...],"score":[...],"inputLog":[...]}`
+(PS a5df8274 writes no `log` field). Sending nothing after `end` is fine;
+input after it is read and ignored, and the process exits at end of input.
+
+Formats: every gen 9 and Champions format PS has for player-built teams
+(`crates/vgc-engine-core/src/ps_formats.json`, generated from PS by
+`tools/protocol/ps-formats.js`): the `|tier|` / `|rule|` lines, Team
+Preview and `pickedTeamSize`, Open Team Sheets, Cancel Mod. Mechanics are
+the engine's: standard gen 9, or Champions for the `champions*` mods.
+
+### From a harness
+
+A harness that runs PS's `simulate-battle` changes one command line:
+
+```sh
+- node pokemon-showdown simulate-battle --skip-build
++ /path/to/vgc-engine/target/release/vgc sim
+```
+
+A harness that loads PS's `dist/sim` in-process (`BattleStream`,
+`getPlayerStreams`) can point its PS directory at
+`tools/protocol/ps-shim`, whose `BattleStream` spawns `vgc sim` and whose
+other exports (Teams, TeamValidator, Dex, getPlayerStreams) come from a real
+PS checkout:
+
+```sh
+PS_DIR=tools/protocol/ps-shim PS_REAL_DIR=/path/to/pokemon-showdown \
+  VGC_SIM="/path/to/vgc-engine/target/release/vgc sim" node arena.mjs ...
+```
+
+### Python
+
+```python
+import json, vgc_engine
+s = vgc_engine.BattleStream()                     # protocol="ps" | "compact", replay=, spectate=
+s.write('>start {"formatid":"gen9championsvgc2026regmc","seed":"sodium,0123456789abcdef0123456789abcdef"}')
+s.write('>player p1 ' + json.dumps({"name": "Alice", "team": packed_a}))
+s.write('>player p2 ' + json.dumps({"name": "Bob", "team": packed_b}))
+streams = s.player_streams()                      # PS getPlayerStreams: omniscient, spectator, p1, p2
+for chunk in streams.p1.read_all():               # p1's view of each update, its |request| / |error|
+    ...
+streams.p1.write("team 1234")                     # sent as ">p1 team 1234"
+s.ended, s.input_log
+```
+
+Without `player_streams()`, `s.read()` / `s.read_all()` return the raw
+messages (`"update\n..."`, `"sideupdate\np1\n..."`, `"end\n..."`). For PS's
+draws the wheel needs the `ps-rng` feature
+(`maturin build --release --features ps-rng`); without it a seed still
+gives a deterministic battle, on the engine's own RNG.
+
+## Phase 3 gate
+
+```sh
+cargo build --release -p vgc-engine-cli
+PS_DIST=<pokemon-showdown a5df8274>/dist/sim node tools/protocol/sim-diff.js \
+  --jobs B/jobs.jsonl,C/jobs.jsonl --count 1000 --out <dir> --vgc target/release/vgc
+python3 tools/protocol/sim-diff-report.py <dir>
+```
+
+`sim-diff.js` plays each battle on PS in-process with a seeded random
+policy over PS's requests: legal choices, plus about 6% invalid ones, 5%
+`undo`s, 3% re-choices, `>chat`, an occasional `>forcewin` / `>forcelose` /
+`>forcetie`, and `>tiebreak` or `>forcetie` past turn 60. The recorded input
+(one write per player message) is then fed write by write to PS's real
+`pokemon-showdown simulate-battle` and to `vgc sim`, both with the same
+seed, and the two stdouts are compared byte for byte (`|t:|` values
+normalized). PS's subprocess output also has to match its in-process run.
+A divergence is classed by the PRNG draws: PS's (as `random(m, n)` spans)
+against the engine's trace (`VGC_DRAW_TRACE`). If they part before the
+first differing output it is **draw order**; if they agree it is
+**formatting** when every `|request|` and the end record still match PS,
+else a **mechanic**.
+
+Results (branch `ps-protocol-3`, PS a5df8274, 1000 battles, 500 from
+each corpus run):
+
+| Format | Identical streams |
+|---|---|
+| gen9championsvgc2026regmb | 244 / 250 (97.6%) |
+| gen9championsvgc2026regmc | 242 / 250 (96.8%) |
+| gen9vgc2024regg | 242 / 250 (96.8%) |
+| gen9vgc2025regi | 237 / 250 (94.8%) |
+| **All** | **965 / 1000 (96.5%)** |
+
+PS's subprocess output matched its in-process run in all 1000. Of the 35
+divergent battles:
+
+- **Draw order, 17 (1.7%)**: mostly a damage roll or crit drawn in a
+  different order around a spread move or ability (9 first differ at a
+  `-damage` line), Cute Charm / Flame Body / Poison Touch contact rolls,
+  and Blizzard's accuracy target order.
+- **Formatting, 9 (0.9%)**: same draws, same requests and end record,
+  different log lines: Sitrus Berry eaten before vs after a switch-in
+  ability, replacement switch-in order on a Speed tie, Toxic Spikes vs
+  Stealth Rock line order, Lightning Rod redirect line, Revival Blessing
+  weather line, one HP-display rounding.
+- **Mechanics, 9 (0.9%)**: Receiver and Spirit Shackle's trap are not
+  implemented; spread-move drain heals per target, not once; Ditto /
+  Imposter request contents; Alcremie cosmetic forme in `|poke|`; Protean
+  on a failed move; Expanding Force's Psychic Terrain spread; double
+  replacement switch-in order; one end record's `score` (`pokemonLeft`).
+
+### Known limits
+
+- `|debug|` lines (debug / custom-game formats) are not written.
+- Random-team formats are unsupported (player-built teams only);
+  `>editbattle` is not handled; `|rated|` is the bare line.
+- Cosmetic formes (Alcremie, Vivillon, ...) battle as the base forme;
+  `|poke|` / `|switch|` details may lack the forme.
+- Champions stat points convert to EVs exactly only at level 50.
+- Shiny is accepted and not shown.
+- `vgc sim` treats each `read()` of stdin as one chunk, as PS does; a
+  writer whose separate writes reach the pipe coalesced gets one update
+  where PS would also give one (PS's `simulate-battle` reads the same
+  way), but a harness that expects one update per line should write one
+  chunk at a time and wait for output.
+- The `ps-shim` `BattleStream` assumes `vgc sim` flushes once per input
+  chunk (it does).
+
+### Cost of `vgc sim`
+
+`vgc sim` runs `Rng::Ps` (one ChaCha20 block per draw, plus PS's draw
+emulation) and keeps the protocol log: it is for PS-compatible play, not
+search throughput. Nothing in `step()` changed for a battle without a log;
+see [Cost](#cost) for the logging-off numbers.
+
+`ps-protocol-3` vs main (`3251ded`), `perf_bench --battles 5000`, logging
+off, 6 interleaved runs: ~2,401 vs ~2,376 ns/step (~416.5k vs ~420.8k
+steps/s, -1.0%), 0 allocations per step for both. The battles differ
+slightly (the branch fixes mechanics that change their course), so
+ns/step is the comparable figure.

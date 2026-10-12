@@ -119,6 +119,42 @@ impl Battle {
         }
     }
 
+    /// PS `battle.win(side)` (sim/battle.ts:1520-1543) for `>forcewin` /
+    /// `>forcelose` / `>tiebreak`: `|`, then `|win|<name>` (`|tie` for
+    /// `None`); the log ends.
+    pub fn protocol_force_win(&mut self, side: Option<SideRef>) {
+        let Some(side) = side else { return self.protocol_force_tie() };
+        if self.plog() {
+            let name = self.protocol.log().map(|l| l.player_names[side as usize].clone()).unwrap_or_default();
+            self.p_push(String::new() + "|");
+            self.p_push(format!("|win|{name}"));
+            if let Some(l) = self.protocol.log_mut() {
+                l.ended = true;
+            }
+        }
+    }
+
+    /// Cut the log back to its first `n` raw lines (a session ending the
+    /// battle at a stop the battle was played past).
+    pub fn protocol_truncate(&mut self, n: usize) {
+        if let Some(l) = self.protocol.log_mut() {
+            if l.lines.len() > n {
+                l.lines.truncate(n);
+                l.ended = false;
+            }
+        }
+    }
+
+    /// Append lines to the log as they are (PS `battle.add` from outside
+    /// the simulation, e.g. `>tiebreak`'s messages).
+    pub fn protocol_add_lines(&mut self, lines: &[String]) {
+        if self.plog() {
+            for l in lines {
+                self.p_push(l.clone());
+            }
+        }
+    }
+
     pub(crate) fn p_push(&mut self, line: String) {
         self.protocol.add(line);
     }
@@ -206,7 +242,11 @@ impl Battle {
             l.illusion[side as usize][idx as usize % 6] = 255;
         }
         let id = self.p_ident(side, slot);
-        let det = self.p_details(side, idx);
+        // getUpdatedDetails(): no `, tera:` suffix (data/abilities.ts illusion onEnd).
+        let mut det = self.p_details(side, idx);
+        if let Some(i) = det.find(", tera:") {
+            det.truncate(i);
+        }
         self.p_push(format!("|replace|{id}|{det}"));
         self.p_push(format!("|-end|{id}|Illusion"));
     }
@@ -1458,6 +1498,16 @@ impl Battle {
         if n == 0 {
             return Some((foe, 0));
         }
+        // Under PS's PRNG the engine drew runMove's getTarget pick itself
+        // (sim/battle.ts getTarget -> getRandomTarget -> side.randomFoe).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            if let Some(p) = self.protocol.log_mut().and_then(|l| l.ps_target_pick.take()) {
+                if p.0 == foe && alive(self, p.0, p.1) {
+                    return Some(p);
+                }
+            }
+        }
         let actor = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
         let key = crate::rng::RngKey { turn: self.turn + 1, actor, target: crate::rng::NO_SLOT, move_id, decision: crate::rng::RngDecision::Range };
         let keyed = self.rng.log_pick(key, n as u32);
@@ -1981,9 +2031,11 @@ impl Battle {
         }
         if pre.team_preview {
             self.p_push("|clearpoke".to_string());
+            let champions = crate::format_rules::is_champions_format(format_id) || self.champions;
+            let reveal = pre.rules.iter().any(|r| r.starts_with("Species Reveal Clause"));
             for side in [SideRef::P1, SideRef::P2] {
                 for i in 0..self.side(side).team.len() as u8 {
-                    let det = self.p_details(side, i);
+                    let det = preview_details(&self.p_details(side, i), champions, reveal);
                     self.p_push(format!("|poke|p{}|{det}|", side as u8 + 1));
                 }
             }
@@ -2114,6 +2166,10 @@ impl Battle {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 if self.side(side).active_mon(slot as usize).is_some() {
+                    // The leads' switchIn runs Illusion's onBeforeSwitchIn too
+                    // (sim/battle-actions.ts:125-144).
+                    let idx = self.side(side).active[slot as usize];
+                    self.p_switch_positions(side, slot, idx);
                     self.p_switch_line("switch", side, slot);
                 }
             }
@@ -2239,4 +2295,41 @@ mod tests {
         assert!(!p1.iter().any(|l| exact(l, "p2")));
         assert!(!spectator.iter().any(|l| exact(l, "p1") || exact(l, "p2")));
     }
+}
+
+/// Team Preview hides formes that change at battle start or that the
+/// species would give away: data/rulesets.ts:643-653 (`Zacian` /
+/// `Zamazenta` unless Crowned, then Greninja, Gourgeist, Pumpkaboo,
+/// Xerneas, Silvally, Urshifu, Dudunsparce formes unless Species Reveal
+/// Clause), data/mods/champions/rulesets.ts:36-41 (Xerneas, Zacian,
+/// Zamazenta and their formes).
+fn preview_details(details: &str, champions: bool, reveal: bool) -> String {
+    // `(Name)(-[a-zA-Z?-]+)?` -> `$1-*` at the start of the details.
+    let mask = |d: &str, names: &[&str]| -> Option<String> {
+        let name = names.iter().find(|n| d.starts_with(**n))?;
+        let rest = &d[name.len()..];
+        let rest = match rest.strip_prefix('-') {
+            Some(r) if r.starts_with(|c: char| c.is_ascii_alphabetic() || c == '?' || c == '-') => {
+                let n = r.find(|c: char| !(c.is_ascii_alphabetic() || c == '?' || c == '-')).unwrap_or(r.len());
+                &r[n..]
+            }
+            _ => rest,
+        };
+        Some(format!("{name}-*{rest}"))
+    };
+    if champions {
+        return mask(details, &["Xerneas", "Zacian", "Zamazenta"]).unwrap_or_else(|| details.to_string());
+    }
+    let mut d = details.replacen(", shiny", "", 1);
+    for n in ["Zacian", "Zamazenta"] {
+        if d.starts_with(n) && !d[n.len()..].starts_with("-Crowned") {
+            d = format!("{n}-*{}", &d[n.len()..]);
+        }
+    }
+    if !reveal {
+        if let Some(m) = mask(&d, &["Greninja", "Gourgeist", "Pumpkaboo", "Xerneas", "Silvally", "Urshifu", "Dudunsparce"]) {
+            d = m;
+        }
+    }
+    d
 }
