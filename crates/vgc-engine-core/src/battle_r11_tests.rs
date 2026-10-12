@@ -4,7 +4,6 @@ use super::*;
 use crate::choice::{Choice, Target};
 use crate::team::TeamBuilder;
 
-#[allow(dead_code)]
 fn t(side: SideRef, slot: u8) -> Target {
     Target { side, slot }
 }
@@ -58,6 +57,43 @@ fn spread_drain_heals_per_target_including_an_ally() {
     assert!(before.iter().zip(after.iter()).all(|(x, y)| x > y), "all three hit: {before:?} {after:?}");
     let heal: u16 = (0..3).map(|i| (before[i] - after[i]).div_ceil(2)).sum();
     assert_eq!(b.p1.team[0].current_hp, 60 + heal, "{before:?} {after:?}");
+}
+
+#[test]
+fn spirit_shackle_traps_until_its_user_leaves() {
+    // PS data/moves.ts:17629 spiritshackle secondary onHit:
+    // addVolatile('trapped', source, move, 'trapper'); the link ends when
+    // the source switches out. Sim-diff b00297.
+    let p1 = r#"[{"species":"decidueye","level":50,"ability":"overgrow","moves":["spiritshackle","splash"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"rillaboom","level":50,"ability":"overgrow","moves":["splash"],"evs":{"hp":252,"def":252}},
+        {"species":"gengar","level":50,"ability":"cursedbody","moves":["splash"],"evs":{"hp":252,"def":252}},
+        {"species":"amoonguss","level":50,"ability":"regenerator","moves":["splash"]}]"#;
+    let mut b = logged_doubles(p1, p2, 3);
+    b.step(
+        &[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)],
+        &[mv(0, 0, None), mv(1, 0, None)],
+    );
+    assert!(b.is_trapped(SideRef::P2, 0), "Rillaboom trapped");
+    assert!(log_lines(&b).iter().any(|l| l == "|-activate|p2a: Rillaboom|trapped"));
+    let mut lc = Vec::new();
+    b.legal_choices_into(SideRef::P2, 0, &mut lc);
+    assert!(!lc.iter().any(|c| matches!(c, Choice::Switch { .. })), "no switch while trapped");
+    // A Ghost is immune (runStatusImmunity('trapped')).
+    b.step(
+        &[mv(0, 0, Some(t(SideRef::P2, 1))), mv(1, 0, None)],
+        &[mv(0, 0, None), mv(1, 0, None)],
+    );
+    assert!(!b.is_trapped(SideRef::P2, 1), "Gengar not trapped");
+    assert!(!b.p2.team[1].volatiles.has(crate::pokemon::VolatileKind::Trapped));
+    // Decidueye switches out: the trap ends.
+    b.step(
+        &[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)],
+        &[mv(0, 0, None), mv(1, 0, None)],
+    );
+    assert!(!b.is_trapped(SideRef::P2, 0), "released");
+    assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Trapped));
 }
 
 #[test]
