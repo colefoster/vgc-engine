@@ -529,6 +529,7 @@ pub fn cud_chew_reeat(
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
         }
+        battle.p_heal(side, slot, "|[from] item: Sitrus Berry");
         return;
     }
     if berry_id == data::item_id::ORANBERRY {
@@ -565,6 +566,7 @@ pub fn cud_chew_reeat(
         _ => None,
     };
     if let Some(stat_idx) = pinch {
+        battle.p_boost_fx(crate::protocol::BoostFx::Item(berry_id));
         battle.apply_boosts(side, slot, &[(stat_idx, 1)], side, slot);
         return;
     }

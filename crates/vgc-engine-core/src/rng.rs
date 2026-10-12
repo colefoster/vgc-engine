@@ -615,15 +615,22 @@ impl Rng {
     /// (the random foe PS shows on a spread move's `|move|` line). Only the
     /// keyed oracle answers, from `key`'s queue; nothing else is consumed,
     /// so a seeded battle's stream is untouched.
+    /// PS re-runs `getTarget` (one draw each) at every queue sort before
+    /// the move, so the pick shown is the last one recorded: the queue
+    /// is drained.
     pub fn log_pick(&mut self, key: RngKey, n: u32) -> Option<u32> {
         match self {
-            Rng::OracleKeyed(k) => match k.table.get_mut(&key).and_then(|q| q.front().copied()) {
-                Some(RngEvent::Range(v)) if v < n => {
-                    k.table.get_mut(&key).and_then(|q| q.pop_front());
-                    Some(v)
+            Rng::OracleKeyed(k) => {
+                let q = k.table.get_mut(&key)?;
+                let mut last = None;
+                while let Some(RngEvent::Range(v)) = q.front().copied() {
+                    q.pop_front();
+                    if v < n {
+                        last = Some(v);
+                    }
                 }
-                _ => None,
-            },
+                last
+            }
             _ => None,
         }
     }

@@ -282,6 +282,18 @@ pub struct ProtocolLog {
     pub(crate) loop_ended: bool,
     /// Lines printed right before a mon's `|faint|` (Destiny Bond).
     pub(crate) faint_prefix: Vec<(u8, u8, String)>,
+    /// Magic Room's setter, named again at its end.
+    pub(crate) magic_room_source: String,
+    /// The status move being resolved: (user side, user slot, target).
+    pub(crate) status_ctx: Option<(u8, u8, Option<(u8, u8)>)>,
+    /// Lines written since the current `|move|` was announced.
+    pub(crate) since_move: u32,
+    /// Residual window: each active's speed key (`[side][slot]`).
+    pub(crate) res_speed: [[u8; 2]; 2],
+    /// Scratch HP for a residual handler.
+    pub(crate) res_hp_before: u16,
+    /// `[side][team index]` the partial-trapping move holding the mon.
+    pub(crate) trap_move: [[u16; 6]; 2],
 }
 
 /// One buffered entry of a reorder window.
@@ -363,6 +375,12 @@ impl ProtocolLog {
             hitcount: None,
             loop_ended: false,
             faint_prefix: Vec::new(),
+            magic_room_source: String::new(),
+            status_ctx: None,
+            since_move: 0,
+            res_speed: [[0; 2]; 2],
+            res_hp_before: 0,
+            trap_move: [[u16::MAX; 6]; 2],
         }
     }
 
@@ -390,6 +408,7 @@ impl ProtocolLog {
             return;
         }
         self.flush_pending_move();
+        self.since_move += 1;
         if let Some(w) = self.window.as_deref_mut() {
             w.entries.push((w.key, WinEntry::Line(line)));
             return;
@@ -404,6 +423,7 @@ impl ProtocolLog {
             return;
         }
         self.flush_pending_move();
+        self.since_move += 1;
         if let Some(w) = self.window.as_deref_mut() {
             w.entries.push((w.key, WinEntry::Split(side, secret, shared.unwrap_or_default())));
             return;

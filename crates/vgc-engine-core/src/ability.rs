@@ -187,6 +187,7 @@ pub(crate) fn react_to_opposing_stat_drop(
         _ => return,
     };
     // Defiant / Competitive rebound is a self-boost (PS source = target).
+    battle.p_boost_fx(crate::protocol::BoostFx::AbilitySelf(ability_id));
     battle.apply_boosts(target_side, target_slot, &[(stat_index as u8, 2)], target_side, target_slot);
 }
 
@@ -1194,6 +1195,10 @@ pub fn on_residual_cures(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut
             .unwrap_or(false);
         if statused {
             if proc_chance(battle, rng, (side, slot), ability_id, 33, 100) {
+                if let Some(st) = battle.side(side).active_mon(slot as usize).map(|m| crate::battle_protocol::status_id(m.status)) {
+                    pmon!(battle, "-activate", side, slot, "|ability: Shed Skin");
+                    pmon!(battle, "-curestatus", side, slot, "|{st}|[msg]");
+                }
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.status = crate::pokemon::Status::None;
                 }
@@ -1214,6 +1219,10 @@ pub fn on_residual_cures(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut
     // Manaphy / Goodra signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Hydration_(Ability)>.
     if ability_id == data::ability_id::HYDRATION && matches!(battle.effective_weather(), crate::weather::Weather::Rain) {
+        if let Some(st) = battle.side(side).active_mon(slot as usize).filter(|m| m.status != crate::pokemon::Status::None).map(|m| crate::battle_protocol::status_id(m.status)) {
+            pmon!(battle, "-activate", side, slot, "|ability: Hydration");
+            pmon!(battle, "-curestatus", side, slot, "|{st}|[msg]");
+        }
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !matches!(m.status, crate::pokemon::Status::None) {
                 m.status = crate::pokemon::Status::None;
@@ -1336,6 +1345,9 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             if berry != u16::MAX && counter > 0 {
                 let next = counter - 1;
                 if next == 0 {
+                    // cudchew onResidual: `-activate`, then the berry's `[eat]`.
+                    pmon!(battle, "-activate", side, slot, "|ability: Cud Chew");
+                    battle.p_item_line("-enditem", side, slot, berry, "|[eat]");
                     crate::item::cud_chew_reeat(battle, side, slot, berry, rng);
                     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                         m.cud_chew_berry = u16::MAX;
@@ -1382,6 +1394,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // turn-1 starters) and 0 for mons brought in via this turn's switch
     // action. Our `switched_in_this_turn` flag is that exact bit.
     if ability_id == data::ability_id::SPEEDBOOST && !switched_in_this_turn {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         // Self-boost (+1 Spe) at end of turn.
         battle.apply_boosts(side, slot, &[(4, 1)], side, slot);
     }
@@ -1461,6 +1474,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             dn += 1;
         }
         if dn > 0 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             battle.apply_boosts(side, slot, &deltas[..dn], side, slot);
         }
     }
@@ -1579,6 +1593,7 @@ pub fn on_damaging_hit(
     // <https://bulbapedia.bulbagarden.net/wiki/Cotton_Down_(Ability)>.
     if ability_id == data::ability_id::COTTONDOWN && target_alive {
         let n = battle.format().active_count() as u8;
+        let mut announced = false;
         for sd in [SideRef::P1, SideRef::P2] {
             for s in 0..n {
                 if sd == target_side && s == target_slot { continue; }
@@ -1594,6 +1609,11 @@ pub fn on_damaging_hit(
                 let blocked = cross_side && battle.side(sd).active_mon(s as usize)
                     .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 4));
                 if blocked { continue; }
+                // cottondown onDamagingHit: `-ability` once, then each boost.
+                if !std::mem::replace(&mut announced, true) {
+                    pmon!(battle, "-ability", target_side, target_slot, "|Cotton Down");
+                }
+                battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ability_id));
                 // Cotton Down lowers Spe of every other active; source is
                 // the Cotton Down holder that was hit.
                 battle.apply_boosts(sd, s, &[(4, -1)], target_side, target_slot);
@@ -1616,6 +1636,10 @@ pub fn on_damaging_hit(
         battle.weather = crate::weather::Weather::Sand;
         // PR-LC1: weather field changed — refresh cache.
         battle.sync_weather_terrain_cache();
+        if battle.plog() {
+            let of = battle.p_ident(target_side, target_slot);
+            battle.p_push(format!("|-weather|Sandstorm|[from] ability: Sand Spit|[of] {of}"));
+        }
         let holds_smooth_rock = battle
             .side(target_side)
             .active_mon(target_slot as usize)
@@ -1637,6 +1661,7 @@ pub fn on_damaging_hit(
         && target_alive
         && data::MOVES[move_id as usize].category == 0
     {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         battle.apply_boosts(target_side, target_slot, &[(1, -1), (4, 2)], target_side, target_slot);
         crate::item::try_consume_white_herb(battle, target_side, target_slot);
     }
@@ -1678,6 +1703,9 @@ pub fn on_damaging_hit(
                         m.set_type_override(move_type, None);
                     }
                 }
+                if battle.side(target_side).active_mon(target_slot as usize).is_some_and(|m| !m.terastallized) {
+                    pmon!(battle, "-start", target_side, target_slot, "|typechange|{}|[from] ability: Color Change", crate::battle_protocol::type_name(move_type));
+                }
             }
         }
     }
@@ -1696,6 +1724,12 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::TOXICDEBRIS && data::MOVES[move_id as usize].category == 0 {
         // The attacker's side, or its foes' side when an ally hit the holder.
         let side = if attacker_side == target_side { attacker_side.opposing() } else { attacker_side };
+        // toxicdebris onDamagingHit (data/abilities.ts toxicdebris).
+        if battle.side(side).conditions.toxic_spikes_layers < 2 && battle.plog() {
+            pmon!(battle, "-activate", target_side, target_slot, "|ability: Toxic Debris");
+            let s = battle.p_side_ident(side);
+            battle.p_push(format!("|-sidestart|{s}|move: Toxic Spikes"));
+        }
         let layers = &mut battle.side_mut(side).conditions.toxic_spikes_layers;
         if *layers < 2 {
             *layers += 1;
@@ -1713,6 +1747,7 @@ pub fn on_damaging_hit(
     // Wattrel / Kilowattrel signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Wind_Power_(Ability)>.
     if ability_id == data::ability_id::WINDPOWER && target_alive && data::MOVES[move_id as usize].is_wind {
+        pmon!(battle, "-start", target_side, target_slot, "|Charge|{}|[from] ability: Wind Power", crate::battle_protocol::move_name(move_id));
         if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             m.set_charged(true);
         }
@@ -1729,6 +1764,7 @@ pub fn on_damaging_hit(
     // mon can't carry a volatile). Bellibolt / Tadbulb signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Electromorphosis_(Ability)>.
     if ability_id == data::ability_id::ELECTROMORPHOSIS && target_alive {
+        pmon!(battle, "-start", target_side, target_slot, "|Charge|{}|[from] ability: Electromorphosis", crate::battle_protocol::move_name(move_id));
         if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             m.set_charged(true);
         }
@@ -1742,6 +1778,7 @@ pub fn on_damaging_hit(
     // a stat boost. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Stamina_(Ability)>.
     if ability_id == data::ability_id::STAMINA && target_alive {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         // Self-boost (+1 Def) on hit.
         battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
     }
@@ -1757,6 +1794,9 @@ pub fn on_damaging_hit(
     // `!hit_sub`). Status moves can't crit. Primeape / Mankey / Tauros.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Point_(Ability)>.
     if ability_id == data::ability_id::ANGERPOINT && target_alive && crit {
+        // angerpoint: boost({atk: 12}) prints `-setboost` (sim/battle.ts:2051-2052).
+        battle.p_boost_fx(crate::protocol::BoostFx::Silent);
+        pmon!(battle, "-setboost", target_side, target_slot, "|atk|6|[from] ability: Anger Point");
         // PS `boost({atk: 12})` — adding 12 to any in-range stage clamps to
         // +6, identical to the old absolute `= 6`. Self-boost.
         battle.apply_boosts(target_side, target_slot, &[(0, 12)], target_side, target_slot);
@@ -1784,6 +1824,7 @@ pub fn on_damaging_hit(
             let half = max / 2;
             // Crossed the half line: pre > half AND post <= half.
             if pre > half && post <= half && dmg > 0 {
+                battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
                 // Berserk self-boost (+1 SpA) on crossing 50%.
                 battle.apply_boosts(target_side, target_slot, &[(2, 1)], target_side, target_slot);
             }
@@ -1798,6 +1839,7 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::JUSTIFIED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 15 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Justified self-boost (+1 Atk) on incoming Dark move.
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
@@ -1817,6 +1859,11 @@ pub fn on_damaging_hit(
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| crate::damage::move_makes_contact(&data::MOVES[move_id as usize], a));
         if contact {
+            // gooey / tanglinghair: `-ability`, then a secondary boost.
+            if let Some(ab) = battle.side(target_side).active_mon(target_slot as usize).map(|m| m.effective_ability_id()) {
+                pmon!(battle, "-ability", target_side, target_slot, "|{}", crate::battle_protocol::ability_name(ab));
+                battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ab));
+            }
             battle.apply_foe_stat_drop(attacker_side, attacker_slot, &[4], -1, target_side, target_slot);
         }
     }
@@ -1851,6 +1898,7 @@ pub fn on_damaging_hit(
             None => data::MOVES[move_id as usize].type_,
         };
         if move_type == 1 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::THERMALEXCHANGE));
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
     }
@@ -1865,6 +1913,7 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::STEAMENGINE && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 1 || move_type == 2 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Steam Engine self-boost — PS `boost({spe: 6})` (additive +6).
             battle.apply_boosts(target_side, target_slot, &[(4, 6)], target_side, target_slot);
         }
@@ -1883,6 +1932,7 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::RATTLED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if matches!(move_type, 6 | 13 | 15) {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Rattled self-boost (+1 Spe) on incoming Bug/Ghost/Dark.
             battle.apply_boosts(target_side, target_slot, &[(4, 1)], target_side, target_slot);
         }
@@ -1914,6 +1964,7 @@ pub fn on_damaging_hit(
                 let pre = post + dmg;
                 let half = max / 2;
                 if pre > half && post <= half && dmg > 0 {
+                    battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
                     // Anger Shell self-boost: +1 Atk/SpA/Spe, -1 Def/SpD.
                     battle.apply_boosts(
                         target_side,
@@ -1950,9 +2001,14 @@ pub fn on_damaging_hit(
                     }
                 }
             }
+            if battle.plog() {
+                let of = battle.p_ident(target_side, target_slot);
+                battle.p_damage(attacker_side, attacker_slot, &format!("|[from] ability: Gulp Missile|[of] {of}"));
+            }
             let source = battle.side(attacker_side).active_mon(attacker_slot as usize);
             if source.is_some_and(|a| a.is_alive()) {
                 if gorging {
+                    battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                     // The holder is the status source (trySetStatus('par',
                     // target)), so the attacker's Synchronize reflects onto it.
                     battle.try_set_status_from_src(
@@ -1964,6 +2020,7 @@ pub fn on_damaging_hit(
                     );
                 } else if !source.is_some_and(|a| blocks_opposing_stat_drop_for(a, 1)) {
                     let before = source.map_or(0, |a| a.boosts[1]);
+                    battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ability_id));
                     battle.apply_boosts(attacker_side, attacker_slot, &[(1, -1)], target_side, target_slot);
                     let after = battle.side(attacker_side).active_mon(attacker_slot as usize).map_or(0, |a| a.boosts[1]);
                     if after < before {
@@ -2011,6 +2068,11 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                // roughskin / ironbarbs onDamagingHit: damage(..., source=target).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    battle.p_damage(attacker_side, attacker_slot, &format!("|[from] ability: {}|[of] {of}", crate::battle_protocol::ability_name(ability_id)));
+                }
             }
         }
     }
@@ -2039,6 +2101,7 @@ pub fn on_damaging_hit(
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
             if attacker_alive && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) {
+                battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                 // Contact-ability status (Static/Flame Body/Poison Point):
                 // the ABILITY HOLDER (the defender) is the source, so
                 // Safeguard on the attacker's side vetoes it.
@@ -2069,6 +2132,7 @@ pub fn on_damaging_hit(
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.is_alive());
         if attacker_alive {
+            battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
             battle.try_set_status_from(
                 attacker_side,
                 attacker_slot,
@@ -2134,6 +2198,10 @@ pub fn on_damaging_hit(
                 // (a Destiny-Knot-holding attacker reflects back onto the
                 // Cute Charm mon).
                 battle.apply_infatuation(attacker_side, attacker_slot, target_side, target_slot);
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    pmon!(battle, "-start", attacker_side, attacker_slot, "|Attract|[from] ability: Cute Charm|[of] {of}");
+                }
             }
         }
     }
@@ -2233,6 +2301,7 @@ pub fn on_damaging_hit(
                     None
                 };
                 if let Some(s) = to_apply {
+                    battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                     // Effect Spore: the holder (defender) is the source, so
                     // Safeguard on the attacker's side vetoes it.
                     battle.with_rng_installed(rng, |b| {
@@ -2320,6 +2389,7 @@ pub fn on_damaging_hit(
         && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10)
         && target_alive
     {
+        battle.p_status_fx(crate::protocol::StatusFx::Ability(attacker_ability_id, attacker_side as u8, attacker_slot));
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
         battle.try_set_status_from(
@@ -2352,6 +2422,7 @@ pub fn on_damaging_hit(
                     || m.effective_item_id() == data::item_id::COVERTCLOAK
             });
         if !blocked && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10) {
+            battle.p_status_fx(crate::protocol::StatusFx::Ability(attacker_ability_id, attacker_side as u8, attacker_slot));
             battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Toxic);
         }
     }

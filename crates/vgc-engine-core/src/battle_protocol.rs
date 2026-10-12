@@ -504,6 +504,373 @@ impl Battle {
         }
     }
 
+    /// A permanent forme change (`formeChange(..., isPermanent)`): the new
+    /// `details` and its `detailschange` line.
+    pub(crate) fn p_permanent_forme(&mut self, side: SideRef, slot: u8, species: u16) {
+        if !self.plog() {
+            return;
+        }
+        let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        if let Some(l) = self.protocol.log_mut() {
+            if let Some(d) = l.details_species[side as usize].get_mut(idx as usize) {
+                *d = species;
+            }
+        }
+        let det = self.p_details(side, idx);
+        pmon!(self, "detailschange", side, slot, "|{det}");
+    }
+
+    /// PS `Side.toString()`: `p1: <player name>`.
+    pub(crate) fn p_side_ident(&self, side: SideRef) -> String {
+        let name = self.protocol.log().map(|l| l.player_names[side as usize].as_str()).unwrap_or("");
+        format!("p{}: {name}", side as u8 + 1)
+    }
+
+    /// A side condition move: `-sidestart|<side>|<label>` when it lands,
+    /// else the move did nothing (`-fail`, `[still]`).
+    pub(crate) fn p_side_start(&mut self, side: SideRef, lands: bool, label: &str, user_slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        if lands {
+            let s = self.p_side_ident(side);
+            self.p_push(format!("|-sidestart|{s}|{label}"));
+        } else {
+            let user = self.protocol.log().map(|_| ()).map(|_| side);
+            let _ = user;
+            let us = self.p_user_side();
+            self.p_try_fail(us, user_slot);
+        }
+    }
+
+    /// The side of the mon whose `|move|` line is the last one.
+    fn p_user_side(&self) -> SideRef {
+        let line = self
+            .protocol
+            .log()
+            .and_then(|l| l.last_move_line.and_then(|i| l.lines.get(i)).or(l.pending_move.as_ref()))
+            .map(String::as_str)
+            .unwrap_or("|move|p1");
+        if line.starts_with("|move|p2") { SideRef::P2 } else { SideRef::P1 }
+    }
+
+    /// A status move's missed accuracy roll (`-miss`, `[miss]`).
+    pub(crate) fn p_status_miss(&mut self) {
+        let Some((us, usl, Some((ts, tsl)))) = self.protocol.log().and_then(|l| l.status_ctx) else { return };
+        let side = |s: u8| if s == 0 { SideRef::P1 } else { SideRef::P2 };
+        self.p_miss(side(us), usl, side(ts), tsl);
+    }
+
+    /// The generic failed-status-move lines, unless something was printed
+    /// for the move already.
+    pub(crate) fn p_status_fail_fallback(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() || self.protocol.log().is_some_and(|l| l.since_move > 0) {
+            return;
+        }
+        self.p_try_fail(side, slot);
+    }
+
+    /// Heal Bell / Aromatherapy: `-curestatus` for every statused team
+    /// member in PS team order, before the engine clears them.
+    pub(crate) fn p_cure_team_lines(&mut self, side: SideRef, user_slot: u8, heal_bell: bool) {
+        if !self.plog() {
+            return;
+        }
+        let user_idx = self.side(side).active.get(user_slot as usize).copied().unwrap_or(255);
+        let order = self.side(side).ps_order;
+        let n = self.side(side).team.len().min(6);
+        for &i in order.iter().take(n) {
+            let Some(mon) = self.side(side).team.get(i as usize) else { continue };
+            if !mon.is_alive() {
+                continue;
+            }
+            if heal_bell && i != user_idx && mon.effective_ability_id() == data::ability_id::SOUNDPROOF {
+                let id = self.p_ident_idx(side, i);
+                self.p_push(format!("|-immune|{id}|[from] ability: Soundproof"));
+                continue;
+            }
+            let st = status_id(mon.status);
+            if !st.is_empty() {
+                let id = self.p_ident_idx(side, i);
+                self.p_push(format!("|-curestatus|{id}|{st}|[msg]"));
+            }
+        }
+    }
+
+    /// A powder move's immunity (sim/battle-actions.ts:669-672; Overcoat,
+    /// Safety Goggles).
+    pub(crate) fn p_powder_immune(&mut self, side: SideRef, slot: u8, move_name: &str) {
+        if !self.plog() {
+            return;
+        }
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        let grass = {
+            let (t, n) = m.effective_types();
+            t[..n as usize].contains(&4)
+        };
+        if grass {
+            pmon!(self, "-immune", side, slot);
+        } else if m.effective_ability_id() == data::ability_id::OVERCOAT {
+            pmon!(self, "-immune", side, slot, "|[from] ability: Overcoat");
+        } else if m.item_id == data::item_id::SAFETYGOGGLES {
+            pmon!(self, "-activate", side, slot, "|item: Safety Goggles|{move_name}");
+        }
+    }
+
+    /// A status move's setStatus outcome when it did not land
+    /// (sim/pokemon.ts setStatus; data/moves.ts safeguard, terrains;
+    /// data/abilities.ts limber et al.).
+    pub(crate) fn p_status_move_outcome(&mut self, side: SideRef, slot: u8, status: crate::pokemon::Status, before: Option<crate::pokemon::Status>) {
+        use crate::pokemon::Status;
+        if !self.plog() {
+            return;
+        }
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if !m.is_alive() || (m.status == status && before == Some(Status::None)) {
+            return;
+        }
+        let user = self.protocol.log().and_then(|l| l.status_ctx).map(|(s, sl, _)| (if s == 0 { SideRef::P1 } else { SideRef::P2 }, sl));
+        let prior = before.unwrap_or(Status::None);
+        if prior != Status::None {
+            if prior == status {
+                pmon!(self, "-fail", side, slot, "|{}", status_id(status));
+            } else if let Some((us, usl)) = user {
+                self.p_try_fail(us, usl);
+            }
+            return;
+        }
+        let (types, nt) = m.effective_types();
+        let has = |t: u8| types[..nt as usize].contains(&t);
+        let type_immune = match status {
+            Status::Paralysis => has(3),
+            Status::Burn => has(1),
+            Status::Poison | Status::Toxic => has(7) || has(16),
+            Status::Freeze => has(5),
+            _ => false,
+        };
+        if type_immune {
+            pmon!(self, "-immune", side, slot);
+            return;
+        }
+        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
+            pmon!(self, "-activate", side, slot, "|move: Safeguard");
+            return;
+        }
+        if m.is_grounded() && m.semi_invuln == 0 {
+            if matches!(self.terrain, crate::terrain::Terrain::Misty) {
+                pmon!(self, "-activate", side, slot, "|move: Misty Terrain");
+                return;
+            }
+            if matches!(self.terrain, crate::terrain::Terrain::Electric) && status == Status::Sleep {
+                pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
+                return;
+            }
+        }
+        let ab = m.effective_ability_id();
+        use data::ability_id as a;
+        let blocks = match status {
+            Status::Burn => matches!(ab, a::WATERVEIL | a::WATERBUBBLE | a::THERMALEXCHANGE),
+            Status::Paralysis => ab == a::LIMBER,
+            Status::Sleep => matches!(ab, a::INSOMNIA | a::VITALSPIRIT),
+            Status::Poison | Status::Toxic => matches!(ab, a::IMMUNITY | a::PASTELVEIL),
+            Status::Freeze => ab == a::MAGMAARMOR,
+            Status::None => false,
+        } || matches!(ab, a::PURIFYINGSALT | a::COMATOSE);
+        if blocks {
+            pmon!(self, "-immune", side, slot, "|[from] ability: {}", ability_name(ab));
+        }
+    }
+
+    /// Open the residual window: rank the actives by PS `speed`
+    /// (getActionSpeed, negated under Trick Room; sim/battle.ts:1594).
+    pub(crate) fn p_res_open(&mut self) {
+        if !self.plog() {
+            return;
+        }
+        let tr = self.trick_room_turns > 0;
+        let mut v: [(i64, u8, u8); 4] = [(0, 0, 0); 4];
+        let mut k = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) as u8 {
+                if let Some(m) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()) {
+                    let tw = self.side(side).conditions.tailwind_turns > 0;
+                    let spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
+                    v[k] = (if tr { -spe } else { spe }, side as u8, slot);
+                    k += 1;
+                }
+            }
+        }
+        // Faster first; ties keep slot order.
+        let mut order: [usize; 4] = [0, 1, 2, 3];
+        order[..k].sort_by(|&a, &b| v[b].0.cmp(&v[a].0));
+        let mut speeds = [[0u8; 2]; 2];
+        for (rank, &i) in order[..k].iter().enumerate() {
+            let (spe, s, sl) = v[i];
+            // Field / side handlers have speed 0: between positive and
+            // negative (Trick Room) mon speeds.
+            speeds[s as usize][sl as usize] = if spe > 0 { 200 - rank as u8 } else { 100 - rank as u8 };
+        }
+        if let Some(l) = self.protocol.log_mut() {
+            l.window_open();
+            l.res_speed = speeds;
+        }
+    }
+
+    /// Start a residual handler: earlier handlers' faints print first
+    /// (faintMessages after each handler), then the key is set.
+    pub(crate) fn p_res(&mut self, order: u8, sub: u8, mon: Option<(SideRef, u8)>) {
+        if !self.plog() {
+            return;
+        }
+        self.p_faint_messages();
+        if let Some(l) = self.protocol.log_mut() {
+            let spd = match mon {
+                Some((s, sl)) => l.res_speed[s as usize][(sl as usize).min(1)],
+                None => 150,
+            };
+            if let Some(w) = l.window.as_deref_mut() {
+                w.key = (order as u32) << 24 | (255 - spd as u32) << 16 | (sub as u32) << 8;
+            }
+        }
+    }
+
+    /// A per-mon line inside a field handler's eachEvent (weather damage):
+    /// after the handler's own line, in speed order.
+    pub(crate) fn p_res_each(&mut self, order: u8, sub: u8, side: SideRef, slot: u8) {
+        if let Some(l) = self.protocol.log_mut() {
+            let spd = l.res_speed[side as usize][(slot as usize).min(1)];
+            if let Some(w) = l.window.as_deref_mut() {
+                w.key = (order as u32) << 24 | (255 - 150) << 16 | ((sub as u32 + (255 - spd as u32) / 2).min(255)) << 8;
+            }
+        }
+    }
+
+    /// A field handler's trailing Update (berries) lines.
+    pub(crate) fn p_res_update(&mut self, order: u8) {
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.key = (order as u32) << 24 | (255 - 150) << 16 | 255 << 8;
+        }
+    }
+
+    pub(crate) fn p_res_close(&mut self) {
+        if !self.plog() {
+            return;
+        }
+        self.p_faint_messages();
+        if let Some(l) = self.protocol.log_mut() {
+            l.window_close();
+        }
+    }
+
+    /// Grassy Terrain's per-mon residual heal (data/moves.ts grassyterrain
+    /// onResidual): printed when HP moved.
+    pub(crate) fn p_grassy_heal(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let before = self.protocol.log().map(|l| l.res_hp_before).unwrap_or(0);
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp != before) {
+            self.p_heal(side, slot, "|[from] Grassy Terrain");
+        }
+    }
+
+    /// The partial-trapping move holding the mon in `slot`.
+    pub(crate) fn p_trap_move(&self, side: SideRef, slot: u8) -> u16 {
+        let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        self.protocol.log().and_then(|l| l.trap_move[side as usize].get(idx as usize).copied()).unwrap_or(u16::MAX)
+    }
+
+    /// partiallytrapped's end (data/conditions.ts:238-247).
+    pub(crate) fn p_trap_end(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        if !self.plog() {
+            return;
+        }
+        let mv = self.p_trap_move(side, slot);
+        pmon!(self, "-end", side, slot, "|{}|[partiallytrapped]{suffix}", move_name(mv));
+    }
+
+    /// Durations that run out in this residual, printed at their PS
+    /// order: volatiles (taunt 15, encore 16, disable 17, heal block 20,
+    /// throat chop 22), side conditions (26) and field effects (27). The
+    /// engine decrements these after the residuals, silently.
+    pub(crate) fn p_residual_timer_ends(&mut self) {
+        if !self.plog() {
+            return;
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) as u8 {
+                let Some(m) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()) else { continue };
+                let taunt = m.taunt_turns() == 1;
+                let encore = m.encore_turns() > 0 && {
+                    let locked = m.encored_move_slot() as usize;
+                    m.encore_turns() == 1 || m.pp.get(locked).copied().unwrap_or(0) == 0
+                };
+                let disable = m.disabled_move_slot() != 255 && m.disable_turns() == 1;
+                let heal_block = m.heal_block_turns() == 1;
+                let throat_chop = m.throat_chop_turns() == 1;
+                if taunt {
+                    self.p_res(15, 0, Some((side, slot)));
+                    pmon!(self, "-end", side, slot, "|move: Taunt");
+                }
+                if encore {
+                    self.p_res(16, 0, Some((side, slot)));
+                    pmon!(self, "-end", side, slot, "|Encore");
+                }
+                if disable {
+                    self.p_res(17, 0, Some((side, slot)));
+                    pmon!(self, "-end", side, slot, "|Disable");
+                }
+                if heal_block {
+                    self.p_res(20, 0, Some((side, slot)));
+                    pmon!(self, "-end", side, slot, "|move: Heal Block");
+                }
+                if throat_chop {
+                    self.p_res(22, 0, Some((side, slot)));
+                    pmon!(self, "-end", side, slot, "|Throat Chop|[silent]");
+                }
+            }
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            let c = self.side(side).conditions;
+            let sid = self.p_side_ident(side);
+            for (turns, sub, label) in [
+                (c.reflect_turns, 1u8, "Reflect"),
+                (c.light_screen_turns, 2, "move: Light Screen"),
+                (c.safeguard_turns, 3, "Safeguard"),
+                (c.mist_turns, 4, "Mist"),
+                (c.tailwind_turns, 5, "move: Tailwind"),
+                (c.aurora_veil_turns, 10, "move: Aurora Veil"),
+            ] {
+                if turns == 1 {
+                    self.p_res(26, sub, None);
+                    self.p_push(format!("|-sideend|{sid}|{label}"));
+                }
+            }
+        }
+        if self.trick_room_turns == 1 {
+            self.p_res(27, 1, None);
+            self.p_push("|-fieldend|move: Trick Room".to_string());
+        }
+        if self.gravity_turns == 1 {
+            self.p_res(27, 2, None);
+            self.p_push("|-fieldend|move: Gravity".to_string());
+        }
+        if self.wonder_room_turns == 1 {
+            self.p_res(27, 5, None);
+            self.p_push("|-fieldend|move: Wonder Room".to_string());
+        }
+        if self.magic_room_turns == 1 {
+            self.p_res(27, 6, None);
+            let src = self.protocol.log().map(|l| l.magic_room_source.clone()).unwrap_or_default();
+            self.p_push(format!("|-fieldend|move: Magic Room|[of] {src}"));
+        }
+        if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
+            self.p_res(27, 7, None);
+            let t = terrain_name(self.terrain);
+            self.p_push(format!("|-fieldend|{t}"));
+        }
+    }
+
     /// Announce-only ability onStart lines (data/abilities.ts).
     pub(crate) fn p_ability_announce(&mut self, side: SideRef, slot: u8, ability: u16) {
         if !self.plog() {
@@ -695,9 +1062,9 @@ impl Battle {
             if !live.is_empty() {
                 let actor = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
                 let key = crate::rng::RngKey { turn: self.turn + 1, actor, target: crate::rng::NO_SLOT, move_id, decision: crate::rng::RngDecision::Range };
-                for _ in 0..2 {
-                    let pick = self.rng.log_pick(key, live.len() as u32).unwrap_or(0) as usize;
-                    display = Some((foe, live[pick.min(live.len() - 1)]));
+                // Two re-picks; the drained queue's last one is shown.
+                if let Some(pick) = self.rng.log_pick(key, live.len() as u32) {
+                    display = Some((foe, live[(pick as usize).min(live.len() - 1)]));
                 }
             }
         }
@@ -709,6 +1076,7 @@ impl Battle {
         if let Some(l) = self.protocol.log_mut() {
             l.flush_pending_move();
             l.pending_move = Some(line);
+            l.since_move = 0;
             l.active_move = move_id;
             l.last_move[side as usize][(slot as usize).min(1)] = move_id;
         }
