@@ -1,29 +1,51 @@
 //! Usage-statistics prior for [`crate::position`]: per species, the
 //! probability of each item, ability, move and spread.
 //!
-//! Sources:
+//! Embedded priors have stable ids (`data/smogon-stats/README.md` has the
+//! provenance):
 //!
-//! * the embedded default, Smogon's `gen9championsvgc2026regmb` chaos stats
-//!   for 2026-08, cutoff 0 (`data/smogon-stats/2026-08/gen9championsvgc2026regmb-0.json`,
-//!   extracted from Bring Four's `smogon.py` output: top 10 per category);
-//! * a Bring Four / chaos-derived JSON file of the same shape (any cutoff:
-//!   a `cutoffs` map takes cutoff `0`, else the lowest);
-//! * a Smogon moveset `.txt` file (parsed by [`crate::smogon_stats`]).
+//! * `smogon:2026-09/gen9championsvgc2026regmc-1500`: Smogon's Reg M-C chaos
+//!   stats for 2026-09 at the 1500 cut (mimikyu's usage convention), trimmed
+//!   by `scripts/trim_smogon_chaos.py`. Spreads are Champions stat points.
+//! * `smogon:2026-08/gen9championsvgc2026regmb-0`: Reg M-B, 2026-08, cut 0.
+//! * `bringfour:2026-09/regmc-reveals`: Bring Four's Reg M-C replay reveal
+//!   shares (reveal-biased, no spreads).
+//!
+//! `a+b` chains ids: species `a` lacks come from `b`. `"default"` picks by
+//! format at [`Prior::for_format`]: Reg M-B formats get [`DEFAULT_REGMB`]
+//! (= [`V0_4_0_DEFAULT`], 0.4.0's default), every other format
+//! [`DEFAULT_REGMC`].
+//!
+//! Also loadable: a Bring Four / chaos-derived JSON file of the same shape
+//! (a `cutoffs` map takes cutoff `0`, else the lowest), or a Smogon moveset
+//! `.txt` (parsed by [`crate::smogon_stats`]).
 //!
 //! Probabilities are the stats' percentages / 100. Moves are "share of sets
 //! with the move" (they sum to about 4).
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::smogon_stats;
 
-const EMBEDDED: &str = include_str!("../../../data/smogon-stats/2026-08/gen9championsvgc2026regmb-0.json");
-/// Species the Reg M-B stats lack (Reg M-C additions: Rillaboom,
-/// Indeedee, Salamence, ...) fall back to Bring Four's Reg M-C replay
-/// reveal shares (no spreads; reveal-biased).
-const EMBEDDED_FALLBACK: &str = include_str!("../../../data/smogon-stats/2026-09/bringfour-regmc-reveals.json");
+/// `(id, text)` of every embedded prior file.
+const EMBEDDED: [(&str, &str); 3] = [
+    ("smogon:2026-09/gen9championsvgc2026regmc-1500", include_str!("../../../data/smogon-stats/2026-09/gen9championsvgc2026regmc-1500.json")),
+    ("smogon:2026-08/gen9championsvgc2026regmb-0", include_str!("../../../data/smogon-stats/2026-08/gen9championsvgc2026regmb-0.json")),
+    ("bringfour:2026-09/regmc-reveals", include_str!("../../../data/smogon-stats/2026-09/bringfour-regmc-reveals.json")),
+];
+
+/// The default for Reg M-C (and any non-M-B format). The rare species under
+/// the 0.1% usage trim fall back to Bring Four's reveal shares.
+pub const DEFAULT_REGMC: &str = "smogon:2026-09/gen9championsvgc2026regmc-1500+bringfour:2026-09/regmc-reveals";
+/// The default for Reg M-B formats: 0.4.0's default, unchanged. The reveal
+/// fallback covers Reg M-C teams played under M-B rules (the conformance
+/// harness does that); without it their moves match half as often.
+pub const DEFAULT_REGMB: &str = V0_4_0_DEFAULT;
+/// vgc-engine 0.4.0's default, for every format.
+pub const V0_4_0_DEFAULT: &str = "smogon:2026-08/gen9championsvgc2026regmb-0+bringfour:2026-09/regmc-reveals";
 
 /// One spread: nature slug, six stat values, probability. `sp` = the values
 /// are Champions stat points (0-32), else EVs.
@@ -48,8 +70,14 @@ pub struct SpeciesPrior {
 
 #[derive(Debug, Clone, Default)]
 pub struct Prior {
-    /// Where it came from (`embedded:...`, a path, or `none`).
+    /// Its id: an embedded id or `a+b` chain, a path, `none`, or `default`
+    /// (unresolved: see [`Prior::for_format`]).
     pub source: String,
+    /// SHA-256 (hex) of the file content; a chain's are `+`-joined in id
+    /// order. Empty for `none` and `default`.
+    pub sha256: String,
+    /// `default`: resolved per format.
+    auto: bool,
     species: HashMap<String, SpeciesPrior>,
     /// Consulted for species this prior lacks.
     fallback: Option<Box<Prior>>,
@@ -80,18 +108,32 @@ fn pairs(v: Option<&Value>) -> Vec<(String, f64)> {
 impl Prior {
     /// No prior: every hidden field falls back to the documented defaults.
     pub fn none() -> Self {
-        Prior { source: "none".into(), species: HashMap::new(), fallback: None }
+        Prior { source: "none".into(), ..Default::default() }
     }
 
-    /// The embedded default (Reg M-B 2026-08, cutoff 0).
+    /// The embedded default: resolved per format by [`Prior::for_format`].
     pub fn embedded() -> Self {
-        let mut p = Self::from_json_text(EMBEDDED).expect("embedded prior parses");
-        p.source = "embedded:smogon gen9championsvgc2026regmb 2026-08 cutoff 0 + bringfour regmc reveals".into();
-        p.fallback = Some(Box::new(Self::from_json_text(EMBEDDED_FALLBACK).expect("embedded fallback parses")));
-        p
+        Prior { source: "default".into(), auto: true, ..Default::default() }
     }
 
-    /// `"default"` / `""` = embedded, `"none"` = no prior, else a file path
+    /// The prior a replay of format `format_id` uses: the default's pick for
+    /// the format (Reg M-B -> [`DEFAULT_REGMB`], else [`DEFAULT_REGMC`]),
+    /// else `self`.
+    pub fn for_format(&self, format_id: &str) -> &Prior {
+        if !self.auto {
+            return self;
+        }
+        static MB: OnceLock<Prior> = OnceLock::new();
+        static MC: OnceLock<Prior> = OnceLock::new();
+        if format_id.to_ascii_lowercase().contains("regmb") {
+            MB.get_or_init(|| Self::load(DEFAULT_REGMB).expect("embedded prior"))
+        } else {
+            MC.get_or_init(|| Self::load(DEFAULT_REGMC).expect("embedded prior"))
+        }
+    }
+
+    /// `"default"` / `""` = the per-format default, `"none"` = no prior, an
+    /// embedded id or an `a+b` chain of ids / paths, else a file path
     /// (`.json` Bring Four / chaos-derived, else a Smogon moveset `.txt`).
     pub fn load(spec: &str) -> Result<Self, String> {
         match spec {
@@ -99,10 +141,33 @@ impl Prior {
             "none" => return Ok(Self::none()),
             _ => {}
         }
-        let text = std::fs::read_to_string(spec).map_err(|e| format!("prior {spec}: {e}"))?;
+        if let Some(text) = EMBEDDED.iter().find(|(id, _)| *id == spec).map(|x| x.1) {
+            let mut p = Self::from_json_text(text)?;
+            p.source = spec.to_string();
+            p.sha256 = sha256_hex(text.as_bytes());
+            return Ok(p);
+        }
+        if let Some((head, rest)) = spec.split_once('+').filter(|_| !std::path::Path::new(spec).exists()) {
+            let mut p = Self::load(head)?;
+            let f = Self::load(rest)?;
+            if p.auto || f.auto || p.fallback.is_some() {
+                return Err(format!("prior {spec}: only ids and paths chain"));
+            }
+            p.source = spec.to_string();
+            p.sha256 = format!("{}+{}", p.sha256, f.sha256);
+            p.fallback = Some(Box::new(f));
+            return Ok(p);
+        }
+        let text = std::fs::read_to_string(spec).map_err(|e| format!("prior {spec}: {e} (embedded ids: {})", Self::embedded_ids().join(", ")))?;
         let mut p = if text.trim_start().starts_with('{') { Self::from_json_text(&text)? } else { Self::from_moveset_txt(&text)? };
         p.source = spec.to_string();
+        p.sha256 = sha256_hex(text.as_bytes());
         Ok(p)
+    }
+
+    /// The embedded priors' ids.
+    pub fn embedded_ids() -> Vec<&'static str> {
+        EMBEDDED.iter().map(|x| x.0).collect()
     }
 
     pub fn from_json_text(text: &str) -> Result<Self, String> {
@@ -143,7 +208,7 @@ impl Prior {
                 },
             );
         }
-        Ok(Prior { source: "json".into(), species, fallback: None })
+        Ok(Prior { source: "json".into(), species, ..Default::default() })
     }
 
     /// A Smogon moveset `.txt`. Its spread numbers are Champions stat points
@@ -168,7 +233,7 @@ impl Prior {
                 SpeciesPrior { usage: 4.0 * s.raw_count as f64 / total, items: f(&s.items), abilities: f(&s.abilities), moves: f(&s.moves), spreads },
             );
         }
-        Ok(Prior { source: "txt".into(), species, fallback: None })
+        Ok(Prior { source: "txt".into(), species, ..Default::default() })
     }
 
     /// The prior for a species (display name or slug). A forme the stats
@@ -211,8 +276,59 @@ impl Prior {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.species.is_empty() && self.fallback.as_ref().is_none_or(|f| f.is_empty())
+        !self.auto && self.species.is_empty() && self.fallback.as_ref().is_none_or(|f| f.is_empty())
     }
+}
+
+
+/// SHA-256 of `data`, lowercase hex (FIPS 180-4), so a report's hash matches
+/// `shasum -a 256` of the prior file without a crypto dependency.
+pub fn sha256_hex(data: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in msg.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for (i, c) in block.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ (!e & g);
+            let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    h.iter().map(|x| format!("{x:08x}")).collect()
 }
 
 #[cfg(test)]
@@ -220,14 +336,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_prior_loads() {
-        let p = Prior::embedded();
+    fn sha256_vectors() {
+        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
+    fn default_resolves_by_format() {
+        let d = Prior::embedded();
+        assert!(!d.is_empty());
+        let mc = d.for_format("gen9championsvgc2026regmc");
+        assert_eq!(mc.source, DEFAULT_REGMC);
+        assert_eq!(mc.sha256.split('+').count(), 2);
+        let k = mc.get("Kingambit").expect("kingambit");
+        assert!(k.usage > 0.05);
+        assert_eq!(k.abilities[0].0, "defiant");
+        assert!(k.spreads[0].sp && k.spreads[0].values.iter().all(|&v| v <= 32));
+        assert!(mc.get("Rillaboom").is_some_and(|r| !r.spreads.is_empty()), "M-C stats carry Rillaboom's spreads");
+        assert!(mc.get("Salamence-Mega").is_some());
+        assert!(mc.get("Charizard-Mega-Y").is_some());
+        assert_eq!(d.for_format("gen9championsvgc2026regmb").source, DEFAULT_REGMB);
+        // An explicit prior is never swapped.
+        let mb = Prior::load("smogon:2026-08/gen9championsvgc2026regmb-0").unwrap();
+        assert_eq!(mb.for_format("gen9championsvgc2026regmc").source, "smogon:2026-08/gen9championsvgc2026regmb-0");
+        assert!(mb.get("Rillaboom").is_none(), "no fallback without a chain");
+    }
+
+    #[test]
+    fn v0_4_0_default_reproduces() {
+        let p = Prior::load(V0_4_0_DEFAULT).unwrap();
+        assert_eq!(p.source, V0_4_0_DEFAULT);
         let k = p.get("Kingambit").expect("kingambit");
         assert!(k.usage > 0.1);
         assert_eq!(k.abilities[0].0, "defiant");
         assert!(k.spreads[0].sp);
-        assert!(p.get("Charizard-Mega-Y").is_some());
         assert!(p.get("Salamence-Mega").is_some(), "Reg M-C fallback");
-        assert!(p.get("Rillaboom").is_some_and(|r| r.moves[0].0 == "fakeout"));
+        assert!(p.get("Rillaboom").is_some_and(|r| r.moves[0].0 == "fakeout" && r.spreads.is_empty()));
+        assert_eq!(p.sha256, format!("{}+{}", Prior::load("smogon:2026-08/gen9championsvgc2026regmb-0").unwrap().sha256, Prior::load("bringfour:2026-09/regmc-reveals").unwrap().sha256));
+        assert!(Prior::load("smogon:2026-07/nope").is_err());
     }
 }
