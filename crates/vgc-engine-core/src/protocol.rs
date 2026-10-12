@@ -17,9 +17,10 @@
 use std::fmt;
 
 /// How lines are rendered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ProtocolMode {
     /// Byte-exact PS protocol lines (the conformance target).
+    #[default]
     Ps,
     /// The same events, minus purely cosmetic lines: `|t:|` timestamps,
     /// blank `|` separators, `|j|`, `|gametype|`, `|player|`, `|gen|`,
@@ -121,8 +122,9 @@ const CHAMPIONS_RULES: &[&str] = &[
     "Item Clause: Limit 1 of each item",
 ];
 
-/// PS config/formats.ts entries the engine knows. Unknown ids get a generic
-/// gen 9 custom-game preamble.
+/// PS config/formats.ts entries the engine knows (the named arms, then the
+/// generated [`crate::ps_formats`] table). Unknown ids get a generic gen 9
+/// custom-game preamble.
 pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
     let id = format_id.to_ascii_lowercase();
     match id.as_str() {
@@ -153,6 +155,18 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             picked_team_size: 0,
             exact_hp: true,
         },
+        // Every other gen 9 / Champions format PS knows (ps_formats.json).
+        other if crate::ps_formats::lookup(other).is_some() => {
+            let f = crate::ps_formats::lookup(other).expect("checked");
+            FormatPreamble {
+                tier: f.name,
+                rules: f.rules,
+                team_preview: f.team_preview,
+                open_team_sheets: f.open_team_sheets,
+                picked_team_size: f.picked_team_size,
+                exact_hp: f.debug,
+            }
+        }
         _ => FormatPreamble {
             tier: if doubles { "[Gen 9] Doubles Custom Game" } else { "[Gen 9] Custom Game" },
             rules: &[],
@@ -366,6 +380,10 @@ pub struct ProtocolLog {
     /// A keyed replay's random target for a `randomNormal` move (Struggle)
     /// chosen without one: the `|move|` line's pick, which the hit uses too.
     pub(crate) random_pick: Option<(crate::side::SideRef, u8)>,
+    /// `ps-rng`: runMove's getTarget pick for the action now running (the
+    /// `|move|` line's target when getTarget falls to getRandomTarget, e.g.
+    /// a spread move's).
+    pub(crate) ps_target_pick: Option<(crate::side::SideRef, u8)>,
     /// Points where PS stops for input: `sendUpdates` flushes the log so far
     /// as an `update`, then each side's `|request|` (sim/battle.ts:3267-3274).
     pub(crate) sync: Vec<SyncPoint>,
@@ -552,6 +570,7 @@ impl ProtocolLog {
             illusion: [[255; 6]; 2],
             picked_team_size: 0,
             random_pick: None,
+            ps_target_pick: None,
             exact_hp: false,
             sync: Vec::new(),
             cuts: Vec::new(),

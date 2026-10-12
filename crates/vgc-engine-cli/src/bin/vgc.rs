@@ -216,6 +216,43 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         max_turns: u32,
     },
+
+    /// A local Pokémon Showdown simulator: PS's `simulate-battle` stdio
+    /// protocol (`>start`, `>player`, `>p1 ...` in; `update` /
+    /// `sideupdate` / `end` out). See docs/protocol.md, "Use as a local
+    /// Showdown replacement".
+    Sim(SimArgs),
+}
+
+/// `vgc sim` / `vgc-showdown simulate-battle` flags (PS's own, plus `--protocol`).
+#[derive(clap::Args)]
+struct SimArgs {
+    /// `ps` (byte-exact PS output) or `compact` (no cosmetic lines).
+    #[arg(long, default_value = "ps")]
+    protocol: String,
+    /// Write only the omniscient log (PS `--replay`).
+    #[arg(long)]
+    replay: bool,
+    /// Write only the spectator log (PS `--spectate`).
+    #[arg(long)]
+    spectate: bool,
+    /// Accepted for PS compatibility; vgc-engine writes no `|debug|` lines.
+    #[arg(long)]
+    debug: bool,
+    /// Accepted for PS compatibility (nothing to build).
+    #[arg(long)]
+    skip_build: bool,
+}
+
+fn run_sim(a: &SimArgs) -> Result<ExitCode, String> {
+    use vgc_engine_core::ps_stream::{run_simulate_battle, Replay, StreamOptions};
+    let mode = vgc_engine_core::ProtocolMode::parse(&a.protocol).ok_or_else(|| format!("unknown --protocol {} (ps | compact)", a.protocol))?;
+    let replay = if a.spectate { Replay::Spectator } else if a.replay { Replay::Omniscient } else { Replay::Off };
+    let _ = (a.debug, a.skip_build);
+    let trace = std::env::var_os("VGC_DRAW_TRACE").is_some();
+    let opts = StreamOptions { replay, mode, trace, ..Default::default() };
+    run_simulate_battle(opts, std::io::stdin().lock(), std::io::stdout().lock())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// A team file: JSON (`[` / `{`) or a Showdown export.
@@ -346,6 +383,7 @@ fn run() -> Result<ExitCode, String> {
         Command::Battle { p1, p2, seed, format, protocol, view, max_turns } => {
             run_battle(&p1, &p2, seed, &format, &protocol, &view, max_turns)
         }
+        Command::Sim(a) => run_sim(&a),
         Command::Calc {
             attacker,
             defender,

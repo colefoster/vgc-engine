@@ -565,6 +565,19 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// An ability's `onSwitchInPriority` (data/abilities.ts; the same in the
+/// Champions mod): the SwitchIn handler order before Speed. 0 for the rest.
+pub fn switch_in_priority(ability_id: u16) -> i8 {
+    use data::ability_id as a;
+    match ability_id {
+        a::NEUTRALIZINGGAS | a::TERASHIFT => 2,
+        a::ASONEGLASTRIER | a::ASONESPECTRIER | a::KLUTZ | a::UNNERVE => 1,
+        a::MIMICRY | a::SCHOOLING | a::SHIELDSDOWN => -1,
+        a::COSTAR | a::FLOWERGIFT | a::FORECAST | a::HOSPITALITY | a::ICEFACE | a::PROTOSYNTHESIS | a::QUARKDRIVE => -2,
+        _ => 0,
+    }
+}
+
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // The mon's runSwitch: its held hazard lines come first.
     if let Some(l) = battle.protocol.log_mut() {
@@ -578,6 +591,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Reading `effective_ability_id()` below makes the dispatch honor the
     // flag for free.
     recompute_neutralizing_gas(battle);
+    // A mon its entry hazards knocked out runs no SwitchIn handlers of its
+    // own (fieldEvent skips a holder at 0 HP, sim/battle.ts fieldEvent;
+    // runSwitch, sim/battle-actions.ts:175-192).
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp == 0) {
+        return;
+    }
     on_start(battle, side, slot);
     // zerotohero: onSwitchIn arms its onStart's message for a Hero
     // (data/abilities.ts zerotohero).
@@ -851,9 +870,50 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // 1 or 0 BP damaging move 80; status 0), one draw even for a lone move.
     // forewarn onStart's `-activate` (data/abilities.ts:1504-1527). The
     // engine draws no sample for a tie, so it shows the first candidate.
-    if ability_id == data::ability_id::FOREWARN && battle.plog() {
+    // Anticipation — PS data/abilities.ts:174-190 onStart: announced when a
+    // foe has a damaging move the holder isn't immune to and is weak to,
+    // or an OHKO move. No other effect.
+    if ability_id == data::ability_id::ANTICIPATION && battle.plog() {
+        let holder = battle.side(side).active_mon(slot as usize).cloned();
+        let shudder = holder.is_some_and(|h| {
+            (0..battle.format().active_count()).any(|s| {
+                battle.side(side.opposing()).active_mon(s).filter(|m| m.is_alive()).is_some_and(|foe| {
+                    foe.moves.iter().filter(|&&id| id != u16::MAX).any(|&mid| {
+                        let mv = &data::MOVES[mid as usize];
+                        let ohko = matches!(mid, data::move_id::FISSURE | data::move_id::HORNDRILL | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD);
+                        if ohko {
+                            return true;
+                        }
+                        if mv.category == 2 {
+                            return false;
+                        }
+                        // getImmunity && getEffectiveness > 0 on the holder's types
+                        // (TYPE_CHART codes: 1 = 2x, 2 = 0.5x, 3 = 0x).
+                        let (types, n) = h.effective_types();
+                        let mut score = 0i32;
+                        let mut immune = false;
+                        for &t in &types[..n as usize] {
+                            match data::TYPE_CHART[t as usize][mv.type_ as usize] {
+                                1 => score += 1,
+                                2 => score -= 1,
+                                3 => immune = true,
+                                _ => {}
+                            }
+                        }
+                        !immune && score > 0
+                    })
+                })
+            })
+        });
+        if shudder {
+            pmon!(battle, "-ability", side, slot, "|Anticipation");
+        }
+    }
+    if ability_id == data::ability_id::FOREWARN {
         let mut best = 1u16;
-        let mut pick: Option<(u16, u8)> = None;
+        // The tied warn moves (at most 8 foe moves), in PS's foe / slot order.
+        let mut cands = [(0u16, 0u8); 8];
+        let mut n = 0usize;
         for s in 0..battle.format().active_count() as u8 {
             let Some(foe) = battle.side(side.opposing()).active_mon(s as usize).filter(|m| m.is_alive()) else { continue };
             for &mid in foe.moves.iter().filter(|&&id| id != u16::MAX) {
@@ -870,43 +930,28 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                 }
                 if bp > best {
                     best = bp;
-                    pick = Some((mid, s));
+                    n = 0;
                 }
-            }
-        }
-        if let Some((mid, s)) = pick {
-            let of = battle.p_ident(side.opposing(), s);
-            pmon!(battle, "-activate", side, slot, "|ability: Forewarn|{}|[of] {of}", crate::battle_protocol::move_name(mid));
-        }
-    }
-    #[cfg(feature = "ps-rng")]
-    if ability_id == data::ability_id::FOREWARN && battle.rng_mut().is_ps() {
-        let mut best = 1u16;
-        let mut n = 0u32;
-        for s in 0..battle.format().active_count() {
-            let Some(foe) = battle.side(side.opposing()).active_mon(s).filter(|m| m.is_alive()) else { continue };
-            for &mid in foe.moves.iter().filter(|&&id| id != u16::MAX) {
-                let mv = &data::MOVES[mid as usize];
-                let mut bp = mv.base_power;
-                if matches!(mid, data::move_id::FISSURE | data::move_id::HORNDRILL | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD) {
-                    bp = 150;
-                }
-                if matches!(mid, data::move_id::COUNTER | data::move_id::METALBURST | data::move_id::MIRRORCOAT) {
-                    bp = 120;
-                }
-                if bp == 1 || (bp == 0 && mv.category != 2) {
-                    bp = 80;
-                }
-                if bp > best {
-                    best = bp;
-                    n = 1;
-                } else if bp == best {
+                if bp == best && n < cands.len() {
+                    cands[n] = (mid, s);
                     n += 1;
                 }
             }
         }
         if n > 0 {
-            let _ = battle.rng_mut().ps_random_range("sample", 0, n);
+            // `this.sample(warnMoves)`: PS's PRNG picks among ties; without
+            // it the first is shown.
+            #[allow(unused_mut)]
+            let mut idx = 0usize;
+            #[cfg(feature = "ps-rng")]
+            if battle.rng_mut().is_ps() {
+                idx = battle.rng_mut().ps_random_range("sample", 0, n as u32) as usize;
+            }
+            let (mid, s) = cands[idx.min(n - 1)];
+            if battle.plog() {
+                let of = battle.p_ident(side.opposing(), s);
+                pmon!(battle, "-activate", side, slot, "|ability: Forewarn|{}|[of] {of}", crate::battle_protocol::move_name(mid));
+            }
         }
     }
     if ability_id == data::ability_id::TRACE {
@@ -1172,8 +1217,10 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             healed = m.current_hp < m.stats.hp;
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
         }
-        // regenerator onSwitchOut (data/mods/champions/abilities.ts:63-69).
-        if healed {
+        // regenerator onSwitchOut: Champions logs a silent heal
+        // (data/mods/champions/abilities.ts:63-69); gen 9's
+        // `pokemon.heal` writes nothing (data/abilities.ts regenerator).
+        if healed && battle.champions {
             battle.p_heal(side, slot, "|[from] ability: Regenerator|[silent]");
         }
     }
@@ -1977,7 +2024,12 @@ pub fn on_damaging_hit(
     // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
     // the move's type after type changes (Weather Ball in sun).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thermal_Exchange_(Ability)>.
+    // `flags: { breakable: 1 }`: a Mold Breaker attacker suppresses it.
+    let mold = battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| {
+        matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE)
+    });
     if target_alive
+        && !mold
         && battle
             .side(target_side)
             .active_mon(target_slot as usize)

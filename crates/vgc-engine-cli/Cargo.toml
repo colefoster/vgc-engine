@@ -15,12 +15,23 @@ description = "CLI for vgc-engine: the `vgc` fast-calc front end + a debug harne
 name = "vgc"
 path = "src/bin/vgc.rs"
 
+# `vgc-showdown simulate-battle`: the `pokemon-showdown simulate-battle`
+# stand-in (same as `vgc sim`).
+[[bin]]
+name = "vgc-showdown"
+path = "src/bin/vgc-showdown.rs"
+
 [[bin]]
 name = "vgc-engine-cli"
 path = "src/main.rs"
 required-features = ["debug-harness"]
 
 [features]
+# `ps-rng` (PS's own PRNG, docs/accuracy/ps-rng.md) is on by default so
+# `vgc sim` reproduces PS's battle for a `>start` seed. Build with
+# `--no-default-features` for a SplitMix-only binary.
+default = ["ps-rng"]
+ps-rng = ["vgc-engine-core/ps-rng"]
 # Off by default so a plain `cargo build -p vgc-engine-cli` builds just the
 # `vgc` bin. Enable to build the debug harness: `--features debug-harness`.
 debug-harness = ["dep:vgc-engine-replay", "dep:vgc-engine-golden"]

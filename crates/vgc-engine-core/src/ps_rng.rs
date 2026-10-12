@@ -135,6 +135,9 @@ pub struct PsDraw {
     pub move_id: u16,
     pub target: u8,
     pub decision: &'static str,
+    /// The draw's PS `random(m, n)` span: `n - m`, `n` for `random(n)` and
+    /// `randomChance(_, n)`, 0 for `random()`.
+    pub span: u32,
 }
 
 /// PS `PRNG`: a backend plus the optional draw trace.
@@ -433,7 +436,7 @@ impl PsRng {
     }
 
     #[inline]
-    fn log(&mut self, op: &'static str, a: u32, b: u32, raw: u32, result: u32, at: &'static std::panic::Location<'static>) {
+    fn log(&mut self, op: &'static str, a: u32, b: u32, span: u32, raw: u32, result: u32, at: &'static std::panic::Location<'static>) {
         if let Some(t) = self.trace.as_mut() {
             t.push(PsDraw {
                 seq: self.draws - 1,
@@ -449,6 +452,7 @@ impl PsRng {
                 move_id: self.ctx_move,
                 target: self.ctx_target,
                 decision: self.ctx_decision,
+                span,
             });
         }
     }
@@ -458,7 +462,7 @@ impl PsRng {
     pub fn random_n(&mut self, op: &'static str, n: u32) -> u32 {
         let r = self.raw(op, std::panic::Location::caller());
         let v = ((r as u64 * n as u64) >> 32) as u32;
-        self.log(op, n, 0, r, v, std::panic::Location::caller());
+        self.log(op, n, 0, n, r, v, std::panic::Location::caller());
         v
     }
 
@@ -467,7 +471,7 @@ impl PsRng {
     pub fn random_range(&mut self, op: &'static str, m: u32, n: u32) -> u32 {
         let r = self.raw(op, std::panic::Location::caller());
         let v = ((r as u64 * (n - m) as u64) >> 32) as u32 + m;
-        self.log(op, m, n, r, v, std::panic::Location::caller());
+        self.log(op, m, n, n - m, r, v, std::panic::Location::caller());
         v
     }
 
@@ -477,7 +481,7 @@ impl PsRng {
         let r = self.raw(op, std::panic::Location::caller());
         let v = ((r as u64 * den as u64) >> 32) as u32;
         let pass = v < num;
-        self.log(op, den, num, r, pass as u32, std::panic::Location::caller());
+        self.log(op, den, num, den, r, pass as u32, std::panic::Location::caller());
         pass
     }
 
@@ -486,7 +490,7 @@ impl PsRng {
     #[track_caller]
     pub fn random_raw(&mut self, op: &'static str) -> u32 {
         let r = self.raw(op, std::panic::Location::caller());
-        self.log(op, 0, 0, r, r, std::panic::Location::caller());
+        self.log(op, 0, 0, 0, r, r, std::panic::Location::caller());
         r
     }
 }
