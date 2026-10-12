@@ -810,6 +810,7 @@ dependencies = [
  "serde_json",
  "vgc-engine-core",
  "vgc-engine-data",
+ "vgc-engine-replay",
 ]
 
 [[package]]
@@ -848,6 +849,7 @@ dependencies = [
  "pyo3",
  "serde_json",
  "vgc-engine-core",
+ "vgc-engine-replay",
  "vgc-solver",
 ]
 
