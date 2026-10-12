@@ -7503,6 +7503,9 @@ self.trigger_emergency_exits();
                 a.current_hp = 0;
                 a.fainted = true;
             }
+            // selfdestruct 'always': battle.faint(pokemon) queues the user
+            // before the hit (sim/battle-actions.ts useMoveInner).
+            self.p_queue_faint_if_down(actor_side, actor_slot);
         }
         // Resolve target redirection (Follow Me / Rage Powder, Lightning
         // Rod / Storm Drain). Pure read of self — no RNG draws here. Spread
@@ -8389,6 +8392,17 @@ self.trigger_emergency_exits();
             // accuracy steps (sim/battle-actions.ts:556-568), so it breaks
             // them even when the hit then misses or doesn't affect.
             if matches!(move_id, data::move_id::BRICKBREAK | data::move_id::PSYCHICFANGS | data::move_id::RAGINGBULL) {
+                // removeSideCondition's onSideEnd for each screen.
+                if self.plog() {
+                    let c = self.side(tside).conditions;
+                    let s = self.p_side_ident(tside);
+                    self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                    for (on, label) in [(c.reflect_turns > 0, "Reflect"), (c.light_screen_turns > 0, "move: Light Screen"), (c.aurora_veil_turns > 0, "move: Aurora Veil")] {
+                        if on {
+                            self.p_push(format!("|-sideend|{s}|{label}"));
+                        }
+                    }
+                }
                 let c = &mut self.side_mut(tside).conditions;
                 c.reflect_turns = 0;
                 c.light_screen_turns = 0;
@@ -9270,6 +9284,10 @@ self.trigger_emergency_exits();
                     holds
                 });
                 if used {
+                    // useItem's gem message (sim/pokemon.ts:1829).
+                    if self.plog() {
+                        pmon!(self, "-enditem", actor_side, actor_slot, "|Normal Gem|[from] gem|[move] {}", m.name);
+                    }
                     crate::ability::on_item_consumed(self, actor_side, actor_slot);
                 }
             }
@@ -14322,7 +14340,10 @@ self.trigger_emergency_exits();
                 m.effective_ability_id() == data::ability_id::QUICKDRAW && data::MOVES.get(move_id as usize).is_some_and(|mv| mv.category != 2)
             }) && self.side(side).active_mon(actor_slot as usize).is_some_and(|m| m.item_id != data::item_id::QUICKCLAW);
             let what = if draw { "ability: Quick Draw" } else { "item: Quick Claw" };
-            pmon!(self, "-activate", side, actor_slot, "|{what}");
+            let id = self.p_ident(side, actor_slot);
+            if let Some(l) = self.protocol.log_mut() {
+                l.push_before_turn_start(format!("|-activate|{id}|{what}"));
+            }
         }
         if let Some(q) = self.quick_frac.as_mut() {
             q[side as usize][actor_slot as usize] = fired;
@@ -16907,6 +16928,11 @@ self.trigger_emergency_exits();
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                         m.volatiles.remove(crate::pokemon::VolatileKind::Octolock);
                     }
+                    // octolock onResidual, its source gone (data/moves.ts:12983).
+                    if self.plog() {
+                        self.p_res(14, 0, Some((side, slot)));
+                        pmon!(self, "-end", side, slot, "|Octolock|[partiallytrapped]|[silent]");
+                    }
                     continue;
                 }
                 let src_side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
@@ -17891,6 +17917,16 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let partner_slot = actor_slot ^ 1;
+                // A fainted partner: no target (sim/battle-actions.ts:510-513).
+                if self.side(actor_side).active_mon(partner_slot as usize).is_some_and(|p| !p.is_alive()) {
+                    if self.plog() {
+                        self.p_retarget(actor_side, partner_slot);
+                        self.p_attr("[notarget]");
+                        pmon!(self, "-fail", actor_side, actor_slot);
+                    }
+                    self.ps_status_failed();
+                    return;
+                }
                 // Cleared to 0 once the partner's action runs; a queued
                 // move whose slot also carries a mid-turn pick reads 3.
                 let will_move = pending_kind[actor_side as usize][(partner_slot as usize).min(1)] != 0;
