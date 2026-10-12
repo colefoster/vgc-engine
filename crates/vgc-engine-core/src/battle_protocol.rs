@@ -273,7 +273,11 @@ impl Battle {
             return (String::new(), String::new());
         };
         let hp = if m.fainted { 0 } else { m.current_hp };
-        health(hp, m.stats.hp, status_id(m.status), self.protocol_champions())
+        let (secret, shared) = health(hp, m.stats.hp, status_id(m.status), self.protocol_champions());
+        if self.protocol.log().is_some_and(|l| l.exact_hp) {
+            return (secret.clone(), secret);
+        }
+        (secret, shared)
     }
 
     fn protocol_champions(&self) -> bool {
@@ -2000,6 +2004,7 @@ impl Battle {
         if let Some(l) = self.protocol.log_mut() {
             l.ots = pre.open_team_sheets && pre.team_preview;
             l.picked_team_size = if pre.team_preview { pre.picked_team_size } else { 0 };
+            l.exact_hp = pre.exact_hp;
         }
         if pre.team_preview {
             self.p_sync_cold(SyncKind::TeamPreview);

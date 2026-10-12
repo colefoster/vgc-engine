@@ -111,6 +111,9 @@ pub struct FormatPreamble {
     pub open_team_sheets: bool,
     /// `pickedTeamSize` (`|teampreview|N`); 0 = whole team.
     pub picked_team_size: u8,
+    /// A `debug` format reports exact HP to everyone (`reportExactHP =
+    /// !!format.debug`, sim/battle.ts:227; sim/pokemon.ts:2064).
+    pub exact_hp: bool,
 }
 
 const CHAMPIONS_RULES: &[&str] = &[
@@ -129,6 +132,7 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             team_preview: true,
             open_team_sheets: true,
             picked_team_size: 4,
+            exact_hp: false,
         },
         "gen9championsvgc2026regmb" | "regmb" => FormatPreamble {
             tier: "[Gen 9 Champions] VGC 2026 Reg M-B",
@@ -136,6 +140,18 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             team_preview: true,
             open_team_sheets: true,
             picked_team_size: 4,
+            exact_hp: false,
+        },
+        // "[Gen 9] (Doubles) Custom Game" (config/formats.ts:149-156,
+        // :230-238): Team Preview with no picked size (`|teampreview`), and
+        // a `debug` format's exact HP.
+        "gen9doublescustomgame" | "gen9customgame" => FormatPreamble {
+            tier: if doubles { "[Gen 9] Doubles Custom Game" } else { "[Gen 9] Custom Game" },
+            rules: &[],
+            team_preview: true,
+            open_team_sheets: false,
+            picked_team_size: 0,
+            exact_hp: true,
         },
         _ => FormatPreamble {
             tier: if doubles { "[Gen 9] Doubles Custom Game" } else { "[Gen 9] Custom Game" },
@@ -143,6 +159,7 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             team_preview: false,
             open_team_sheets: false,
             picked_team_size: 0,
+            exact_hp: false,
         },
     }
 }
@@ -344,6 +361,8 @@ pub struct ProtocolLog {
     pub(crate) illusion: [[u8; 6]; 2],
     /// `pickedTeamSize` (team preview's `maxChosenTeamSize`), 0 = none.
     pub(crate) picked_team_size: u8,
+    /// Shared HP lines carry exact HP (a `debug` format).
+    pub(crate) exact_hp: bool,
     /// A keyed replay's random target for a `randomNormal` move (Struggle)
     /// chosen without one: the `|move|` line's pick, which the hit uses too.
     pub(crate) random_pick: Option<(crate::side::SideRef, u8)>,
@@ -533,6 +552,7 @@ impl ProtocolLog {
             illusion: [[255; 6]; 2],
             picked_team_size: 0,
             random_pick: None,
+            exact_hp: false,
             sync: Vec::new(),
             cuts: Vec::new(),
         }
