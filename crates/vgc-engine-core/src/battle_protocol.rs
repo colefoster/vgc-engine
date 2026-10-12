@@ -808,6 +808,16 @@ impl Battle {
         pmon!(self, "detailschange", side, slot, "|{det}");
     }
 
+    /// setAbility's `-ability|<mon>|New|Old|[from] move: X[|[of] source]`
+    /// (sim/pokemon.ts:1926-1939).
+    pub(crate) fn p_ability_change(&mut self, side: SideRef, slot: u8, new: u16, old: u16, move_id: u16, of: Option<(SideRef, u8)>) {
+        if !self.plog() {
+            return;
+        }
+        let of = of.map(|(s, sl)| format!("|[of] {}", self.p_ident(s, sl))).unwrap_or_default();
+        pmon!(self, "-ability", side, slot, "|{}|{}|[from] move: {}{of}", ability_name(new), ability_name(old), move_name(move_id));
+    }
+
     /// PS `Side.toString()`: `p1: <player name>`.
     pub(crate) fn p_side_ident(&self, side: SideRef) -> String {
         let name = self.protocol.log().map(|l| l.player_names[side as usize].as_str()).unwrap_or("");
