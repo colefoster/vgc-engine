@@ -452,7 +452,10 @@ impl BattleStream {
         for k in 0..2 {
             let p = self.players[k].as_ref().expect("both players");
             for s in &p.sets {
-                let m = ps_teams::to_member(s);
+                let mut m = ps_teams::to_member(s);
+                if format.champions() {
+                    ps_teams::champions_stat_points(&mut m);
+                }
                 let mon = crate::build_member_in(&m, format.champions()).map_err(|e| e.to_string())?;
                 teams[k].push(mon);
                 nicks[k].push(Some(ps_teams::display_name(s)));
@@ -606,13 +609,10 @@ impl BattleStream {
         let s = self.session.as_ref().expect("ended");
         let b = s.battle();
         let name = |k: usize| self.players[k].as_ref().map(|p| p.name.clone()).unwrap_or_default();
-        let winner = match b.winner() {
-            Some(Some(SideRef::P1)) => name(0),
-            Some(Some(SideRef::P2)) => name(1),
-            _ => match s.raw_lines().iter().rev().find(|l| l.starts_with("|win|") || *l == "|tie") {
-                Some(l) if l.starts_with("|win|") => l[5..].to_string(),
-                _ => String::new(),
-            },
+        // `battle.winner` is the name `win()` printed (sim/battle.ts:1525).
+        let winner = match s.raw_lines().iter().rev().find(|l| l.starts_with("|win|") || *l == "|tie") {
+            Some(l) if l.starts_with("|win|") => l[5..].to_string(),
+            _ => String::new(),
         };
         let turns = s.raw_lines().iter().rev().find_map(|l| l.strip_prefix("|turn|").and_then(|t| t.parse::<f64>().ok())).unwrap_or(0.0);
         let left = |side: SideRef| b.side(side).team.iter().filter(|m| m.current_hp > 0).count() as f64;
