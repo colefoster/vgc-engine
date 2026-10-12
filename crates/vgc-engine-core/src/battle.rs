@@ -12780,7 +12780,7 @@ self.trigger_emergency_exits();
                 } else {
                     // Charge turn: deduct PP (+ Pressure extra, which PS
                     // applies on turn 1 only), set charging state, return.
-                    let extra = pressure_extra_pp(self, actor_side, m, target);
+                    let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.spend_pp(move_slot, 1 + extra);
                         a.last_used_move_slot = move_slot;
@@ -12817,7 +12817,7 @@ self.trigger_emergency_exits();
                 }
                 // Turn 1: enter semi-invuln, deduct PP (+ Pressure extra,
                 // applied turn 1 only per PS), no damage.
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.spend_pp(move_slot, 1 + extra);
                     a.last_used_move_slot = move_slot;
@@ -12882,7 +12882,7 @@ self.trigger_emergency_exits();
         let pressure_extra = if skip_pp_deduct {
             0
         } else {
-            pressure_extra_pp(self, actor_side, m, target)
+            pressure_extra_pp(self, actor_side, actor_slot, m, target)
         };
         if !skip_pp_deduct {
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -13105,7 +13105,7 @@ self.trigger_emergency_exits();
                 // Pressure still applies — PS deducts the foe's extra PP in
                 // `useMove` (before the move's TryMove veto). See
                 // `pressure_extra_pp`.
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
@@ -13156,7 +13156,7 @@ self.trigger_emergency_exits();
                 };
             if !ok {
                 self.p_try_fail(actor_side, actor_slot);
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
@@ -13186,7 +13186,7 @@ self.trigger_emergency_exits();
             });
             if !ok {
                 self.p_try_fail(actor_side, actor_slot);
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     mon.spend_pp(move_slot, 1 + extra);
                     mon.last_used_move_slot = move_slot;
@@ -13212,7 +13212,7 @@ self.trigger_emergency_exits();
             // focuspunch beforeMoveCallback: `cant` instead of `|move|`.
             self.p_move_cancel();
             pmon!(self, "cant", actor_side, actor_slot, "|Focus Punch|Focus Punch");
-            let extra = pressure_extra_pp(self, actor_side, m, target);
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
@@ -13237,7 +13237,7 @@ self.trigger_emergency_exits();
             && attacker.last_used_move_slot == move_slot
         {
             self.p_move_cancel();
-            let extra = pressure_extra_pp(self, actor_side, m, target);
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.spend_pp(move_slot, 1 + extra);
                 // Set last_used_move_slot to 255 so a third attempt
@@ -13306,7 +13306,7 @@ self.trigger_emergency_exits();
                 }
             }
             // Failure still ticks PP per PS (plus Pressure extra).
-            let extra = pressure_extra_pp(self, actor_side, m, target);
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
@@ -21845,66 +21845,65 @@ fn enumerate_targets(
     }
 }
 
-/// Pressure — PS `data/abilities.ts:3392` (`onDeductPP` returns 1 for a
-/// non-ally `source`) applied via `sim/battle-actions.ts:467-484`: for each
-/// member of the move's `pressureTargets` (its foe-side targets) that holds
-/// Pressure, the move costs +1 PP. A spread move hitting two Pressure foes
-/// therefore costs +2. Allies with Pressure do NOT add (PS `isAlly` guard).
-/// Returns the extra PP to deduct (0 if no foe target holds active Pressure).
-/// Non-allocating — counts directly off the same foe-target rules as
-/// `enumerate_targets`. Respects ability suppression via
-/// `effective_ability_slug`.
+/// Pressure — PS `data/abilities.ts:3437` (`onDeductPP` returns 1 for a
+/// non-ally `source`) applied via `sim/battle-actions.ts:467-484` to each of
+/// the move's `pressureTargets` (sim/pokemon.ts:791-848): the targets after
+/// retargeting and redirection (Follow Me, Rage Powder, a fainted target),
+/// every foe for `all` field moves, none for `foeSide` unless the move has
+/// `mustpressure` (Imprison, Snatch, Spikes, Stealth Rock, Toxic Spikes),
+/// which counts every foe. Allies with Pressure do NOT add (`isAlly`).
+/// Returns the extra PP to deduct. Respects ability suppression via
+/// `effective_ability_id`.
 fn pressure_extra_pp(
     battle: &Battle,
     actor_side: SideRef,
+    actor_slot: u8,
     m: &data::MoveDef,
     chosen: Option<Target>,
 ) -> u8 {
     let opp = actor_side.opposing();
-    let active_n = battle.format().active_count() as u8;
-    let is_pressure_foe = |slot: u8| -> bool {
+    let active_n = battle.format().active_count();
+    let is_pressure_foe = |slot: usize| -> bool {
         battle
             .side(opp)
-            .active_mon(slot as usize)
+            .active_mon(slot)
             .is_some_and(|mon| mon.is_alive() && mon.effective_ability_id() == data::ability_id::PRESSURE)
     };
+    if !(0..active_n).any(is_pressure_foe) {
+        return 0;
+    }
+    let count_all = || (0..active_n).filter(|&s| is_pressure_foe(s)).count() as u8;
+    if matches!(m.slug, "imprison" | "snatch" | "spikes" | "stealthrock" | "toxicspikes") {
+        return count_all();
+    }
+    // Expanding Force from a grounded user in Psychic Terrain is
+    // `allAdjacentFoes` (data/moves.ts expandingforce onModifyMove), which
+    // runs before getMoveTargets.
+    if m.slug == "expandingforce"
+        && matches!(battle.terrain, crate::terrain::Terrain::Psychic)
+        && battle.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_grounded())
+    {
+        return count_all();
+    }
     match m.target {
         // 0 normal | 4 adjacentFoe | 10 any | 13 randomNormal — single target.
         0 | 4 | 10 | 13 => {
-            // Pressure only fires on a foe target. If the chosen target is on
-            // the actor's own side (e.g. `any` aimed at an ally), no Pressure.
-            if let Some(t) = chosen {
-                if t.side == opp && is_pressure_foe(t.slot) {
-                    return 1;
-                }
-                if t.side == actor_side {
-                    return 0;
-                }
+            let Some(attacker) = battle.side(actor_side).active_mon(actor_slot as usize) else { return 0 };
+            let move_id = attacker
+                .moves
+                .iter()
+                .copied()
+                .find(|&id| id != u16::MAX && battle.moves()[id as usize].slug == m.slug)
+                .unwrap_or(data::move_id::STRUGGLE);
+            match battle.final_single_target(actor_side, actor_slot, move_id, attacker, m, chosen) {
+                Some((side, slot)) => (side == opp && is_pressure_foe(slot as usize)) as u8,
+                None => 0,
             }
-            // Fallback: first alive opposing slot (matches enumerate_targets).
-            for slot in 0..active_n {
-                if battle
-                    .side(opp)
-                    .active_mon(slot as usize)
-                    .is_some_and(|mon| mon.is_alive())
-                {
-                    return is_pressure_foe(slot) as u8;
-                }
-            }
-            0
         }
-        // 5 allAdjacent | 6 allAdjacentFoes — count every opposing Pressure
-        // holder. (allAdjacent also hits the ally, but allies don't add.)
-        5 | 6 => {
-            let mut extra = 0u8;
-            for slot in 0..active_n {
-                if is_pressure_foe(slot) {
-                    extra += 1;
-                }
-            }
-            extra
-        }
-        // Self / ally / side / team / all / scripted — no foe target.
+        // 5 allAdjacent | 6 allAdjacentFoes | 12 all — every opposing
+        // Pressure holder (the ally / user targets don't add).
+        5 | 6 | 12 => count_all(),
+        // self / ally / side / team / scripted — no foe target.
         _ => 0,
     }
 }
