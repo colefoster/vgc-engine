@@ -494,6 +494,17 @@ impl ProtocolLog {
         self.lines.push(line);
     }
 
+    /// A line PS prints while choices commit, before the turn's `|` and
+    /// `|t:|` (which the engine has already written when it rolls them).
+    pub(crate) fn push_before_turn_start(&mut self, line: String) {
+        let n = self.lines.len();
+        if self.window.is_none() && self.pending_move.is_none() && n >= 2 && self.lines[n - 2] == "|" && self.lines[n - 1].starts_with("|t:|") {
+            self.lines.insert(n - 2, line);
+        } else {
+            self.push(line);
+        }
+    }
+
     /// Remove the last `n` plain lines if each starts with `prefix`
     /// (window-aware); `None` leaves the log unchanged.
     pub(crate) fn pop_tail_lines(&mut self, n: usize, prefix: &str) -> Option<Vec<String>> {
