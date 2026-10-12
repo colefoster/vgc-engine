@@ -162,6 +162,31 @@ fn protean_skips_a_stall_move_that_fails_its_prepare_hit() {
 }
 
 #[test]
+fn a_fainted_transformed_mon_reverts() {
+    // PS faintMessages -> clearVolatile(false) (sim/battle.ts:2563,
+    // sim/pokemon.ts:1519-1522): moveSlots = baseMoveSlots, transformed =
+    // false, ability = baseAbility. Sim-diff b00820: a fainted Imposter
+    // Ditto's request listed the copied moves.
+    let p1 = r#"[{"species":"ditto","level":50,"ability":"imposter","moves":["transform"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["closecombat","splash"],"evs":{"atk":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+    let mut b = doubles(p1, p2, 3);
+    assert!(b.p1.team[0].transform_base.is_some(), "Imposter transformed at the lead");
+    b.p1.team[0].current_hp = 1;
+    b.step(
+        &[mv(0, 0, None), mv(1, 0, None)],
+        &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)],
+    );
+    let d = &b.p1.team[0];
+    assert!(d.fainted);
+    assert!(d.transform_base.is_none());
+    assert_eq!(d.moves[0], data::move_id::TRANSFORM);
+    assert_eq!(d.ability_id, data::ability_id::IMPOSTER);
+    assert_eq!(d.species_id, data::species_id::DITTO);
+}
+
+#[test]
 fn spread_drain_logs_each_heal_in_ps_target_order() {
     // allAdjacent lists the user's allies before its foes (PS
     // sim/pokemon.ts:809-813) and spreadDamage heals after each target in

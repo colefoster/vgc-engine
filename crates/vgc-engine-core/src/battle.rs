@@ -644,6 +644,13 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_scripted_pick: [[u8; 2]; 2],
+    /// `ps-rng` only: per active slot, the copied moves of a transformed
+    /// mon that fainted this turn (its moves revert on faint, but PS's
+    /// queued action keeps the chosen move for the re-sort's getTarget);
+    /// `[u16::MAX; 4]` = none.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_fainted_transform_moves: [[[u16; 4]; 2]; 2],
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
@@ -871,6 +878,8 @@ impl Battle {
             ps_instruct_pending: None,
             #[cfg(feature = "ps-rng")]
             ps_scripted_pick: [[255; 2]; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_fainted_transform_moves: [[[u16::MAX; 4]; 2]; 2],
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
@@ -1610,10 +1619,17 @@ impl Battle {
                     // storedStats (sim/pokemon.ts clearVolatile, setSpecies):
                     // a fainted mon's Speed Swap / stat split ends here, and
                     // its switch-out Speed (the replacement sort) is its own.
+                    // clearVolatile also ends Transform / Imposter: species,
+                    // ability, stats and moveSlots return to the base ones
+                    // (sim/pokemon.ts clearVolatile, `this.transformed`), so
+                    // a fainted Ditto's request shows its own moves and PP.
+                    #[cfg(feature = "ps-rng")]
+                    if let Some(m) = self.side(side).active_mon(slot as usize).filter(|m| m.transform_base.is_some()) {
+                        self.ps_fainted_transform_moves[side as usize][(slot as usize).min(1)] = m.moves;
+                    }
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-                        if m.transform_base.is_none() {
-                            m.change_forme(m.species_id, true);
-                        }
+                        m.revert_transform();
+                        m.change_forme(m.species_id, true);
                     }
                     #[cfg(feature = "ps-rng")]
                     if self.rng.is_ps() {
@@ -3873,6 +3889,7 @@ self.trigger_emergency_exits();
         // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
         self.ps_update_speed_all();
         self.ps_scripted_pick = [[255; 2]; 2];
+        self.ps_fainted_transform_moves = [[[u16::MAX; 4]; 2]; 2];
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let n_active = self.format().active_count();
             let mut seen = [false; 2];
@@ -4153,10 +4170,12 @@ self.trigger_emergency_exits();
                 _ => continue,
             };
             let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else { continue };
+            let copied = self.ps_fainted_transform_moves[a.side as usize][(actor_slot as usize).min(1)];
+            let moves = if !mon.is_alive() && copied[0] != u16::MAX { copied } else { mon.moves };
             let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
                 data::move_id::STRUGGLE
             } else {
-                match mon.moves.get(move_slot as usize) {
+                match moves.get(move_slot as usize) {
                     Some(&id) if id != u16::MAX => id,
                     _ => continue,
                 }
