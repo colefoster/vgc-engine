@@ -1915,15 +1915,24 @@ impl Battle {
                         continue;
                     }
                     if source_alive {
+                        let mut moved = None;
                         if let Some(s) =
                             self.side_mut(source_side).active_mon_mut(source_slot as usize)
                         {
                             let stage = &mut s.boosts[idx as usize];
                             let before = *stage;
                             *stage = (*stage + delta).clamp(-6, 6);
+                            moved = Some((before - *stage).abs());
                             if *stage != before {
                                 s.stats_lowered_this_turn = true;
                             }
+                        }
+                        // mirrorarmor onTryBoost: `-ability`, then the bounced
+                        // boost as a secondary (no announce; data/abilities.ts:2669-2670).
+                        if let Some(by) = moved.filter(|_| self.plog()) {
+                            pmon!(self, "-ability", target_side, target_slot, "|Mirror Armor");
+                            let stat = crate::battle_protocol::BOOST_NAMES[idx as usize];
+                            pmon!(self, "-unboost", source_side, source_slot, "|{stat}|{by}");
                         }
                     }
                 } else if delta > 0 {
@@ -10967,6 +10976,9 @@ self.trigger_emergency_exits();
         self.p_tag(crate::protocol::step::DAMAGING_HIT, ctx.tside, ctx.tslot);
         // Handlers without onDamagingHitOrder run after the ordered ones.
         self.p_sub(3);
+        if !hit_sub && hp_lost > 0 {
+            self.p_illusion_break(ctx.tside, ctx.tslot);
+        }
 
         // Innards Out (onDamagingHitOrder 1): a holder KO'd by the hit deals
         // the HP it lost (plus earlier hits of a multi-hit move) to the
@@ -11682,7 +11694,7 @@ self.trigger_emergency_exits();
     /// Sipper / Motor Drive / Flash Fire / Dry Skin / Earth Eater fires
     /// later, inline with on-hit handling, not in this method).
     #[allow(clippy::too_many_arguments)]
-    fn resolve_targets(
+    pub(crate) fn resolve_targets(
         &self,
         actor_side: SideRef,
         actor_slot: u8,
@@ -12465,13 +12477,13 @@ self.trigger_emergency_exits();
                         && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
                 let power_herb = attacker.item_id == data::item_id::POWERHERB;
                 if weather_skip {
-                    self.p_charge_skip(actor_side, actor_slot, m.name, target);
+                    self.p_charge_skip(actor_side, actor_slot, move_id, target);
                     // Skip charge — fall through to normal damage. PP
                     // deducts via the standard PP block.
                 } else if power_herb {
                     // powerherb onChargeMove: useItem, then the skip.
                     self.p_item_line("-enditem", actor_side, actor_slot, data::item_id::POWERHERB, "");
-                    self.p_charge_skip(actor_side, actor_slot, m.name, target);
+                    self.p_charge_skip(actor_side, actor_slot, move_id, target);
                     // Consume Power Herb, skip charge. PS `useItem` clears
                     // the item slot and records `lastItem` — Recycle can
                     // restore it, so route through `consume_item`.
@@ -13621,6 +13633,9 @@ self.trigger_emergency_exits();
         // Pack react to the def drop exactly as for `self_stat_drops`.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scale_Shot_(move)>.
         if m.slug == "scaleshot" && any_damage_dealt > 0 {
+            // After the whole hit step (sim/battle-actions.ts:520).
+            self.p_loop_end();
+            self.p_tag_step(crate::protocol::step::SELF_BOOST);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1), (4, 1)], actor_side, actor_slot);
             // Mirror Herb copies the spe raise onto a foe.
             crate::item::try_consume_mirror_herb_on_foe_boost(
@@ -13638,6 +13653,9 @@ self.trigger_emergency_exits();
         // Eject Pack react to the drop exactly as for Scale Shot.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Clanging_Scales_(move)>.
         if m.slug == "clangingscales" && any_damage_dealt > 0 {
+            // After the whole hit step (sim/battle-actions.ts:520).
+            self.p_loop_end();
+            self.p_tag_step(crate::protocol::step::SELF_BOOST);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1)], actor_side, actor_slot);
             crate::item::try_consume_white_herb(self, actor_side, actor_slot);
             let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
@@ -21145,7 +21163,7 @@ impl TargetBuf {
 
     /// A single-target list (used by redirection overrides).
     #[inline]
-    fn single(t: (SideRef, u8)) -> Self {
+    pub(crate) fn single(t: (SideRef, u8)) -> Self {
         let mut b = TargetBuf::new();
         b.push(t);
         b
@@ -21992,6 +22010,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Sleep,
             };
+            battle.p_status_fx(crate::protocol::StatusFx::Bare);
             battle.with_rng_installed(rng, |b| b.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot));
         }
     }

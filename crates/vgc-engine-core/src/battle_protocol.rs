@@ -133,7 +133,58 @@ impl Battle {
             return format!("p{}: {}", side as u8 + 1, self.p_name(side, idx));
         }
         let tag = slot_tag(side, slot);
-        format!("{}: {}", std::str::from_utf8(&tag).unwrap_or("p1a"), self.p_name(side, idx))
+        format!("{}: {}", std::str::from_utf8(&tag).unwrap_or("p1a"), self.p_name(side, self.p_disguise(side, idx)))
+    }
+
+    /// The team index whose name / details `idx` shows: its Illusion
+    /// disguise while it has one (sim/pokemon.ts:531-534).
+    fn p_disguise(&self, side: SideRef, idx: u8) -> u8 {
+        match self.protocol.log().and_then(|l| l.illusion[side as usize].get(idx as usize).copied()) {
+            Some(d) if d != 255 => d,
+            _ => idx,
+        }
+    }
+
+    /// switchIn's position swap, then Illusion's onBeforeSwitchIn
+    /// (sim/battle-actions.ts:125-144; data/abilities.ts:2056-2070).
+    fn p_switch_positions(&mut self, side: SideRef, slot: u8, idx: u8) {
+        let s = side as usize;
+        let n = self.side(side).team.len().min(6);
+        let illusion = self.side(side).team.get(idx as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::ILLUSION);
+        let fainted: [bool; 6] = std::array::from_fn(|i| self.side(side).team.get(i).is_none_or(|m| m.fainted || m.current_hp == 0));
+        let Some(l) = self.protocol.log_mut() else { return };
+        let pos = &mut l.pos[s];
+        if let Some(p_in) = pos[..n].iter().position(|&t| t == idx) {
+            let slot = slot as usize;
+            if slot < n && p_in != slot {
+                pos.swap(p_in, slot);
+            }
+        }
+        l.illusion[s][idx as usize % 6] = 255;
+        if illusion {
+            if let Some(i) = (slot as usize + 1..n).rev().find(|&i| !fainted[pos[i] as usize]) {
+                l.illusion[s][idx as usize % 6] = pos[i];
+            }
+        }
+    }
+
+    /// Illusion's End on a damaging hit: `replace` + `-end`
+    /// (data/abilities.ts:2071-2087).
+    pub(crate) fn p_illusion_break(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        if self.p_disguise(side, idx) == idx {
+            return;
+        }
+        if let Some(l) = self.protocol.log_mut() {
+            l.illusion[side as usize][idx as usize % 6] = 255;
+        }
+        let id = self.p_ident(side, slot);
+        let det = self.p_details(side, idx);
+        self.p_push(format!("|replace|{id}|{det}"));
+        self.p_push(format!("|-end|{id}|Illusion"));
     }
 
     /// `|tag|<ident>{rest}` for the mon in active `slot`.
@@ -160,18 +211,21 @@ impl Battle {
     /// sim/pokemon.ts:536-552).
     pub(crate) fn p_details(&self, side: SideRef, team_idx: u8) -> String {
         let Some(m) = self.side(side).team.get(team_idx as usize) else { return String::new() };
+        // Illusion shows the disguise's details at the holder's level (sim/pokemon.ts:544-551).
+        let shown = self.p_disguise(side, team_idx);
+        let d = self.side(side).team.get(shown as usize).unwrap_or(m);
         let species = self
             .protocol
             .log()
-            .and_then(|l| l.details_species[side as usize].get(team_idx as usize).copied())
-            .unwrap_or(m.species_id);
+            .and_then(|l| l.details_species[side as usize].get(shown as usize).copied())
+            .unwrap_or(d.species_id);
         let mut s = String::with_capacity(32);
         s.push_str(data::SPECIES.get(species as usize).map(|x| x.name).unwrap_or(""));
         if m.level != 100 {
             s.push_str(", L");
             s.push_str(&m.level.to_string());
         }
-        match m.gender {
+        match d.gender {
             data::Gender::Male => s.push_str(", M"),
             data::Gender::Female => s.push_str(", F"),
             _ => {}
@@ -312,6 +366,8 @@ impl Battle {
             self.p_push(format!("|faint|{id}"));
             if let Some(l) = self.protocol.log_mut() {
                 l.fainted_logged |= 1u16 << (s as u16 * 8 + idx as u16);
+                // faintMessages clears the disguise (sim/battle.ts:2565).
+                l.illusion[s as usize][idx as usize % 6] = 255;
             }
             last = Some(side);
         }
@@ -801,6 +857,7 @@ impl Battle {
         if !self.plog() {
             return;
         }
+        self.p_res_handler_end();
         self.p_faint_messages();
         if let Some(l) = self.protocol.log_mut() {
             let spd = match mon {
@@ -810,6 +867,14 @@ impl Battle {
             if let Some(w) = l.window.as_deref_mut() {
                 w.key = (order as u32) << 24 | (255 - spd as u32) << 16 | (sub as u32) << 8;
             }
+        }
+    }
+
+    /// The previous handler's faints sort after all of its lines, however
+    /// the engine ordered its per-mon work.
+    fn p_res_handler_end(&mut self) {
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.key |= 0xFFFF;
         }
     }
 
@@ -835,6 +900,7 @@ impl Battle {
         if !self.plog() {
             return;
         }
+        self.p_res_handler_end();
         self.p_faint_messages();
         if let Some(l) = self.protocol.log_mut() {
             l.window_close();
@@ -1079,7 +1145,7 @@ impl Battle {
         };
         match fx {
             StatusFx::Silent => {}
-            StatusFx::Plain => pmon!(self, "-status", side, slot, "|{st}"),
+            StatusFx::Plain | StatusFx::Bare => pmon!(self, "-status", side, slot, "|{st}"),
             StatusFx::Move(mv) => {
                 if status == crate::pokemon::Status::Sleep {
                     pmon!(self, "-status", side, slot, "|{st}|[from] move: {}", move_name(mv));
@@ -1152,6 +1218,16 @@ impl Battle {
             return;
         }
         let mut display = self.p_display_target(side, slot, move_id, chosen);
+        // getTarget's RedirectTarget (Follow Me, Rage Powder, Lightning Rod).
+        if let Some(t) = display {
+            let m = &self.moves()[move_id as usize];
+            if matches!(m.target, 0 | 4 | 10) {
+                let r = self.resolve_targets(side, slot, move_id, attacker, m, crate::battle::TargetBuf::single(t));
+                if r.len() == 1 {
+                    display = Some(r[0]);
+                }
+            }
+        }
         // Expanding Force in Psychic Terrain re-picks its target after each
         // ModifyMove (sim/battle-actions.ts:432-443).
         if move_id == data::move_id::EXPANDINGFORCE
@@ -1238,21 +1314,24 @@ impl Battle {
 
     /// A charge move skipping its charge turn (sun / rain / Power Herb):
     /// `[still]`, then the `-anim` that becomes the last move line.
-    pub(crate) fn p_charge_skip(&mut self, side: SideRef, slot: u8, name: &str, target: Option<crate::choice::Target>) {
+    pub(crate) fn p_charge_skip(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<crate::choice::Target>) {
         if !self.plog() {
             return;
         }
+        let name = move_name(move_id);
         self.p_attr("[still]");
         let id = self.p_ident(side, slot);
         // effectiveWeather(..., message) under Mega Sol (sim/pokemon.ts:2193-2196).
-        if self.effective_weather() != crate::weather::Weather::Sun
+        if move_id != data::move_id::ELECTROSHOT
+            && self.effective_weather() != crate::weather::Weather::Sun
             && self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::MEGASOL)
         {
             self.p_push(format!("|-activate|{id}|ability: Mega Sol"));
         }
-        let tgt = target
-            .filter(|t| self.side(t.side).active_mon(t.slot as usize).is_some())
-            .map(|t| self.p_ident(t.side, t.slot))
+        // onTryMove's `defender` is the retargeted target (sim/battle-actions.ts getRandomTarget).
+        let tgt = self
+            .p_display_target(side, slot, move_id, target)
+            .map(|(s, sl)| self.p_ident(s, sl))
             .unwrap_or_default();
         if let Some(l) = self.protocol.log_mut() {
             l.push_move(format!("|-anim|{id}|{name}|{tgt}"));
@@ -1425,6 +1504,7 @@ impl Battle {
             .and_then(|l| l.switch_ctx.take())
             .unwrap_or(("switch", String::new()));
         let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        self.p_switch_positions(side, slot, idx);
         if let Some(l) = self.protocol.log_mut() {
             l.fainted_logged &= !(1u16 << (side as u16 * 8 + idx as u16));
             l.last_move[side as usize][(slot as usize).min(1)] = u16::MAX;

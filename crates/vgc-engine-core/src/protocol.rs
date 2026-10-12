@@ -184,6 +184,9 @@ pub(crate) enum StatusFx {
     Item(u16),
     /// Nothing printed.
     Silent,
+    /// Plain even for sleep: a secondary's onHit trySetStatus, whose
+    /// effect is not the move (data/moves.ts direclaw).
+    Bare,
 }
 
 /// The battle's handle on its log. `Clone` yields an empty slot: solver and
@@ -304,6 +307,10 @@ pub struct ProtocolLog {
     /// Active slots (side*2+slot bits) whose Emergency Exit `-activate`
     /// printed during the current action.
     pub(crate) ee_announced: u8,
+    /// PS `side.pokemon` order (position -> team index); switches swap.
+    pub(crate) pos: [[u8; 6]; 2],
+    /// Illusion disguise per team index (255 = none).
+    pub(crate) illusion: [[u8; 6]; 2],
 }
 
 /// One buffered entry of a reorder window.
@@ -357,6 +364,7 @@ pub(crate) mod step {
     pub const RECOIL: u8 = 23;
     pub const AFTER_SECONDARY: u8 = 24;
     pub const EMERGENCY_EXIT: u8 = 25;
+    pub const SELF_BOOST: u8 = 26;
 }
 
 impl ProtocolLog {
@@ -396,6 +404,8 @@ impl ProtocolLog {
             cur_user: None,
             last_faint: None,
             ee_announced: 0,
+            pos: [[0, 1, 2, 3, 4, 5]; 2],
+            illusion: [[255; 6]; 2],
         }
     }
 
