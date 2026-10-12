@@ -97,6 +97,45 @@ fn spirit_shackle_traps_until_its_user_leaves() {
 }
 
 #[test]
+fn receiver_takes_the_fainted_allys_ability() {
+    // PS data/abilities.ts:3787 receiver onAllyFaint -> setAbility(ability,
+    // target), which prints `-ability` and runs the new ability's Start
+    // (sim/pokemon.ts:1934, :1943). Sim-diff b00280.
+    let p1 = r#"[{"species":"passimian","level":50,"ability":"receiver","moves":["splash"]},
+        {"species":"incineroar","level":50,"ability":"intimidate","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["closecombat"],"evs":{"atk":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+    let mut b = logged_doubles(p1, p2, 3);
+    b.p1.team[1].current_hp = 1;
+    let atk_before = b.p2.team[0].boosts[0];
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    assert!(b.p1.team[1].fainted, "Incineroar KO'd");
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::INTIMIDATE);
+    assert_eq!(b.p2.team[0].boosts[0], atk_before - 1, "received Intimidate starts");
+    let log = log_lines(&b);
+    let faint = log.iter().position(|l| l == "|faint|p1b: Incineroar").expect("faint line");
+    assert_eq!(log[faint + 1], "|-ability|p1a: Passimian|Intimidate|Receiver|[from] ability: Receiver|[of] p1b: Incineroar");
+    // The same fainted ally never fires it twice (a later switch-in beside it).
+    b.p1.team[0].ability_override = data::ability_id::RECEIVER;
+    b.step(&[mv(0, 0, None), Choice::Pass { actor_slot: 1 }], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::RECEIVER);
+}
+
+#[test]
+fn receiver_ignores_noreceiver_abilities() {
+    let p1 = r#"[{"species":"passimian","level":50,"ability":"receiver","moves":["splash"]},
+        {"species":"gardevoir","level":50,"ability":"trace","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["closecombat"],"evs":{"atk":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+    let mut b = doubles(p1, p2, 3);
+    b.p1.team[1].current_hp = 1;
+    b.p1.team[1].ability_override = data::ability_id::TRACE;
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    assert!(b.p1.team[1].fainted);
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::RECEIVER);
+}
+
+#[test]
 fn spread_drain_logs_each_heal_in_ps_target_order() {
     // allAdjacent lists the user's allies before its foes (PS
     // sim/pokemon.ts:809-813) and spreadDamage heals after each target in

@@ -175,6 +175,12 @@ pub struct SideConditions {
     /// it, so `total_fainted` adds these back to the currently-fainted count.
     #[serde(default)]
     pub revived_faints: u8,
+    /// Team indices (bit per index) whose faint has had PS faintMessages'
+    /// `runEvent('Faint')` (Receiver / Power of Alchemy), so a later
+    /// switch-in beside the fainted mon doesn't fire it again. A switch-in
+    /// clears its own bit.
+    #[serde(default)]
+    pub faint_handled: u8,
 }
 
 impl Side {
