@@ -10856,6 +10856,7 @@ self.trigger_emergency_exits();
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
         }
+        let attacker_hp_at_hit = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).map_or(0, |a| a.current_hp);
         // Per-hit damage — Beat Up per-ally arm + normal-move
         // per-hit re-roll arm, both threading through the
         // DamagePipeline (attacker item + Friend Guard). Lifted
@@ -11149,7 +11150,10 @@ self.trigger_emergency_exits();
             // The same Update reaches the attacker: a berry it dropped below
             // its threshold on Rocky Helmet / Rough Skin is eaten here, before
             // recoil and Life Orb.
-            if (ctx.actor_side, ctx.actor_slot) != (ctx.tside, ctx.tslot) {
+            // (Only when this hit cost it HP: else its berry already had its chance.)
+            if (ctx.actor_side, ctx.actor_slot) != (ctx.tside, ctx.tslot)
+                && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.current_hp < attacker_hp_at_hit)
+            {
                 crate::item::on_after_damage(self, ctx.actor_side, ctx.actor_slot, &mut rng);
             }
             self.rng = rng;
@@ -13942,8 +13946,10 @@ self.trigger_emergency_exits();
                 }
                 // mindBlownRecoil's effect is conditions.get(move.name), shown
                 // by id; Chloroblast's is 'recoil' (sim/battle-actions.ts:1391).
-                let from = if move_id == data::move_id::CHLOROBLAST { "Recoil" } else { m.slug };
-                self.p_damage(actor_side, actor_slot, &format!("|[from] {from}"));
+                if self.plog() {
+                    let from = if move_id == data::move_id::CHLOROBLAST { "Recoil" } else { m.slug };
+                    self.p_damage(actor_side, actor_slot, &format!("|[from] {from}"));
+                }
             }
         }
 
@@ -16132,7 +16138,7 @@ self.trigger_emergency_exits();
                     }
                 }
                 // raindish / icebody onWeather (eachEvent('Weather')).
-                if self.side(side).active_mon(slot).is_some_and(|m| m.current_hp != before) {
+                if self.plog() && self.side(side).active_mon(slot).is_some_and(|m| m.current_hp != before) {
                     self.p_res_each(1, 10, side, slot as u8);
                     self.p_heal(side, slot as u8, &format!("|[from] ability: {}", crate::battle_protocol::ability_name(heal_ability)));
                 }
@@ -16882,7 +16888,17 @@ self.trigger_emergency_exits();
     /// stages it still has. Before the forced switches the move set up.
     /// attract's onUpdate: the volatile ends once its source left the field
     /// (data/moves.ts attract condition), at the Update after an action.
+    #[inline]
     fn attract_update(&mut self) {
+        let n = self.format().active_count() as u8;
+        if self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Attract) {
+            self.attract_update_cold();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn attract_update_cold(&mut self) {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 let Some((src_side, src_idx)) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()).and_then(|m| m.attract_source()) else { continue };
