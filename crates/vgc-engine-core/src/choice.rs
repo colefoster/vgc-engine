@@ -16,6 +16,12 @@ pub type MoveSlot = u8;
 /// `data::move_id::STRUGGLE`.
 pub const STRUGGLE_MOVE_SLOT: MoveSlot = 4;
 
+/// The `move_slot` `legal_choices` gives a recharging mon's one choice. PS
+/// sends `[{"move":"Recharge","id":"recharge"}]` (sim/pokemon.ts
+/// getMoveRequestData via data/conditions.ts mustrecharge `onLockMove`), so
+/// `move 1` answers it; `step` skips the action whatever slot it names.
+pub const RECHARGE_MOVE_SLOT: MoveSlot = 0;
+
 /// Absolute targeting: which side + which active-slot.
 ///
 /// PS uses relative targeting in the protocol (`-1`, `+2`), but internally

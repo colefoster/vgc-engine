@@ -292,6 +292,14 @@ wraps; it takes a builder closure (team-preview picks -> `Battle`).
   choice runs into hidden information (a `maybeTrapped` mon that is
   trapped, an Imprisoned move). `move N` names PS's request order;
   `switch N` names PS's current side order.
+- **Locked moves** (PS `getLockedMove`): the request lists one move
+  (`{"move":"Recharge","id":"recharge"}` for Hyper Beam's recharge turn,
+  else the two-turn or Outrage-style move) with `trapped: true` and no
+  Mega / Tera; `move 1` or `default` answers it. `Battle.legal_choices`
+  agrees (0.4.2): a recharging mon has exactly
+  `[("recharge", slot, 0, -1, -1)]`, a locked move its one `("move", ...)`
+  (a charge keeps its stored target), with no switch. `step_move` takes
+  the `"recharge"` tuple; it is `move 1`.
 - **Mid-turn requests** (U-turn, Volt Switch, Parting Shot, Flip Turn,
   Eject Button, Eject Pack, Emergency Exit, Revival Blessing): the engine
   resolves a turn in one `step` with the picks given up front, so the
@@ -839,7 +847,8 @@ b.request("p1"); b.choose("p1", "move 1 1, move 2"); b.player_stream("p1")
 ```
 vgc_engine.position_from_replay(log, turn=None, prior=None, ps_seed=None, viewer=None,
                                 stop=None, sets=None, request=None, lookahead=False,
-                                format=None, protocol="ps", player_names=None) -> Battle
+                                format=None, protocol="ps", player_names=None,
+                                prior_sample_seed=None) -> Battle
 Battle.reconstruction_report() -> dict | None
 ```
 
@@ -877,6 +886,14 @@ Battle.reconstruction_report() -> dict | None
 - **`lookahead=True`** also reads set facts revealed after the stop: moves,
   items, abilities and which mons were brought. Off by default: only the
   log up to the stop is read.
+- **`prior_sample_seed`** (0.4.2): an integer. Prior-filled fields are
+  sampled from the prior instead of taking the most likely: spread and
+  nature, unrevealed moves, item and ability. The draw is deterministic
+  per seed and per mon. Sampling keeps the argmax's constraints: revealed
+  info is never replaced, the item exclusions and Item Clause apply,
+  moves are drawn without replacement. The Mega forme, brought mons and
+  Tera stay the argmax (the prior has no Tera stats). `None` (the
+  default) leaves the output byte-identical to 0.4.1.
 - **`ps_seed`** gives the play-out PS's PRNG, seeded as `from_teams` seeds
   it. Two positions with the same seed and the same choices play out the
   same.
@@ -896,7 +913,8 @@ built from. `--check` opens the session and adds both requests.
 
 ```sh
 vgc recon --log replay.json --turn 6 [--stop replace] [--viewer p1] [--prior ID|FILE|none] \
-          [--sets-p1 team.txt --sets-p2 team.txt] [--lookahead] [--board] [--check]
+          [--sets-p1 team.txt --sets-p2 team.txt] [--lookahead] [--prior-sample-seed N] \
+          [--board] [--check]
 ```
 
 Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
@@ -929,6 +947,8 @@ Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
   replaced by the id it picked), and `prior_sha256`, the SHA-256 of its
   file (`+`-joined in id order for a chain; empty for `"none"`). Passing
   the reported `prior` back as `prior=` reproduces the position.
+- `prior_sample_seed`: only when set. Passing it back with the same
+  `prior` reproduces the position.
 
 `src` is one of:
 
@@ -936,7 +956,7 @@ Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
 |---|---|
 | `exact` | Shown by the input: the log, a request, given sets, a team sheet (`|showteam|`) |
 | `inferred` | Derived by a rule. An HP percentage becomes the interval's midpoint (lower median). Turn counters are counted on the stream. A bench order is first-seen order |
-| `prior` | Filled from the usage prior. `p` is the prior's probability: the share among allowed candidates for items, abilities, spreads and species / Mega formes, a move's share of sets, a brought mon's estimated chance |
+| `prior` | Filled from the usage prior. `p` is the prior's probability: the share among allowed candidates for items, abilities, spreads and species / Mega formes, a move's share of sets, a brought mon's estimated chance. With `prior_sample_seed`, `p` is the sampled option's |
 | `default` | Neither shown nor in the prior: a fixed default |
 
 **HP.** Exact when a `|split|` secret line, an own-side stream or a request
@@ -1018,6 +1038,9 @@ The prior is conditioned on what was revealed:
   `CanonicalDefault` heuristic).
 - **Hidden counters.** Sleep turns left default to `max(1, 3 - turns
   asleep)`. Confusion gets 2 turns. These are hidden even with full info.
+
+With `prior_sample_seed`, the item, ability, move and spread picks above
+are draws weighted by the same shares, from the same allowed candidates.
 
 Speed-order and damage-range constraints (`spread_recon`) are not applied
 yet.
