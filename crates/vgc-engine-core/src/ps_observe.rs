@@ -596,3 +596,68 @@ pub fn observe(side: usize, stream: &[String]) -> Value {
         "request": t.request,
     })
 }
+
+/// What a caller says a player knows about one opponent mon beyond its
+/// stream (`Battle.from_position(reveals=...)`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reveal {
+    pub species: Option<String>,
+    pub moves: Vec<String>,
+    pub item: Option<String>,
+    pub ability: Option<String>,
+    pub tera: Option<String>,
+}
+
+/// Merge reveals into an observation's opponent side. `opp` lists, per
+/// opponent team index, its PS name and species name (from the battle);
+/// `reveals` is (opponent team index, what is revealed). A revealed mon is
+/// found by name, else as an unseen team-preview entry of its species, else
+/// added. Moves are added (ids, no duplicates); item / ability / Tera
+/// replace what the stream showed. HP stays what the stream showed.
+pub fn apply_reveals(obs: &mut Value, opp: &[(String, String)], reveals: &[(usize, Reveal)]) {
+    let me = if obs["side"] == "p1" { 0 } else { 1 };
+    let Some(mons) = obs["sides"].get_mut(1 - me).and_then(|s| s.get_mut("pokemon")).and_then(Value::as_array_mut) else { return };
+    for (idx, r) in reveals {
+        let Some((name, team_species)) = opp.get(*idx) else { continue };
+        let species = r.species.clone().unwrap_or_else(|| team_species.clone());
+        let base = |s: &str| to_id(s.split('-').next().unwrap_or(s));
+        let k = mons
+            .iter()
+            .position(|m| m["name"].as_str() == Some(name.as_str()))
+            .or_else(|| mons.iter().position(|m| m["name"].is_null() && m["species"].as_str().is_some_and(|s| base(s) == base(&species))));
+        let k = match k {
+            Some(k) => k,
+            None => {
+                mons.push(json!({
+                    "name": name, "species": species, "details": species, "level": Value::Null, "gender": "",
+                    "active": false, "slot": Value::Null, "condition": Value::Null, "hp": Value::Null,
+                    "max_hp": Value::Null, "hp_exact": false, "status": "", "fainted": false,
+                    "boosts": {}, "volatiles": [], "moves": [], "item": Value::Null, "ability": Value::Null,
+                    "tera_type": Value::Null, "terastallized": Value::Null, "revealed": false,
+                }));
+                mons.len() - 1
+            }
+        };
+        let m = &mut mons[k];
+        if r.species.is_some() {
+            m["species"] = json!(species);
+        }
+        if let Some(list) = m["moves"].as_array_mut() {
+            for mv in &r.moves {
+                let id = to_id(mv);
+                if !id.is_empty() && !list.iter().any(|x| x.as_str() == Some(id.as_str())) {
+                    list.push(json!(id));
+                }
+            }
+        }
+        if let Some(i) = &r.item {
+            m["item"] = json!(to_id(i));
+        }
+        if let Some(a) = &r.ability {
+            m["ability"] = json!(to_id(a));
+        }
+        if let Some(t) = &r.tera {
+            m["tera_type"] = json!(t);
+        }
+    }
+}

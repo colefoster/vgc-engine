@@ -80,6 +80,9 @@ pub struct PsSession {
     /// `>pN <choice>` lines PS's commitChoices logged (sim/battle.ts:3009-3012).
     input_log: Vec<String>,
     ended: bool,
+    /// Per side, what the caller says that side knows about opponent mons
+    /// beyond its stream (opponent team index, reveal): [`PsSession::observe`].
+    reveals: [Vec<(usize, crate::ps_observe::Reveal)>; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,12 +123,43 @@ impl PsSession {
             new_requests: true,
             input_log: Vec::new(),
             ended: false,
+            reveals: [Vec::new(), Vec::new()],
         };
         let line = s.stop.line;
         let b = s.take_base();
         s.expose(&b, Some(line));
         s.base = b;
         s
+    }
+
+    /// Set what `side` knows about opponent mons beyond its stream
+    /// (opponent team index, reveal); see [`PsSession::observe`].
+    pub fn set_reveals(&mut self, side: SideRef, reveals: Vec<(usize, crate::ps_observe::Reveal)>) {
+        self.reveals[side as usize] = reveals;
+    }
+
+    /// `side`'s partial observation ([`crate::ps_observe::observe`] over its
+    /// stream) with the reveals set for it merged in.
+    pub fn observe(&self, side: SideRef) -> serde_json::Value {
+        let view = if side == SideRef::P1 { ProtocolView::P1 } else { ProtocolView::P2 };
+        let mut obs = crate::ps_observe::observe(side as usize, self.stream(view));
+        let r = &self.reveals[side as usize];
+        if !r.is_empty() {
+            let foe = side.opposing();
+            let opp: Vec<(String, String)> = self
+                .base
+                .side(foe)
+                .team
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let name = self.base.protocol_log().map(|l| l.names[foe as usize].get(i).cloned().unwrap_or_default()).unwrap_or_default();
+                    (name, crate::data::SPECIES.get(m.species_id as usize).map(|s| s.name.to_string()).unwrap_or_default())
+                })
+                .collect();
+            crate::ps_observe::apply_reveals(&mut obs, &opp, r);
+        }
+        obs
     }
 
     /// Cancel Mod off: an accepted choice can't be changed or undone.
@@ -141,6 +175,12 @@ impl PsSession {
 
     pub fn is_ended(&self) -> bool {
         self.ended
+    }
+
+    /// Why the session is stopped (team preview, a turn's move request, a
+    /// mid-turn or a faint-replacement switch request).
+    pub fn stop_kind(&self) -> SyncKind {
+        self.stop.kind
     }
 
     /// Append the chunks of `b`'s log up to raw line `upto` (all with `None`).
