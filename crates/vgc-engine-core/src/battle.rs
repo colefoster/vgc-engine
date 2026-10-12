@@ -5742,6 +5742,7 @@ self.trigger_emergency_exits();
     /// Returns true if the swap actually fired. Shared by the pre-turn
     /// switch path and the post-move self-switch sweep.
     fn do_switch(&mut self, side: SideRef, actor_slot: u8, team_index: u8) -> bool {
+        let champions = self.champions;
         // PS fires the leaving mon's `onSwitchOut` BEFORE the active
         // slot is swapped — the hook reads the outgoing mon's current
         // state. Regenerator heals 1/3 max HP here; Natural Cure /
@@ -5848,7 +5849,12 @@ self.trigger_emergency_exits();
             let status_counter = if matches!(incoming.status, Status::Sleep | Status::Freeze) { incoming.sleep_turns() } else { 0 };
             incoming.volatiles.clear();
             incoming.set_sleep_turns(status_counter);
-            incoming.times_attacked = 0;
+            // Rage Fist's count: Champions' clearVolatile resets it
+            // (data/mods/champions/scripts.ts:123-169); gen 9 keeps it for the
+            // battle (set only in the Pokemon constructor, sim/pokemon.ts:471).
+            if champions {
+                incoming.times_attacked = 0;
+            }
             // PR-LC3: the blanket `volatiles.clear()` above wiped any
             // remaining lock-volatile (Disable / Throat Chop / Heal Block /
             // Taunt — Choice/Encore were already cleared via their setters
@@ -9306,11 +9312,13 @@ self.trigger_emergency_exits();
             // `onModifyDef` priority 10:
             //   if (pokemon.hasType('Ice') && pokemon.effectiveWeather() === 'snowscape')
             //     return this.modify(def, 1.5);
-            // Physical defensive reads only (onModifyDef). Mirrors the Sandstorm
-            // Rock-SpD boost above; uses effective (post-Tera) types like PS
-            // hasType. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
+            // Every Def read (onModifyDef): a physical move's, and a special
+            // move that hits Def (Psyshock / Psystrike / Secret Sword).
+            // Mirrors the Sandstorm Rock-SpD boost above; uses effective
+            // (post-Tera) types like PS hasType. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
             if matches!(self.effective_weather(), crate::weather::Weather::Snow)
-                && m.category == 0
+                && m.category != 2
                 && !mega_sol_attacker
             {
                 let (eff_types, eff_num) = defender.effective_types();
