@@ -314,6 +314,11 @@ pub struct WishEffect {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
+    /// Opt-in PS protocol log (`crate::protocol`). Off unless the battle
+    /// was built by [`Battle::with_protocol`]; clones and snapshots never
+    /// carry it.
+    #[serde(skip)]
+    pub(crate) protocol: crate::protocol::ProtoSlot,
     /// Opt-in tournament decision phases; legacy turn callers retain their contract.
     #[serde(default)]
     pub decision_phases: bool,
@@ -735,7 +740,25 @@ impl Battle {
         p1_team: Vec<Pokemon>,
         p2_team: Vec<Pokemon>,
     ) -> Self {
-        Self::with_rng_start(config, rng, p1_team, p2_team, true)
+        Self::with_rng_start(config, rng, p1_team, p2_team, true, None)
+    }
+
+    /// Construct a battle that keeps a PS protocol log (`crate::protocol`).
+    /// `format_id` picks the preamble (`|tier|`, `|rule|`, team preview);
+    /// `team_picks` are the team-preview choices per side (0-based indices
+    /// into the given team, in pick order), which become each side's team
+    /// before the leads are sent out. Without picks the whole team plays
+    /// and no preview is printed.
+    pub fn with_protocol(
+        config: BattleConfig,
+        rng: Rng,
+        p1_team: Vec<Pokemon>,
+        p2_team: Vec<Pokemon>,
+        opts: &crate::protocol::ProtocolOptions,
+        format_id: &str,
+        team_picks: Option<&[Vec<u8>; 2]>,
+    ) -> Self {
+        Self::with_rng_start(config, rng, p1_team, p2_team, true, Some((opts, format_id, team_picks)))
     }
 
     /// `damage_only` constructor: `switch_ins = false` skips the leads'
@@ -749,7 +772,7 @@ impl Battle {
         switch_ins: bool,
     ) -> Self {
         let rng = Rng::new(config.seed);
-        Self::with_rng_start(config, rng, p1_team, p2_team, switch_ins)
+        Self::with_rng_start(config, rng, p1_team, p2_team, switch_ins, None)
     }
 
     fn with_rng_start(
@@ -758,6 +781,7 @@ impl Battle {
         mut p1_team: Vec<Pokemon>,
         mut p2_team: Vec<Pokemon>,
         switch_ins: bool,
+        proto: Option<(&crate::protocol::ProtocolOptions, &str, Option<&[Vec<u8>; 2]>)>,
     ) -> Self {
         // Resolve unspecified gender exactly as PS does at `>player`
         // (team construction): a flat 50/50 roll per ratio'd individual
@@ -779,6 +803,7 @@ impl Battle {
         let p1 = Side::new(p1_team, config.format);
         let p2 = Side::new(p2_team, config.format);
         let mut b = Self {
+            protocol: Default::default(),
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
@@ -863,6 +888,13 @@ impl Battle {
             #[cfg(feature = "ps-rng")]
             ps_commit_megas: ([(0, 0); 4], 0),
         };
+        if let Some((opts, format_id, picks)) = proto {
+            b.p_init(opts, format_id);
+            if let Some(picks) = picks {
+                b.p_apply_team_picks(picks);
+            }
+            b.p_start();
+        }
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.), in Speed order (below).
         #[allow(unused_mut)]
@@ -918,6 +950,9 @@ impl Battle {
         if b.rng.is_ps() {
             b.ps_active_ties(false, "shuffle");
         }
+        // endTurn's `|turn|1` (sim/battle.ts:1785).
+        b.p_faint_messages();
+        plog!(b, "|turn|{}", b.turn + 1);
         b
     }
 
