@@ -24,3 +24,8 @@ path = "src/main.rs"
 [[bin]]
 name = "accuracy"
 path = "src/bin/accuracy.rs"
+
+[[bin]]
+name = "resume_gate"
+path = "src/bin/resume_gate.rs"
+required-features = ["ps-rng"]
