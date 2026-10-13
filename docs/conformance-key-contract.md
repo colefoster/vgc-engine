@@ -161,7 +161,7 @@ Wish/Future-Sight pending, Tera-used.
 ## Oracle-only engine branches
 
 Some draws PS makes cannot be keyed by the contract above without changing
-the recorded dataset (the 1,300 PS battles in `~/Library/Caches/vgc-acc`).
+the recorded dataset (the 1,300 PS battles in a local cache directory, not in this repo).
 Instead, the engine carries a few branches that run **only under
 `Rng::OracleKeyed`** (`Rng::is_oracle_keyed()`), i.e. only in the
 conformance harness. Owner-approved (rounds 9 and 10); SplitMix battles

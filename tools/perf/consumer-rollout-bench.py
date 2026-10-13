@@ -48,8 +48,9 @@ sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-DEFAULT_ORACLE = "/Users/cole/Dev/mimikyu/ml/vgc_model/inference/rollout_oracle.py"
-DEFAULT_PS = "/Users/cole/overnight-work/2026-10-02/vgc-and-x/dependencies/pokemon-showdown-a5df8274"
+# mimikyu is assumed to be checked out next to this repo unless $MIMIKYU_DIR says otherwise.
+MIMIKYU_DIR = os.environ.get("MIMIKYU_DIR", os.path.join(os.path.dirname(REPO), "mimikyu"))
+DEFAULT_ORACLE = os.path.join(MIMIKYU_DIR, "ml", "vgc_model", "inference", "rollout_oracle.py")
 _U64 = (1 << 64) - 1
 
 
@@ -61,8 +62,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--engine-pythonpath", action="append", default=[],
                    help="directory prepended to sys.path to import vgc_engine (repeatable)")
     p.add_argument("--oracle", default=DEFAULT_ORACLE,
-                   help="path to mimikyu rollout_oracle.py (imported read-only)")
-    p.add_argument("--ps-path", default=os.environ.get("PS_PATH", DEFAULT_PS),
+                   help="path to mimikyu rollout_oracle.py (imported read-only; "
+                        "default $MIMIKYU_DIR/ml/vgc_model/inference/rollout_oracle.py)")
+    p.add_argument("--ps-path", default=os.environ.get("PS_PATH"),
                    help="pinned pokemon-showdown checkout (env PS_PATH)")
     p.add_argument("--ps-dist", default=os.environ.get("PS_DIST"),
                    help="built PS dist/sim (env PS_DIST; default <ps-path>/dist/sim)")
@@ -76,7 +78,10 @@ def parse_args() -> argparse.Namespace:
                    help="vgc-engine commit the wheel was built from, as stated by the caller; "
                         "recorded as provided, not verified")
     p.add_argument("--out", help="also write the JSON report here")
-    return p.parse_args()
+    a = p.parse_args()
+    if not a.ps_path and not a.ps_dist:
+        p.error("set --ps-path/$PS_PATH (a pinned pokemon-showdown checkout) or --ps-dist/$PS_DIST")
+    return a
 
 
 def sha256(path: str) -> str | None:
@@ -421,7 +426,7 @@ def main() -> int:
             "engine_source_head_verified": False,
             "oracle_path": a.oracle, "oracle_sha256": sha256(a.oracle),
             "mimikyu_head": git_head(os.path.dirname(a.oracle)),
-            "ps_path": a.ps_path, "ps_head": git_head(a.ps_path), "ps_dist": ps_dist,
+            "ps_path": a.ps_path, "ps_head": git_head(a.ps_path) if a.ps_path else None, "ps_dist": ps_dist,
             "ps_init": {k: init.get(k) for k in ("node", "format", "mod", "stats", "turn")},
             "node_args": a.node_arg, "harness_head": git_head(REPO),
             "harness_sha256": sha256(os.path.abspath(__file__)),

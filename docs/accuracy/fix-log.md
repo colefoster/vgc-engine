@@ -2098,7 +2098,7 @@ re-verification. The status checklist is `docs/finish-line-2026-10-06.md`.
 Starting baseline: default 1532 passed, `ps-rng` 1571 passed, zero failed
 and 32 ignored in each. Engine source is `cf5188ca`; harness `main` is
 `f816c48`. All red/green and verification runs were done by the manager.
-Logs are in `/Users/cole/Documents/Codex/2026-10-06/task/vgc-evidence`.
+Logs are in a local evidence directory (`vgc-evidence/`), not in this repo.
 The Round 10 and earlier results above are unchanged.
 
 ## Harness fix: conformance loader rejects Stat Points above 32 (`a47779b`)
@@ -3032,7 +3032,7 @@ review. The manager records them in `DENIED-OPERATIONS-0910.md`.
 - **C (this worktree):** the earlier cross-worktree `git -C` refusal stays
   stopped and was not redone.
 - **A:** reading
-  `/Users/cole/Documents/Codex/2026-10-06/task/vgc-evidence/reset-gulp-review-jobs.jsonl`
+  `vgc-evidence/reset-gulp-review-jobs.jsonl` (local evidence directory)
   failed with "EPERM: operation not permitted"; the worker stopped and did
   not reroute the payload inline.
 

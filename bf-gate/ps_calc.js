@@ -1,6 +1,8 @@
 // PS oracle for the same JSONL queries the Rust runner takes: 16 rolls via
-// battle.actions.getDamage with the damage roll pinned. Usage: node ps_calc.js < q.jsonl
-const PS = process.env.PS_DIR || '/Users/cole/Dev/metagame-lab/node_modules/pokemon-showdown';
+// battle.actions.getDamage with the damage roll pinned.
+// Usage: PS_DIR=<built pokemon-showdown checkout> node ps_calc.js < q.jsonl
+const PS = process.env.PS_DIR;
+if (!PS) throw new Error('set PS_DIR to a built pokemon-showdown checkout (needs dist/sim)');
 const {Battle, Dex} = require(PS + '/dist/sim');
 const readline = require('readline');
 const dex = Dex.mod('champions');

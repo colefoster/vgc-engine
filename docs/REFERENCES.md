@@ -42,7 +42,7 @@ When implementing a mechanic, **consult all three tiers in order**. Disagreement
 
 ## Cross-references
 
-- mimikyu's `localdex` (`~/Dev/localdex`) is a TypeScript dump of `@pkmn/dex` we already use; the same JSON dumps drive vgc-engine's `build.rs`.
+- `localdex` is a TypeScript dump of `@pkmn/dex` to JSON; `build.rs` reads those JSON files from `$VGC_DEX_DIR`.
 - mimikyu's `data/ps_data/*.json` is the post-OCR slug dicts; useful as a sanity check against `@pkmn/dex` IDs.
 - mimikyu's `reference_champions_vgc_mod_data.md` documents the Champions overlay we replicate in vgc-engine's mod registration.
 
