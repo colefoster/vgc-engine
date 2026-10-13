@@ -122,8 +122,8 @@ Under forced RNG, 14 D battles diverge:
 ## Reproduce
 
 ```sh
-W=/Users/cole/vgc-acc-2026-10-10
-/Users/cole/vgc-acc-2026-10-10/pm2/measure.sh <tag> /Users/cole/Dev/vgc-engine   # A/B/C keyed + seeded, ~20 s
+W=<measurement workspace>      # the 2026-10-10 scratch workspace; not in this repo
+$W/pm2/measure.sh <tag> <path to a vgc-engine checkout>                    # A/B/C keyed + seeded, ~20 s
 python3 $W/int/stats.py $W/pm2/<tag>                                            # table rows with CIs
 ```
 

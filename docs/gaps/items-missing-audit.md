@@ -13,7 +13,7 @@
 > Binding Band, Grip Claw, Normal Gem, and the Metronome *item* (the move exists; the
 > item does not). See the rewritten "Genuine remaining gaps" section at the end.
 
-Audit performed against `~/Dev/localdex/data/items.json` (@pkmn/dex dump)
+Audit performed against `$VGC_DEX_DIR/items.json` (@pkmn/dex dump)
 and engine source under `crates/vgc-engine-core/src/{item,battle,damage,ability}.rs`.
 
 **Method.** Filter the dex to gen-9 legal items (drop `isNonstandard`,

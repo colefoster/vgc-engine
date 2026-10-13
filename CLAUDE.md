@@ -17,9 +17,9 @@ A from-scratch Rust Pokémon battle simulator. See `README.md` and `docs/PLAN.md
 - `docs/REFERENCES.md` — PS, pkmn/engine, Bulbapedia roles
 - `docs/AGENTS.md` — workflow for adding mechanics / generations
 
-## Relationship to other repos on this machine
+## Related projects
 
-- `~/Dev/mimikyu` — the ML pipeline that will consume `vgc-engine` via pyo3 bindings. Replay corpus lives there (`data/replays/`).
-- `~/Dev/localdex` — the TypeScript `@pkmn/dex` dump we already use; same JSON drives our `build.rs`.
+- mimikyu — the ML pipeline that consumes `vgc-engine` via pyo3 bindings, and the source of the replay corpus (`data/replays/`).
+- `@pkmn/dex` JSON dump — `build.rs` reads it from `$VGC_DEX_DIR` (see `crates/vgc-engine-data/build.rs`).
 - PS source: `git clone --depth 1 https://github.com/smogon/pokemon-showdown` somewhere local for grep speed.
 - pkmn/engine: read-only reference; don't fork.

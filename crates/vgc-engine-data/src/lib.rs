@@ -1,5 +1,5 @@
 //! Build-time-generated dex tables. All data here comes from
-//! `@pkmn/dex` (vendored at `~/Dev/localdex`) via the crate's `build.rs`.
+//! `@pkmn/dex` (a JSON dump read from `$VGC_DEX_DIR`) via the crate's `build.rs`.
 //!
 //! Phase 1 surface: enough to prove the codegen pipeline works. Phase 2 will
 //! grow the structs as mechanics need them.
@@ -380,7 +380,7 @@ mod tests {
     }
 
     /// Gender category sourced from PS `species.gender` / absence.
-    /// Verified against `~/Dev/localdex/data/pokedex.json`.
+    /// Verified against `$VGC_DEX_DIR/pokedex.json`.
     #[test]
     fn species_gender_populated() {
         // Ratio'd (no `gender` key) → Random (rolled per individual).
@@ -398,7 +398,7 @@ mod tests {
     }
 
     /// Learnset membership, the pre-evo chain-walk, and mega base-forme
-    /// fallback. Verified against `~/Dev/localdex/data/learnsets.json`.
+    /// fallback. Verified against `$VGC_DEX_DIR/learnsets.json`.
     #[test]
     fn species_can_learn_resolves_chain_and_mega() {
         // Own learnset: Charizard learns Flamethrower; it cannot learn Surf.

@@ -62,4 +62,4 @@ For tests or fixtures that mutate a Pokemon *not* installed in a Battle slot (cl
 - Default to spawning subagents (Explore / general-purpose) for cross-repo lookups — PS source, pkmn/engine source, Bulbapedia. Don't pull all of PS into the main context.
 - Before claiming a mechanic is "implemented per PS," paste the exact PS handler code (or its file:line) into the PR description.
 - When PS and pkmn/engine disagree, surface the disagreement to the human before picking a side.
-- The mimikyu repo (`~/Dev/mimikyu`) is the consumer and the source of the replay corpus; coordinate breaking changes with whoever owns `/decide`.
+- The mimikyu repo is the consumer and the source of the replay corpus; coordinate breaking changes with whoever owns `/decide`.
