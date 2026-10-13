@@ -19,3 +19,11 @@ CARGO_BUILD_JOBS=4 maturin build --release --features ps-rng -i PYTHON -o ../../
 ## Install rule for mimikyu
 
 Before installing a wheel into `/usr/bin/python3` or `mimikyu/.venv-analytics`, check for running kcheck jobs (`tmux ls | grep kcheck-`). If any are running, message the kcheck PM session and wait for its OK; otherwise build into `dist/` only and let the PM switch. A mid-run version change forced a full kcheck-mt restart on 2026-10-12.
+
+## colepc (WSL Ubuntu-24.04, x86_64)
+
+Built natively in WSL from a `git archive` of the commit (rustup user-local, `maturin` in `~/.vgc-build-venv`, `VGC_DEX_DIR=~/vgc-engine-deps/localdex/data` because `build.rs` reads `~/Dev/localdex/data` by default). Source in `~/vgc-engine-src` (`REF` file holds the commit), wheels in `~/vgc-engine-dist`. `~/arena-env` has no pip; install with `~/.local/bin/uv pip install --python ~/arena-env/bin/python`.
+
+| Version | Commit | Wheel | Installed into |
+|---|---|---|---|
+| 0.4.2 | 66c150b | cp311 manylinux_2_34 x86_64 | `~/arena-env` (Py 3.11, ACT-flareon rollouts) |
