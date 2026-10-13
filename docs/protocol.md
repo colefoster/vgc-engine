@@ -932,8 +932,8 @@ Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
     (one entry per slot), `pp`, `nature`, `spread` (`{"unit": "sp" | "ev",
     "values"}`), `gender` and `tera` (not in Champions).
   - When they apply: `sleep_turns_remaining`, `toxic_counter`,
-    `confusion_turns_remaining`, `volatiles`, `last_move`, `turns_active`
-    and `move_actions`.
+    `confusion_turns_remaining`, `substitute_hp`, `volatiles`,
+    `last_move`, `turns_active` and `move_actions`.
   - `prior_fields` lists the mon's prior or default fields. `n_fields`
     counts the fields reported.
   - Per side: `brought` (exact or prior), `team_order` (exact or inferred)
@@ -1102,7 +1102,13 @@ The prior is conditioned on what was revealed:
   the most used spread. With no stats, offense and Speed are maxed (the
   `CanonicalDefault` heuristic).
 - **Hidden counters.** Sleep turns left default to `max(1, 3 - turns
-  asleep)`. Confusion gets 2 turns. These are hidden even with full info.
+  asleep)`. Confusion gets 2 turns. A Substitute has a quarter of the
+  mon's max HP: `inferred` until a hit shows it lost some (or for a Shed
+  Tail doll, the user's quarter), then `default`. These are hidden even
+  with full info. The defaults are fixed, so the same log, turn, stop,
+  viewer, prior and `prior_sample_seed` always give the same position;
+  only the continuation from a hidden counter can differ from the real
+  game.
 
 With `prior_sample_seed`, the item, ability, move and spread picks above
 are draws weighted by the same shares, from the same allowed candidates.
