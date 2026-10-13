@@ -595,6 +595,17 @@ pub(super) fn board_mon(view: &[String], side: usize, m: &Mon, sp: &SetPick, hp:
     (bm, set)
 }
 
+/// `a` read through an attribution of provenance `b`: no surer than `b`.
+fn weaker(a: Src, b: Src) -> Src {
+    let rank = |s: Src| match s {
+        Src::Exact => 0,
+        Src::Inferred => 1,
+        Src::Prior => 2,
+        Src::Default => 3,
+    };
+    if rank(b) > rank(a) { b } else { a }
+}
+
 /// The per-mon report entry.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn mon_report(m: &Mon, sp: &SetPick, built: &vgc_engine_core::Pokemon, hp: (Src, Option<(u16, u16)>), brought: (Src, Option<f64>), champions: bool) -> Value {
@@ -606,13 +617,33 @@ pub(super) fn mon_report(m: &Mon, sp: &SetPick, built: &vgc_engine_core::Pokemon
             prior_fields.push(name.to_string());
         }
     };
+    // Fields read from Illusion stints the decoder attributed to this mon
+    // carry that attribution's provenance (inferred, or default for a guess).
+    let ill = |line: usize| m.illusion.iter().filter(|r| r.0 <= line && line < r.1).map(|r| r.2).max_by_key(|s| *s == Src::Default);
+    // Its last stint (the one HP, status and boosts were last read from).
+    let stint = if m.seen { ill(m.switch_line) } else { None };
+    let species_src = match (m.seen || m.mega, m.illusion.iter().any(|r| r.3)) {
+        (true, false) if !m.illusion.is_empty() => m.illusion.iter().map(|r| r.2).max_by_key(|s| *s == Src::Default).unwrap_or(Src::Inferred),
+        (true, _) => Src::Exact,
+        _ => sp.key.src,
+    };
+    let hp_src = stint.map_or(hp.0, |s| weaker(hp.0, s));
+    let move_src = |k: usize| -> Src {
+        let mv = &sp.moves[k];
+        let line = m.moves.iter().position(|x| slug(x) == slug(&mv.v)).and_then(|j| m.move_line.get(j).copied());
+        match line.and_then(ill) {
+            Some(s) => weaker(mv.src, s),
+            None => mv.src,
+        }
+    };
+    let state_src = stint.map_or(Src::Exact, |s| weaker(Src::Exact, s));
     f("brought", brought.0);
-    f("species", if m.seen || m.mega { Src::Exact } else { sp.key.src });
-    f("hp", hp.0);
+    f("species", species_src);
+    f("hp", hp_src);
     f("item", sp.item.src);
     f("ability", sp.ability.src);
-    for (k, mv) in sp.moves.iter().enumerate() {
-        f(&format!("moves[{k}]"), mv.src);
+    for k in 0..sp.moves.len() {
+        f(&format!("moves[{k}]"), move_src(k));
     }
     for k in sp.moves.len()..4 {
         f(&format!("moves[{k}]"), Src::Default);
@@ -633,17 +664,17 @@ pub(super) fn mon_report(m: &Mon, sp: &SetPick, built: &vgc_engine_core::Pokemon
     };
     let mut out = json!({
         "name": m.name,
-        "species": prov(json!(data::SPECIES.get(built.species_id as usize).map(|s| s.name).unwrap_or("")), if m.seen || m.mega { Src::Exact } else { sp.key.src }, if m.seen { None } else { sp.key.p }),
+        "species": prov(json!(data::SPECIES.get(built.species_id as usize).map(|s| s.name).unwrap_or("")), species_src, if m.seen { None } else { sp.key.p }),
         "brought": prov(json!(true), brought.0, brought.1),
         "active_slot": Value::Null,
         "fainted": built.fainted,
-        "hp": {"value": built.current_hp, "max": built.stats.hp, "src": hp.0.as_str(), "interval": hp.1.map(|(a, b)| json!([a, b])).unwrap_or(Value::Null)},
-        "status": prov(json!(status), Src::Exact, None),
-        "boosts": prov(json!(built.boosts.to_vec()), Src::Exact, None),
+        "hp": {"value": built.current_hp, "max": built.stats.hp, "src": hp_src.as_str(), "interval": hp.1.map(|(a, b)| json!([a, b])).unwrap_or(Value::Null)},
+        "status": prov(json!(status), state_src, None),
+        "boosts": prov(json!(built.boosts.to_vec()), state_src, None),
         "item": prov(json!(sp.item.v), sp.item.src, sp.item.p),
         "item_now": prov(json!(if built.item_id == u16::MAX { "" } else { data::ITEMS[built.item_id as usize].name }), if m.item_now.is_some() { Src::Exact } else { sp.item.src }, if m.item_now.is_some() { None } else { sp.item.p }),
         "ability": prov(json!(sp.ability.v), sp.ability.src, sp.ability.p),
-        "moves": sp.moves.iter().map(|x| prov(json!(x.v), x.src, x.p)).collect::<Vec<_>>(),
+        "moves": sp.moves.iter().enumerate().map(|(k, x)| prov(json!(x.v), move_src(k), x.p)).collect::<Vec<_>>(),
         "pp": prov(json!(built.pp.to_vec()), Src::Inferred, None),
         "nature": prov(json!(sp.nature.v), sp.nature.src, sp.nature.p),
         "spread": prov(json!({"unit": if sp.sp { "sp" } else { "ev" }, "values": sp.spread.v.to_vec()}), sp.spread.src, sp.spread.p),
@@ -670,8 +701,8 @@ pub(super) fn mon_report(m: &Mon, sp: &SetPick, built: &vgc_engine_core::Pokemon
         n += 1;
     }
     if let Some(slot) = m.active {
-        out["volatiles"] = prov(json!(m.vols.iter().filter(|v| !v.name.starts_with('?')).map(|v| v.name.clone()).collect::<Vec<_>>()), Src::Exact, None);
-        out["last_move"] = prov(json!(m.last_move), Src::Exact, None);
+        out["volatiles"] = prov(json!(m.vols.iter().filter(|v| !v.name.starts_with('?')).map(|v| v.name.clone()).collect::<Vec<_>>()), state_src, None);
+        out["last_move"] = prov(json!(m.last_move), state_src, None);
         let _ = slot;
     }
     out["prior_fields"] = json!(prior_fields);

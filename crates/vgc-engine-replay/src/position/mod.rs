@@ -30,8 +30,17 @@ use vgc_engine_core::{data, nature_by_id, Battle, SideRef, StatSpread, Status, T
 use crate::prior::{slug, Prior, PriorSampler};
 
 mod build;
+mod illusion;
 mod recon;
 pub use recon::reconstruct;
+
+/// The Illusion decoder alone (docs/protocol.md, "Illusion"): `lines` with
+/// the stints that the evidence in `evidence` (`lines`, or a longer log
+/// starting with them) gives to the Illusion holder renamed to it.
+#[doc(hidden)]
+pub fn decode_illusion(lines: &[String], evidence: &[String]) -> Vec<String> {
+    illusion::decode(lines, evidence).lines
+}
 
 /// Where the position stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,6 +641,13 @@ struct Mon {
     disguise: Option<String>,
     trans_pp: Vec<(String, u32)>,
     unsupported: Vec<String>,
+    /// Line ranges the Illusion decoder gave this mon (it was disguised
+    /// there), with the provenance of that attribution and whether a
+    /// `|replace|` showed it.
+    illusion: Vec<(usize, usize, Src, bool)>,
+    /// Some stint showed this mon's name while the Illusion holder was
+    /// behind it: it is in the party (brought).
+    disguise_target: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1625,6 +1641,27 @@ impl Tracker {
                     self.turn_lines.push(li);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Record the decoder's stints on the holder (provenance) and on the
+    /// mons it disguised as (brought).
+    fn apply_illusion(&mut self, stints: &[illusion::Disguised]) {
+        for d in stints {
+            let side = d.side;
+            let zoro = |m: &Mon| ["zoroark", "zorua"].iter().any(|x| slug(&m.preview).starts_with(x));
+            if let Some(h) = (0..self.mons[side].len()).find(|&i| zoro(&self.mons[side][i]) && self.mons[side][i].name.as_deref() == Some(d.holder.as_str())) {
+                let m = &mut self.mons[side][h];
+                m.illusion.push((d.start, d.end, d.src, d.evidence == illusion::Evidence::Replace));
+                if m.ability_base.is_none() {
+                    m.ability_base = Some("Illusion".into());
+                }
+            }
+            if let Some(t) = self.mons[side].iter_mut().find(|m| !zoro(m) && m.name.as_deref() == Some(d.disguise.as_str())) {
+                t.disguise_target = true;
+            } else if let Some(t) = self.mons[side].iter_mut().find(|m| m.name.is_none() && same_family(&m.preview, &d.disguise_species)) {
+                t.disguise_target = true;
             }
         }
     }
