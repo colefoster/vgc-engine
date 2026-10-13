@@ -941,6 +941,8 @@ Rust: `vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions}`.
 - `active_prior_fields`: `{"p1a": [...], "p1b": [...], ...}`, the active
   mons' prior or default fields.
 - `field`: every field effect with its turns up.
+- `illusion`: only when the log has an Illusion holder's disguised
+  stints: one entry per decoded stint (see [Illusion](#illusion)).
 - `n_prior_fields` / `n_fields` for the whole position, plus `turn`,
   `stop`, `format`, `input`, `viewer` and `lookahead`.
 - `prior`: the prior's resolved id (`"default"` never appears: it is
@@ -984,8 +986,71 @@ is the prior's too.
 - a pending two-turn move (its target is hidden: the first live foe);
 - Future Sight / Doom Desire, Rage Fist's hit count, Supreme Overlord;
 - Speed Swap, Power / Guard Split and Power Trick;
-- Transform / Imposter, Illusion when revealed;
+- Transform / Imposter;
+- Illusion: the disguised stints, decoded as [Illusion](#illusion) says;
 - Shed Tail's doll, Octolock, Torment, Dragon Cheer.
+
+### Illusion
+
+A Zoroark, Zoroark-Hisui or Zorua under Illusion shows as another party
+member: its `|switch|` details and every ident until the disguise ends
+name that mon (sim/pokemon.ts `getFullDetails`, `toString`). PS picks the
+last unfainted mon after it in `side.pokemon` (data/abilities.ts
+illusion `onBeforeSwitchIn`). The disguise ends:
+
+- on a move's damaging hit: `|replace|` then `|-end|...|Illusion`
+  (`onDamagingHit` -> `onEnd`);
+- silently on a faint: `|faint|` names the disguise, then `onFaint`
+  clears it with no `|replace|`.
+
+The rebuild splits the log into stints (one mon's time in one slot) and
+decodes which stints were the holder. A decoded stint's lines are read as
+the holder's: its damage, HP, moves and PP, boosts, status and volatiles.
+The disguise's mon keeps only its own stints. The prefix is not rewritten:
+the engine restores the disguise from the slot's last switch-in name, so
+the foe still sees the disguise and a hit prints `|replace|`.
+
+Evidence, strongest first:
+
+| `evidence` | The stint is the holder because | `src` |
+|---|---|---|
+| `replace` | a `replace` message ended its disguise | `inferred` |
+| `faint` | it fainted, and the mon it showed came in later | `inferred` |
+| `item` | it showed a Mega forme holding an item other than that forme's stone | `inferred` |
+| `move` | it used a move its shown species cannot learn and the holder can | `inferred` |
+| `self-switch` | it came in for a mon of the same name | `default`, or `inferred` |
+| `same name` | a mon of its name was in the other slot | `default`, or `inferred` |
+
+- **Ruled out.** A stint is not the holder when a move's damage (`-damage`
+  with no `[from]`, not its own move's cost) left it disguised, or when it
+  used a move the holder cannot learn. The holder is in one slot at a time
+  and nowhere after it faints.
+- **Pairs.** In a self-switch or two of a name, one of the two is the
+  holder. If only one can be, it is (`inferred`). Else it is a guess
+  (`default`): the newcomer for a self-switch; the one that came in first
+  for two of a name, which a later `|replace|` confirmed in 16 of 19
+  such pairs in a Reg M-C sample.
+- **Holder fields.** Fields read from a decoded stint get that stint's
+  `src` when it is weaker than their own: `hp`, `status`, `boosts`,
+  `volatiles` and `last_move` of the mon's last stint, the moves first
+  shown there, and `species` when no `|replace|` ever showed it. Its
+  ability is Illusion.
+- **The disguise's mon** is brought (`inferred`): PS only disguises as a
+  party member.
+- **Before the evidence.** Without `lookahead`, only evidence up to the
+  stop counts. A stint with none is the mon it shows: the viewer cannot
+  know better, and the position is what the log showed. With
+  `lookahead=True` the whole log's evidence counts, so a stint revealed
+  after the stop is the holder, still disguised in the session.
+- **Viewer.** The decoder reads the viewer's channel. A request still
+  fixes its side's actives, but only for the viewer's own side (or both
+  sides without a viewer).
+- **Not decoded.** A disguised stint that ended (switched out) with no
+  evidence stays the disguise's, as PS's own spectators saw it.
+
+The report's `illusion` entries: `side`, `disguise` (the name shown),
+`holder`, `turn` (the turn it came in on; 0 for a lead), `evidence`, `src`,
+and `active` (still disguised at the stop).
 
 ### Prior policy
 
@@ -1112,6 +1177,18 @@ The Reg M-B half uses the same prior as before, so it is unchanged.
 - **Gate 3 failure buckets** (276): `illusion (ambiguous)` 139,
   `illusion (unrevealed)` 73, `board` 57 (an unrevealed Illusion behind a
   Mega forme), Syrup Bomb 4, Uproar 3.
+- **Illusion decoder** (branch `illusion-recon`, after these gates; the
+  full gates were not re-run). On 198 held-out Reg M-C replays with a
+  Zoroark in team preview (2026-10-03 .. 10-11, 80 usable): positions
+  rebuilt 860 / 877 -> **877 / 877** (the 17 failures were the two
+  `illusion` buckets). Decoding each whole log, switch-ins whose shown HP
+  differs from the HP the mon left with fall 77 -> 0, fainted mons coming
+  back 32 -> 1 (Revival Blessing), two of a name on the field 27 -> 0.
+  The `board` bucket did not reproduce: none of these, nor 60 more
+  Zoroark replays with a Mega forme shown twice at once or a disguised
+  Mega's Life Orb / berry, failed with it before the decoder. Mega
+  disguises now decode (`self-switch`, `same name`, `item`), but whether
+  that clears the 57 is unmeasured until gate 3 is re-run.
 - **Prior-filled fields per held-out position**: mean 49.6 of 88.1. p10 39,
   p50 50, p90 63, max 75. A spectator log never shows a nature or spread,
   so every active mon has at least `nature` and `spread` prior-filled.
@@ -1132,11 +1209,11 @@ per thread, session included).
 - **Hidden counters.** Sleep and confusion turns left, a Substitute's HP
   after hits, and a charging move's target are hidden. They get the
   defaults above.
-- **Illusion before it breaks.** In a spectator log the disguise is all
-  there is. Two mons with the same name active at once are resolved: the
-  one that used a move its shown species cannot learn is the Illusion
-  holder, else the newcomer. A request fixes the actives. A disguised stint
-  that ends before the reveal stays attributed to the disguise.
+- **Illusion before the evidence.** Without lookahead a disguised stint
+  with no evidence up to the stop is the mon it shows. A stint that
+  switched out with no evidence at all stays the disguise's. A self-switch
+  or two of a name with nothing else to go on is a `default` guess. See
+  [Illusion](#illusion).
 - **Mid-turn switch requests** (U-turn, Eject Button) have no position
   form, as in phase 4.
 - **Not carried.** A few turn-scoped results: `move_last_turn_result`
