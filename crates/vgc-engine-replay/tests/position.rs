@@ -231,3 +231,26 @@ fn prior_sample_frequency_matches_the_prior() {
         assert!((got - want).abs() < 0.06, "{} {:?}: {got:.3} vs {want:.3}", s.nature, s.values);
     }
 }
+
+#[test]
+fn a_substitute_hp_is_inferred_until_hit_then_default() {
+    // The reveal fixture with a Substitute put up by Indeedee on turn 1 and
+    // hit on turn 2.
+    let mut lines = parse_input(include_str!("fixtures/illusion_reveal.json")).unwrap().lines;
+    let at = |lines: &[String], l: &str| lines.iter().position(|x| x == l).unwrap();
+    let t2 = at(&lines, "|turn|2");
+    let up = lines[..t2].iter().rposition(|x| x == "|upkeep").unwrap();
+    for (k, l) in ["|move|p2b: Indeedee|Substitute|p2b: Indeedee", "|-start|p2b: Indeedee|Substitute", "|-damage|p2b: Indeedee|65/100"].iter().enumerate() {
+        lines.insert(up + k, l.to_string());
+    }
+    let t3 = at(&lines, "|turn|3");
+    lines.insert(t3 - 1, "|-activate|p2b: Indeedee|move: Substitute|[damage]".into());
+    let prior = Prior::embedded();
+    let sub = |turn: u32| {
+        let rec = reconstruct(&lines, &ReconOptions::new(turn), &prior).unwrap();
+        let m = rec.report["sides"]["p2"]["team"].as_array().unwrap().iter().find(|m| m["active_slot"] == "p2b").unwrap().clone();
+        (m["substitute_hp"]["src"].as_str().map(str::to_string), m["prior_fields"].as_array().unwrap().iter().any(|x| x == "substitute_hp"))
+    };
+    assert_eq!(sub(2), (Some("inferred".into()), false));
+    assert_eq!(sub(3), (Some("default".into()), true));
+}

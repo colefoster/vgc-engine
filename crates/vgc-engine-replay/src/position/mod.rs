@@ -611,6 +611,8 @@ struct Mon {
     times_attacked: u32,
     must_recharge: bool,
     sub: bool,
+    /// Hits its Substitute took since it went up (its HP is hidden).
+    sub_hits: u32,
     type_change: Option<String>,
     fallen: Option<u8>,
     /// Displayed HP at or below 50% / 25% while alive (pinch-berry checks).
@@ -966,6 +968,8 @@ impl Tracker {
                     // Shed Tail hands its doll to the incoming mon.
                     if p.iter().any(|x| *x == "[from] Shed Tail") {
                         m.sub = true;
+                        // The doll's HP is the Shed Tail user's quarter: not this mon's.
+                        m.sub_hits = u32::MAX;
                     }
                     if let Some(hp) = p.get(4) {
                         self.set_hp(side, i, hp, exact_side);
@@ -1324,6 +1328,7 @@ impl Tracker {
                     }
                     if label == "Substitute" {
                         self.mons[side][i].sub = true;
+                        self.mons[side][i].sub_hits = 0;
                         continue;
                     }
                     if label == "Power Trick" {
@@ -1542,8 +1547,11 @@ impl Tracker {
                                 }
                             }
                         }
-                        if *lbl == "move: Substitute" && p.iter().any(|x| *x == "[damage]") && self.action.is_some_and(|a| (a.0, a.1) != (side, i)) {
-                            self.mons[side][i].times_attacked += 1;
+                        if *lbl == "move: Substitute" && p.iter().any(|x| *x == "[damage]") {
+                            self.mons[side][i].sub_hits += 1;
+                            if self.action.is_some_and(|a| (a.0, a.1) != (side, i)) {
+                                self.mons[side][i].times_attacked += 1;
+                            }
                         }
                         if let Some(ab) = lbl.strip_prefix("ability: ") {
                             let ab = ab.to_string();
@@ -1715,6 +1723,7 @@ impl Tracker {
         r.boosts = d.boosts;
         r.vols = d.vols.clone();
         r.sub = d.sub;
+        r.sub_hits = d.sub_hits;
         r.active = d.active;
         r.switch_line = d.switch_line;
         r.turns_active = d.turns_active;

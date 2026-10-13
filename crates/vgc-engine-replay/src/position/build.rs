@@ -700,6 +700,16 @@ pub(super) fn mon_report(m: &Mon, sp: &SetPick, built: &vgc_engine_core::Pokemon
         prior_fields.push("confusion_turns_remaining".into());
         n += 1;
     }
+    if built.substitute_hp() > 0 && !built.fainted {
+        // Its HP is hidden: a quarter of max HP until a hit shows it lost
+        // some (or a Shed Tail doll, the user's quarter); then that default.
+        let src = if m.sub_hits == 0 { weaker(Src::Inferred, hp_src) } else { Src::Default };
+        out["substitute_hp"] = prov(json!(built.substitute_hp()), src, None);
+        if matches!(src, Src::Prior | Src::Default) {
+            prior_fields.push("substitute_hp".into());
+        }
+        n += 1;
+    }
     if let Some(slot) = m.active {
         out["volatiles"] = prov(json!(m.vols.iter().filter(|v| !v.name.starts_with('?')).map(|v| v.name.clone()).collect::<Vec<_>>()), state_src, None);
         out["last_move"] = prov(json!(m.last_move), state_src, None);
