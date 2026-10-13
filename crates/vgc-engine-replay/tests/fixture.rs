@@ -18,8 +18,8 @@ fn parses_sample_replay() {
     // Team preview entries (|poke| lines) per the fixture log.
     assert_eq!(r.team_preview.len(), 12);
 
-    // Winner is set (the fixture ends with |win|TorkoalWQuickclaw).
-    assert_eq!(r.winner.as_deref(), Some("TorkoalWQuickclaw"));
+    // Winner is set (the fixture ends with |win|Player 2).
+    assert_eq!(r.winner.as_deref(), Some("Player 2"));
 
     // There's at least one of each major battle-state event.
     assert!(r.events.iter().any(|e| matches!(e, Event::Turn(_))));

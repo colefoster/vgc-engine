@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # vgc-engine-data's build.rs needs the @pkmn/dex JSON dump in $VGC_DEX_DIR.
+      # The localdex npm package ships exactly that dump in data/. The checksums
+      # pin the six files build.rs reads, so a republished tarball fails loudly.
+      # See docs/plans/standalone-build.md.
+      - name: Fetch @pkmn/dex JSON (localdex 0.1.1)
+        run: |
+          dex="$RUNNER_TEMP/localdex"
+          mkdir -p "$dex"
+          curl -fsSL https://registry.npmjs.org/localdex/-/localdex-0.1.1.tgz | tar xz -C "$dex"
+          cd "$dex/package/data"
+          sha256sum -c <<'SUMS'
+          5df2a9f82d0fa9aac45d3e10658337aaa3479a0ef36f44c88654b474f9f00279  abilities.json
+          f2d802b82db287773ae995bc13da3d5fcc0d7d6bdb7cf1126a6183421d868ceb  items.json
+          5ea968c2e1007119eff7b1b866266d8198a09b0449662992fd2f06932b06f538  learnsets.json
+          0042d1bbb34966aa9447efac380d8120df320ef33083b72f0c37ffdde6c27c9d  moves.json
+          16b38cbc1d0e0f14d13b0577b051ab4823e6e4b1b57dea4384e4ac0856cc58b1  pokedex.json
+          538c8e9dc921ec3d77d403e87a7524446d7c5e9bfaac10fdc3a03ff648aadce2  typechart.json
+          SUMS
+          echo "VGC_DEX_DIR=$dex/package/data" >> "$GITHUB_ENV"
+
+      # vgc-engine-py needs maturin and is excluded, as in docs/AGENTS.md.
+      # fmt and clippy are not enforced yet: the tree has outstanding diffs/warnings.
+      - name: Test
+        run: cargo test --workspace --exclude vgc-engine-py

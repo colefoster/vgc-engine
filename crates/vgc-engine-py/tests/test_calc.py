@@ -1,10 +1,9 @@
 """Regression tests for the `vgc_engine.calc(...)` pyo3 binding.
 
-Build/install the extension first (from the mimikyu analytics venv):
+Build/install the extension first, into an activated virtualenv:
 
-    VIRTUAL_ENV=~/Dev/mimikyu/.venv-analytics \
-    PATH=~/Dev/mimikyu/.venv-analytics/bin:$PATH \
-    maturin develop
+    source <your venv>/bin/activate
+    maturin develop -m crates/vgc-engine-py/Cargo.toml
 
 then run: `python -m pytest crates/vgc-engine-py/tests/`.
 
