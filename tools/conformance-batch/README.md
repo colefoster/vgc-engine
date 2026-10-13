@@ -38,7 +38,7 @@ incremental.
 
 | var | default | meaning |
 |-----|---------|---------|
-| `CONF_TEAMS_FILE` | `~/Dev/mimikyu/data/generated_teams/regmb_random_100.txt` | team list (`=== Team N ===` separated) |
+| `CONF_TEAMS_FILE` | `$MIMIKYU_DIR/data/generated_teams/regmb_random_100.txt` (`MIMIKYU_DIR` defaults to a `mimikyu` checkout next to this repo) | team list (`=== Team N ===` separated) |
 | `CONF_JOBS_DIR` | `/tmp/conf-batch/jobs` | job inputs |
 | `CONF_OUT_DIR` | `/tmp/conf-batch` | `out_<id>.json` outputs |
 | `CONF_FORCE` | unset | `1` re-runs jobs whose output already exists |
