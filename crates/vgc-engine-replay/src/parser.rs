@@ -206,8 +206,8 @@ mod tests {
     #[test]
     fn win() {
         assert_eq!(
-            parse_line("|win|TorkoalWQuickclaw"),
-            Some(Event::Win("TorkoalWQuickclaw".to_string()))
+            parse_line("|win|Player 2"),
+            Some(Event::Win("Player 2".to_string()))
         );
     }
 
