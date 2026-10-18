@@ -46,7 +46,7 @@ this repository contains data derived from it:
     distributions. Some teams and choices were reconstructed from Showdown ladder logs;
     player names in these files are replaced with `P1`/`P2`.
 - **`crates/vgc-engine-replay/tests/fixtures/sample.json`**: one public Showdown replay (a
-  Reg M-A ladder game), including the two players' Showdown usernames as published in it.
+  Reg M-A ladder game). The players' Showdown usernames are replaced with `Player 1`/`Player 2`.
 - **Protocol format**: the battle-log protocol the engine emits (`protocol` feature) follows
   PS's protocol, and the opt-in `ps-rng` feature reimplements PS's PRNG and draw order.
 - **Code comments and commit messages** cite PS source by `file:line`. No PS source code is
