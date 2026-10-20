@@ -12,10 +12,14 @@
 //! 1. **Damage rolls by outcome class.** A site the engine segmented by the
 //!    defender's post-hit canonical HP bucket (KO / not, plus the HP bands
 //!    the TT distinguishes) keeps its segments: bit-exact. An unsegmented
-//!    16-roll site (spread moves, multi-hit, Sash/Sturdy chains) collapses
-//!    to the 3 representative rolls {0, 7, 15} with weights {5, 6, 5}/16
-//!    (the existing `lossy_damage_3bucket`): expected damage is preserved,
-//!    the survivor-HP spread is not.
+//!    16-roll site (spread moves, multi-hit, Sash/Sturdy chains) and every
+//!    `UniformRange(n ≥ 3)` (durations, random picks) collapse to
+//!    representative values. The cell's coarsenable sites share one budget
+//!    (their joint grid ≤ `max_combos`), spent greedily on the coarsest
+//!    site; damage tops out at the existing 3 rolls {0, 7, 15} at
+//!    {5, 6, 5}/16, then {4, 11}, then the median roll. Each keeps the
+//!    expected value; the spread (survivor HP, a borderline KO's
+//!    probability, a duration's exact turn) is not kept.
 //! 2. **Probability-ordered truncation.** Combos are replayed best-first by
 //!    prior probability (k-best over the product lattice) until the covered
 //!    mass reaches `1 − mass_eps`, or `max_combos` replays once at least
@@ -107,9 +111,10 @@ pub fn enumerate_outcomes_compressed(
         let f = OutcomeFrontier { outcomes: vec![Outcome { hash: h, battle: rec, prob: 1.0 }], raw_combos: 1, unmatched_total: 0, lazy_iterations: 0 };
         return (f, 0.0);
     }
-    let mut per_site: Vec<Site> = log.into_iter().map(|d| (d.key, sorted(expand(d.space, d.drawn, opts)), d.space, d.drawn)).collect();
+    let mut per_site: Vec<Site> = log.into_iter().map(|d| (d.key, Vec::new(), d.space, d.drawn)).collect();
     let mut lazy = 0u32;
     loop {
+        resolve_damage(&mut per_site, cc.max_combos, opts);
         let (dedup, raw, covered, unmatched, misses) = best_first_pass(base, p1, p2, record_seed, &per_site, cc);
         let new_sites = discover_new_sites(&per_site, &misses, opts);
         if new_sites.is_empty() || lazy >= MAX_LAZY_ITERATIONS {
@@ -121,8 +126,76 @@ pub fn enumerate_outcomes_compressed(
             let f = OutcomeFrontier { outcomes, raw_combos: raw, unmatched_total: unmatched, lazy_iterations: lazy };
             return (f, (1.0 - covered).max(0.0));
         }
-        per_site.extend(new_sites.into_iter().map(|(k, o, s, d)| (k, sorted(o), s, d)));
+        per_site.extend(new_sites.into_iter().map(|(k, _, s, d)| (k, Vec::new(), s, d)));
         lazy += 1;
+    }
+}
+
+/// Full outcome count of a many-way uniform site the compressor may coarsen:
+/// an unsegmented damage roll (16) or a `UniformRange(n)` with n >= 3
+/// (durations, random picks). Binary sites (crit, accuracy, secondaries,
+/// coin-flip ranges, speed ties) are never coarsened; skewed ones are cut by
+/// the best-first truncation instead.
+fn coarsenable(space: &vgc_engine_core::DrawSpace) -> Option<u32> {
+    match space {
+        vgc_engine_core::DrawSpace::UniformDamage { segments: None, .. } => Some(16),
+        vgc_engine_core::DrawSpace::UniformRange(n) if *n >= 3 => Some(*n),
+        _ => None,
+    }
+}
+
+/// `r` representatives of a uniform site over `0..n`: contiguous groups,
+/// each represented by its middle value and weighted by its size, so the
+/// expected value is kept. Damage at r = 3 uses the existing
+/// `lossy_damage_3bucket` rolls {0, 7, 15} at {5, 6, 5}/16.
+fn uniform_reps(space: &vgc_engine_core::DrawSpace, n: u32, r: u32) -> Vec<(RngEvent, u32, u32)> {
+    let damage = matches!(space, vgc_engine_core::DrawSpace::UniformDamage { .. });
+    if damage && r == 3 {
+        return vec![(RngEvent::DamageRoll(0), 5, 16), (RngEvent::DamageRoll(7), 6, 16), (RngEvent::DamageRoll(15), 5, 16)];
+    }
+    (0..r)
+        .map(|g| {
+            let (lo, hi) = (g * n / r, (g + 1) * n / r);
+            let mid = (lo + hi - 1) / 2;
+            let ev = if damage { RngEvent::DamageRoll(mid as u8) } else { RngEvent::Range(mid) };
+            (ev, hi - lo, n)
+        })
+        .collect()
+}
+
+/// Expand every site, giving the cell's many-way uniform sites one shared
+/// resolution budget: their joint grid may hold at most `max_combos`
+/// combos. Each starts at one representative; the budget goes greedily to
+/// the site with the largest remaining group (damage tops out at 3 rolls).
+/// Equal-weight branches can't be cut by the best-first truncation, so
+/// without this a 6-hit spread turn (3^6 = 729 damage combos) or a turn
+/// with sleep/confusion/trap durations left most of the prior unreplayed.
+fn resolve_damage(per_site: &mut [Site], max_combos: usize, opts: EnumerateOpts) {
+    let full: Vec<Option<u32>> = per_site.iter().map(|s| coarsenable(&s.2)).collect();
+    let cap = |n: u32, damage: bool| if damage { 3 } else { n };
+    let mut res: Vec<u32> = full.iter().map(|f| f.map_or(0, |_| 1)).collect();
+    let mut product: u64 = 1;
+    loop {
+        let pick = (0..per_site.len())
+            .filter_map(|i| {
+                let n = full[i]?;
+                let damage = matches!(per_site[i].2, vgc_engine_core::DrawSpace::UniformDamage { .. });
+                (res[i] < cap(n, damage)).then_some((n * 1000 / res[i], i))
+            })
+            .max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
+        let Some((_, i)) = pick else { break };
+        let grown = product / res[i] as u64 * (res[i] + 1) as u64;
+        if grown > max_combos as u64 {
+            break;
+        }
+        product = grown;
+        res[i] += 1;
+    }
+    for (i, site) in per_site.iter_mut().enumerate() {
+        site.1 = match full[i] {
+            Some(n) => uniform_reps(&site.2, n, res[i]),
+            None => sorted(expand(site.2, site.3, opts)),
+        };
     }
 }
 
@@ -247,6 +320,31 @@ mod tests {
         assert_eq!(a.len(), z.len(), "frontier sizes differ");
         for (h, p) in &a {
             assert!((p - z[h]).abs() < 1e-9, "prob differs for {h:x}: {p} vs {}", z[h]);
+        }
+    }
+
+    #[test]
+    fn damage_resolution_shrinks_with_the_number_of_unsegmented_hits() {
+        use vgc_engine_core::{DrawSpace, RngDecision};
+        let site = |i: u8| -> Site {
+            let key = RngKey { turn: 1, actor: i, target: 0, move_id: 1, decision: RngDecision::Damage };
+            (key, Vec::new(), DrawSpace::UniformDamage { ko_split: None, segments: None }, RngEvent::DamageRoll(0))
+        };
+        let opts = EnumerateOpts { lossy_damage_3bucket: true, auto_lossy_damage_threshold: None };
+        // Greedy over equal sites: k=3 -> 3·3·3 = 27; k=5 -> 2^5 = 32 (one
+        // more 3 would make 48, so one site gets 3); k=7 -> 2^6 = 64, one stays 1.
+        for (k, want) in [(3usize, vec![3usize, 3, 3]), (5, vec![3, 2, 2, 2, 2]), (7, vec![2, 2, 2, 2, 2, 2, 1])] {
+            let mut ps: Vec<Site> = (0..k as u8).map(site).collect();
+            resolve_damage(&mut ps, 64, opts);
+            let got: Vec<usize> = ps.iter().map(|s| s.1.len()).collect();
+            assert_eq!(got, want, "k={k}");
+            assert!(got.iter().product::<usize>() <= 64);
+            for s in &ps {
+                let w: u32 = s.1.iter().map(|x| x.1).sum();
+                let mean: f64 = s.1.iter().map(|x| match x.0 { RngEvent::DamageRoll(r) => r as f64 * x.1 as f64, _ => 0.0 }).sum::<f64>() / 16.0;
+                assert_eq!(w, 16);
+                assert!((mean - 7.5).abs() <= 0.5, "k={k}: mean roll {mean}");
+            }
         }
     }
 
