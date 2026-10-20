@@ -76,6 +76,7 @@ fn main() {
                 "nodes": st.nodes_visited, "tt_hits": st.tt_hits, "tt_lookups": st.tt_lookups, "cells": st.cells,
                 "outcomes": st.outcomes, "raw_combos": st.raw_combos, "enum_ms": st.enumerate_ns as f64 / 1e6,
                 "leaf_calls": st.leaf_calls, "tt_size": tt.len(), "dropped_max": st.chance_mass_dropped_max,
+                "dropped_mean": st.chance_mass_dropped_sum / (st.cells.max(1) as f64), "cells_drop5": st.cells_dropped_over_5pct,
             })
         );
     }

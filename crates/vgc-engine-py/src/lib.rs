@@ -1618,6 +1618,8 @@ fn solve_endgame_anytime<'py>(
     d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)?;
     d.set_item("compress", compress)?;
     d.set_item("chance_mass_dropped_max", stats.chance_mass_dropped_max)?;
+    d.set_item("chance_mass_dropped_mean", stats.chance_mass_dropped_sum / (stats.cells.max(1) as f64))?;
+    d.set_item("cells_dropped_over_5pct", stats.cells_dropped_over_5pct)?;
     d.set_item("nodes_visited", stats.nodes_visited)?;
     d.set_item("cells", stats.cells)?;
     d.set_item("outcomes", stats.outcomes)?;
