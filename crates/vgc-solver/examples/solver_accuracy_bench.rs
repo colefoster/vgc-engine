@@ -957,6 +957,8 @@ fn prod_config(depth: u32) -> SolverConfig {
         exact_hp: false,
         max_actions: None,
         max_chance_combinations: None,
+        deadline: None,
+        chance_compression: None,
     }
 }
 
