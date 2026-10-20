@@ -41,6 +41,7 @@
 //! progressively larger budgets and return the deepest exact solve.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use vgc_engine_core::{set_ko_split_disabled, Battle, Choice, SideRef};
 
@@ -180,6 +181,17 @@ pub struct SolverConfig {
     /// Optional deterministic action pruning for bounded interactive experiments.
     pub max_actions: Option<usize>,
     pub max_chance_combinations: Option<u64>,
+    /// Wall-clock deadline, checked at every node and every matrix cell.
+    /// Past it the in-flight solve aborts; [`endgame_solve_anytime`] then
+    /// returns the deepest iteration that finished. The plain entry points
+    /// return an aborted solve's partial value with `timed_out` set in
+    /// [`SolverStats`]; that value is not a solve result. `None` = no limit.
+    pub deadline: Option<Instant>,
+    /// Opt-in compressed chance enumeration (see [`crate::compress`]):
+    /// segmented damage stays bit-exact, unsegmented rolls collapse to 3,
+    /// and each cell replays best-first up to a mass / count cap. `None`
+    /// (default) keeps the lossless enumerator.
+    pub chance_compression: Option<crate::compress::ChanceCompression>,
 }
 
 impl Default for SolverConfig {
@@ -197,6 +209,8 @@ impl Default for SolverConfig {
             exact_hp: false,
             max_actions: None,
             max_chance_combinations: None,
+            deadline: None,
+            chance_compression: None,
         }
     }
 }
@@ -305,6 +319,21 @@ pub struct SolverStats {
     /// can be sanity-checked against the work done.
     pub nodes_visited: u64,
     pub chance_cutoffs: u64,
+    /// Matrix cells evaluated (one outcome-frontier enumeration each).
+    pub cells: u64,
+    /// Outcomes summed over every enumerated frontier (= child solves).
+    pub outcomes: u64,
+    /// Pre-dedup combos replayed through `step()`, summed over frontiers.
+    pub raw_combos: u64,
+    /// Wall time inside outcome enumeration (ns).
+    pub enumerate_ns: u64,
+    /// Calls to the leaf evaluator.
+    pub leaf_calls: u64,
+    /// Set when [`SolverConfig::deadline`] passed during the solve.
+    pub timed_out: bool,
+    /// Largest prior mass any compressed cell left unreplayed (its payoff
+    /// is off by at most twice this).
+    pub chance_mass_dropped_max: f64,
 }
 
 /// Borrowed bag of mutable state threaded through the recursion. Kept
@@ -315,6 +344,24 @@ struct SolverState<'a> {
     tt: &'a mut HashMap<u64, SolvedNode>,
     nodes: u64,
     stats: &'a mut SolverStats,
+}
+
+fn leaf_eval(state: &mut SolverState, battle: &Battle) -> f64 {
+    state.stats.leaf_calls += 1;
+    (state.leaf)(battle)
+}
+
+/// DO seed from a shallower TT entry of the same state: the indices of its
+/// row / column support in this node's action lists (`None` when there is
+/// no entry or none of its actions are in the current lists).
+fn tt_seed(game: &RecursiveGame, hash: u64) -> Option<(Vec<usize>, Vec<usize>)> {
+    let cached = game.state.tt.get(&hash)?;
+    let idx = |acts: &[Vec<Choice>], pol: &[(Vec<Choice>, f64)]| -> Vec<usize> {
+        pol.iter().filter_map(|(j, _)| acts.iter().position(|a| a == j)).collect()
+    };
+    let r = idx(&game.row_choices, &cached.row_joint_policy);
+    let c = idx(&game.col_choices, &cached.col_joint_policy);
+    if r.is_empty() || c.is_empty() { None } else { Some((r, c)) }
 }
 
 fn leaf_node(value: f64, provenance: Provenance, depth_remaining: u32) -> SolvedNode {
@@ -430,20 +477,38 @@ fn bounded_actions(battle: &Battle, side: SideRef, cfg: &SolverConfig) -> Vec<Ve
     out
 }
 
+fn past_deadline(state: &mut SolverState) -> bool {
+    if !state.stats.timed_out {
+        if let Some(d) = state.cfg.deadline {
+            if Instant::now() >= d {
+                state.stats.timed_out = true;
+            }
+        }
+    }
+    state.stats.timed_out
+}
+
 fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> SolvedNode {
     state.nodes += 1;
     state.stats.nodes_visited += 1;
 
+    // Deadline: unwind fast. The value is garbage and the caller (the
+    // anytime loop) discards the whole iteration; nothing aborted reaches
+    // the TT (see the insert below).
+    if past_deadline(state) {
+        return leaf_node(0.0, Provenance::Estimated(EstReason::NodeLimit), depth_remaining);
+    }
+
     // Terminal: always leaf-evaluate (winner-aware leaf should return
     // ±1 / 0 per convention).
     if battle.is_terminal() {
-        return leaf_node((state.leaf)(battle), Provenance::Terminal, depth_remaining);
+        return leaf_node(leaf_eval(state, battle), Provenance::Terminal, depth_remaining);
     }
 
     // Depth-budget exhausted.
     if depth_remaining == 0 {
         return leaf_node(
-            (state.leaf)(battle),
+            leaf_eval(state, battle),
             Provenance::Estimated(EstReason::DepthLimit),
             depth_remaining,
         );
@@ -452,7 +517,7 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     // Node-budget exhausted.
     if state.nodes >= state.cfg.node_budget {
         return leaf_node(
-            (state.leaf)(battle),
+            leaf_eval(state, battle),
             Provenance::Estimated(EstReason::NodeLimit),
             depth_remaining,
         );
@@ -470,7 +535,9 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     if !state.cfg.exact_hp {
         state.stats.tt_lookups += 1;
         if let Some(cached) = state.tt.get(&hash) {
-            if cached.depth_remaining >= depth_remaining {
+            // An Exact entry bottomed out on terminals only, so its value
+            // holds at any remaining depth.
+            if cached.depth_remaining >= depth_remaining || cached.provenance == Provenance::Exact {
                 state.stats.tt_hits += 1;
                 return cached.clone();
             }
@@ -484,12 +551,10 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     let col_choices = bounded_actions(battle, SideRef::P2, state.cfg);
     if row_choices.is_empty() || col_choices.is_empty() {
         // Should be caught by is_terminal; defensive fallback.
-        return leaf_node((state.leaf)(battle), Provenance::Terminal, depth_remaining);
+        return leaf_node(leaf_eval(state, battle), Provenance::Terminal, depth_remaining);
     }
 
     // Build the recursive matrix game and DO-solve.
-    let row_count = row_choices.len();
-    let col_count = col_choices.len();
     let mut game = RecursiveGame {
         battle,
         row_choices,
@@ -498,20 +563,29 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         state,
         any_estimated_child: false,
     };
-    let do_sol = match double_oracle(&mut game, &[0], &[0]) {
+    // Seed double-oracle with the support a shallower solve of this state
+    // found (iterative deepening): it is usually most of the deeper support.
+    let (seed_rows, seed_cols) = match tt_seed(&game, hash) {
+        Some(s) => s,
+        None => (vec![0], vec![0]),
+    };
+    let do_sol = match double_oracle(&mut game, &seed_rows, &seed_cols) {
         Some(s) => s,
         None => {
             // DO failed — fall back to leaf eval. Rare and surfaces as
             // Estimated::NodeLimit since it usually correlates with weird
             // state shape (empty supports, etc.).
             return leaf_node(
-                (state.leaf)(battle),
+                leaf_eval(state, battle),
                 Provenance::Estimated(EstReason::NodeLimit),
                 depth_remaining,
             );
         }
     };
 
+    if game.state.stats.timed_out {
+        return leaf_node(0.0, Provenance::Estimated(EstReason::NodeLimit), depth_remaining);
+    }
     let any_estimated = game.any_estimated_child;
     let provenance = if any_estimated {
         Provenance::Estimated(EstReason::DepthLimit)
@@ -540,9 +614,6 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         .map(|(joint, p)| (joint[0], *p))
         .collect();
 
-    let _ = row_count;
-    let _ = col_count;
-
     let node = SolvedNode {
         value: do_sol.value,
         row_policy,
@@ -558,6 +629,52 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         state.tt.insert(hash, node.clone());
     }
     node
+}
+
+/// Result of [`endgame_solve_anytime`].
+#[derive(Debug, Clone)]
+pub struct AnytimeSolve {
+    /// The deepest completed iteration's root node. `None` when not even
+    /// the depth-1 iteration finished before the deadline.
+    pub node: Option<SolvedNode>,
+    /// Ply depth of `node` (0 when `node` is `None`).
+    pub depth_completed: u32,
+    /// The deadline cut a deeper iteration short (or stopped depth 1).
+    pub timed_out: bool,
+}
+
+/// Iterative-deepening solve under [`SolverConfig::deadline`]: depth 1, 2,
+/// … up to `cfg.max_depth`, sharing one TT, stopping at the first iteration
+/// whose root is `Exact`/`Terminal` (the game is solved; deeper adds
+/// nothing). When the deadline aborts an iteration, the previous completed
+/// one is returned with `timed_out = true` — best-so-far, never a partial
+/// iteration. Shallower TT entries seed each node's double-oracle support,
+/// and Exact entries are reused at any depth, so the repeated shallow work
+/// is mostly cache hits.
+pub fn endgame_solve_anytime(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    mut leaf: impl FnMut(&Battle) -> f64,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+) -> AnytimeSolve {
+    let _guard = ExactHpGuard::activate(cfg.exact_hp);
+    let mut best: Option<SolvedNode> = None;
+    let mut depth_completed = 0;
+    for depth in 1..=cfg.max_depth.max(1) {
+        let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut *tt, nodes: 0, stats: &mut *stats };
+        let node = solve(battle, depth, &mut state);
+        if stats.timed_out {
+            return AnytimeSolve { node: best, depth_completed, timed_out: true };
+        }
+        let solved = matches!(node.provenance, Provenance::Exact | Provenance::Terminal);
+        best = Some(node);
+        depth_completed = depth;
+        if solved || stats.nodes_visited >= cfg.node_budget {
+            break;
+        }
+    }
+    AnytimeSolve { node: best, depth_completed, timed_out: false }
 }
 
 /// Per-node matrix game whose `payoff(i, j)` is the expected recursive
@@ -602,13 +719,24 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         // active_count on each side (1 for singles, 2 for doubles).
         let row_joint: &[Choice] = &self.row_choices[i];
         let col_joint: &[Choice] = &self.col_choices[j];
-        let frontier = if let Some(limit) = self.state.cfg.max_chance_combinations {
+        if past_deadline(self.state) {
+            return 0.0;
+        }
+        self.state.stats.cells += 1;
+        let t0 = Instant::now();
+        let frontier = if let Some(cc) = self.state.cfg.chance_compression {
+            let (f, dropped) = crate::compress::enumerate_outcomes_compressed(
+                self.battle, row_joint, col_joint, self.state.cfg.record_seed, cc);
+            let st = &mut *self.state.stats;
+            st.chance_mass_dropped_max = st.chance_mass_dropped_max.max(dropped);
+            f
+        } else if let Some(limit) = self.state.cfg.max_chance_combinations {
             match crate::enumerate_outcomes_bounded(self.battle, row_joint, col_joint, self.state.cfg.record_seed, opts, Some(limit)) {
                 Ok(frontier) => frontier,
                 Err(_) => {
                     self.state.stats.chance_cutoffs += 1;
                     self.any_estimated_child = true;
-                    return (self.state.leaf)(self.battle);
+                    return leaf_eval(self.state, self.battle);
                 }
             }
         } else if self.state.cfg.use_action_independence_factoring {
@@ -628,6 +756,9 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
                 opts,
             )
         };
+        self.state.stats.enumerate_ns += t0.elapsed().as_nanos() as u64;
+        self.state.stats.outcomes += frontier.outcomes.len() as u64;
+        self.state.stats.raw_combos += frontier.raw_combos as u64;
         let mut acc = 0.0;
         for outcome in &frontier.outcomes {
             let child = solve(&outcome.battle, self.depth_remaining, self.state);
@@ -718,6 +849,8 @@ mod tests {
             exact_hp: false,
             max_actions: None,
             max_chance_combinations: None,
+            deadline: None,
+            chance_compression: None,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -769,6 +902,8 @@ mod tests {
             exact_hp: false,
             max_actions: None,
             max_chance_combinations: None,
+            deadline: None,
+            chance_compression: None,
         };
         let cfg_on = SolverConfig {
             use_action_independence_factoring: true,
@@ -867,6 +1002,8 @@ mod tests {
             exact_hp: false,
             max_actions: None,
             max_chance_combinations: None,
+            deadline: None,
+            chance_compression: None,
         };
 
         // ── Reference: hand-build the root matrix. ──
@@ -966,6 +1103,8 @@ mod tests {
             exact_hp: false,
             max_actions: None,
             max_chance_combinations: None,
+            deadline: None,
+            chance_compression: None,
         };
         let s1 = endgame_solve(&b, &cfg, hp_ratio_leaf);
         let s2 = endgame_solve(&b, &cfg, hp_ratio_leaf);
@@ -1007,6 +1146,88 @@ mod tests {
         assert_eq!(s1.provenance, Provenance::Terminal);
         assert_eq!(s2.provenance, Provenance::Terminal);
         assert!((s1.value - s2.value).abs() < 1e-9);
+    }
+
+    // ─── anytime / deadline ──────────────────────────────────────────────
+
+    /// Low-HP 1v1 singles: solvable to terminal in a few plies.
+    fn small_exact_fixture() -> Battle {
+        let mut b = fixture();
+        b.p1.conditions.tera_used = true;
+        b.p2.conditions.tera_used = true;
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 5).max(1);
+        b.p2.team[0].current_hp = (b.p2.team[0].stats.hp / 5).max(1);
+        b
+    }
+
+    #[test]
+    fn anytime_without_deadline_matches_plain_exact_solve() {
+        let b = small_exact_fixture();
+        let cfg = SolverConfig { max_depth: 12, node_budget: u64::MAX, ..SolverConfig::default() };
+        let plain = endgame_solve(&b, &cfg, hp_ratio_leaf);
+        assert_eq!(plain.provenance, Provenance::Exact, "fixture must solve exactly");
+        let mut tt = HashMap::new();
+        let mut st = SolverStats::default();
+        let any = endgame_solve_anytime(&b, &cfg, hp_ratio_leaf, &mut tt, &mut st);
+        let node = any.node.expect("solved");
+        assert!(!any.timed_out);
+        assert_eq!(node.provenance, Provenance::Exact);
+        assert!(any.depth_completed < cfg.max_depth, "stops at the first exact depth");
+        assert!((node.value - plain.value).abs() < 1e-9, "anytime {} vs plain {}", node.value, plain.value);
+    }
+
+    #[test]
+    fn anytime_past_deadline_returns_nothing() {
+        let b = small_exact_fixture();
+        let cfg = SolverConfig { deadline: Some(Instant::now()), ..SolverConfig::default() };
+        let mut st = SolverStats::default();
+        let any = endgame_solve_anytime(&b, &cfg, hp_ratio_leaf, &mut HashMap::new(), &mut st);
+        assert!(any.timed_out && any.node.is_none() && any.depth_completed == 0);
+        assert!(st.timed_out);
+    }
+
+    #[test]
+    fn deadline_bounds_wall_clock_and_keeps_best_completed_depth() {
+        // Full-HP doubles: far too big to finish in 50 ms; the solve must
+        // stop near the deadline and report the deepest finished iteration.
+        let p1 = TeamBuilder::from_json(D_P1).unwrap();
+        let p2 = TeamBuilder::from_json(D_P2).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let t0 = Instant::now();
+        let cfg = SolverConfig {
+            max_depth: 16,
+            node_budget: u64::MAX,
+            deadline: Some(t0 + std::time::Duration::from_millis(50)),
+            chance_compression: Some(crate::compress::ChanceCompression::default()),
+            ..SolverConfig::default()
+        };
+        let mut st = SolverStats::default();
+        let any = endgame_solve_anytime(&b, &cfg, hp_ratio_leaf, &mut HashMap::new(), &mut st);
+        let ms = t0.elapsed().as_millis();
+        assert!(any.timed_out);
+        assert!(ms < 500, "deadline overran: {ms} ms");
+        if let Some(n) = &any.node {
+            assert!(any.depth_completed >= 1);
+            assert!(!n.row_joint_policy.is_empty());
+        }
+    }
+
+    #[test]
+    fn exact_tt_entries_are_reused_at_any_depth() {
+        // Solving the exact fixture once at depth 12 leaves Exact entries;
+        // a second solve at a different depth over the same TT returns the
+        // same value with fewer nodes.
+        let b = small_exact_fixture();
+        let cfg = SolverConfig { max_depth: 12, node_budget: u64::MAX, ..SolverConfig::default() };
+        let mut tt = HashMap::new();
+        let mut s1 = SolverStats::default();
+        let a = endgame_solve_with_tt_stats(&b, &cfg, hp_ratio_leaf, &mut tt, &mut s1);
+        let cfg2 = SolverConfig { max_depth: 14, ..cfg.clone() };
+        let mut s2 = SolverStats::default();
+        let c = endgame_solve_with_tt_stats(&b, &cfg2, hp_ratio_leaf, &mut tt, &mut s2);
+        assert_eq!(a.provenance, Provenance::Exact);
+        assert!((a.value - c.value).abs() < 1e-12);
+        assert!(s2.nodes_visited < s1.nodes_visited);
     }
 
     // ─── exact_hp toggle ─────────────────────────────────────────────────
@@ -1111,6 +1332,8 @@ mod tests {
             exact_hp: true,
             max_actions: None,
             max_chance_combinations: None,
+            deadline: None,
+            chance_compression: None,
         };
         let exact = endgame_solve(&b, &cfg_exact, hp_ratio_leaf);
         assert!(
