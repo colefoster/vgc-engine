@@ -2498,7 +2498,9 @@ impl Battle {
         // active mon holds the stone that matches its species (PR-407
         // `mega_stone_for` table). `step()` still accepts agent-built
         // `Terastallize` / `MegaEvolve` directly (these are additive).
-        let can_tera = !s.conditions.tera_used;
+        // Champions has no Tera: PS's request omits `canTerastallize` there
+        // (ps_request.rs, `!self.ps_champions()`), so legal_choices must too.
+        let can_tera = !s.conditions.tera_used && !self.champions;
         // PR-LC2: read the cached `can_mega_evolve` instead of the
         // per-call `data::mega_stone_for(...)` lookup (~1.4% of the
         // doubles-bench self-time in the flamegraph). Cache is kept
