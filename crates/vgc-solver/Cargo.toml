@@ -16,3 +16,6 @@ vgc-engine-core = { workspace = true }
 # LP-solve invocations, wall-clock). Zero-cost when off: every counter
 # update is inside a `#[cfg(feature = "instrumentation")]` block.
 instrumentation = []
+
+[dev-dependencies]
+serde_json = { workspace = true }
