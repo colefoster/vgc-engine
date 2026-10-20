@@ -1551,6 +1551,80 @@ fn solve_endgame_exact<'py>(
     Ok(d)
 }
 
+/// **Anytime endgame solve under a wall-clock budget** — the serving-time
+/// variant of [`solve_endgame_exact`].
+///
+/// Iterative deepening (depth 1, 2, … `max_depth`) with one shared TT,
+/// stopping at the first depth whose root is `exact` / `terminal`. The
+/// deadline (`time_budget_ms` from the call) is checked inside the
+/// recursion; on expiry the deepest COMPLETED iteration is returned with
+/// `timed_out=True` (never a partial iteration). The GIL is released while
+/// solving.
+///
+/// `compress=True` (default) turns on compressed chance enumeration
+/// (`vgc_solver::compress`): damage segmented by KO / canonical HP bucket
+/// stays exact, unsegmented rolls collapse to 3, and each cell replays
+/// best-first until `1 - mass_eps` of the prior or `max_combos` replays.
+/// `chance_mass_dropped_max` reports the largest dropped mass of any cell
+/// (that cell's payoff is off by at most twice it). With `compress=True` an
+/// `exact` provenance means "solved to terminal on the compressed chance
+/// tree", not bit-exact.
+///
+/// Returns `None` for `value` / provenance `"timeout"` when not even
+/// depth 1 finished. Otherwise the dict carries the same keys as
+/// `solve_endgame_exact` plus `depth_completed`, `timed_out`, `elapsed_ms`,
+/// `chance_mass_dropped_max`, `cells`, `outcomes`, `raw_combos`.
+#[pyfunction]
+#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64))]
+fn solve_endgame_anytime<'py>(
+    py: Python<'py>,
+    battle: &PyBattle,
+    time_budget_ms: u64,
+    max_depth: u32,
+    compress: bool,
+    mass_eps: f64,
+    max_combos: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let t0 = std::time::Instant::now();
+    let b = battle.inner.clone();
+    let cfg = vgc_solver::SolverConfig {
+        max_depth,
+        node_budget: u64::MAX,
+        deadline: Some(t0 + std::time::Duration::from_millis(time_budget_ms)),
+        chance_compression: compress.then_some(vgc_solver::ChanceCompression { mass_eps, max_combos }),
+        ..vgc_solver::SolverConfig::default()
+    };
+    let mut stats = vgc_solver::SolverStats::default();
+    let r = py.allow_threads(|| {
+        vgc_solver::endgame_solve_anytime(&b, &cfg, vgc_solver::hp_ratio_leaf, &mut std::collections::HashMap::new(), &mut stats)
+    });
+    let d = PyDict::new(py);
+    match &r.node {
+        Some(node) => {
+            d.set_item("value", node.value)?;
+            d.set_item("provenance", provenance_slug(node.provenance))?;
+            d.set_item("row_joint_policy", joint_policy_to_py(py, &node.row_joint_policy)?)?;
+            d.set_item("col_joint_policy", joint_policy_to_py(py, &node.col_joint_policy)?)?;
+        }
+        None => {
+            d.set_item("value", py.None())?;
+            d.set_item("provenance", "timeout")?;
+            d.set_item("row_joint_policy", PyList::empty(py))?;
+            d.set_item("col_joint_policy", PyList::empty(py))?;
+        }
+    }
+    d.set_item("depth_completed", r.depth_completed)?;
+    d.set_item("timed_out", r.timed_out)?;
+    d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)?;
+    d.set_item("compress", compress)?;
+    d.set_item("chance_mass_dropped_max", stats.chance_mass_dropped_max)?;
+    d.set_item("nodes_visited", stats.nodes_visited)?;
+    d.set_item("cells", stats.cells)?;
+    d.set_item("outcomes", stats.outcomes)?;
+    d.set_item("raw_combos", stats.raw_combos)?;
+    Ok(d)
+}
+
 /// Bridge one batched leaf call into Python: build a `list[dict]` of
 /// observations, invoke the callable, coerce the returned `list[float]`
 /// back to a `Vec<f64>`. Errors (wrong length, non-float, exception in
@@ -1761,6 +1835,7 @@ fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame_exact, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_endgame_anytime, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
