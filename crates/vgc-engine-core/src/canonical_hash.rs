@@ -21,20 +21,18 @@
 //! 2. Sorts the bench mons by a canonical key tuple so permutations collide.
 //! 3. Omits the RNG and the per-step transient queues entirely.
 //!
-//! The hash is computed by serializing the canonical view to JSON
-//! (struct-derived `Serialize` is field-order deterministic — no `HashMap`
-//! anywhere in the included state) and hashing those bytes with the std
-//! `DefaultHasher`. JSON is overkill for raw speed but it's the simplest
-//! stable canonicalizer we already have a dep on, and `canonical_hash`
-//! is not in the per-step hot path — it runs once per TT lookup at the
-//! solver layer, where allocations are fine.
+//! The hash is computed by serializing the canonical view straight into
+//! a folded-multiply hasher (`hash_ser::HashSer`: field names, variant
+//! names, lengths and a tag per value kind — the structure JSON would carry,
+//! without building the text; struct-derived `Serialize` is field-order
+//! deterministic and no `HashMap` is in the included state). It runs once
+//! per enumerated outcome, so it is on the solver's hot path.
 //!
 //! See `plans/endgame_solver_campaign.md` § M2 for the projection spec.
 
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 
 use crate::battle::{Battle, BattleConfig, FutureEffect, WishEffect};
 use crate::pokemon::{Pokemon, Volatile, VolatileKind, VolatileSet};
@@ -517,10 +515,9 @@ impl Battle {
             turn: self.turn,
             ended: &self.ended,
         };
-        let bytes = serde_json::to_vec(&view)
+        let mut h = crate::hash_ser::FoldHasher::new();
+        view.serialize(&mut crate::hash_ser::HashSer(&mut h))
             .expect("canonical projection serializes by construction");
-        let mut h = DefaultHasher::new();
-        bytes.hash(&mut h);
         h.finish()
     }
 }
