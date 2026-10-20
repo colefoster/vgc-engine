@@ -334,6 +334,10 @@ pub struct SolverStats {
     /// Largest prior mass any compressed cell left unreplayed (its payoff
     /// is off by at most twice this).
     pub chance_mass_dropped_max: f64,
+    /// Sum of dropped mass over compressed cells (mean = sum / cells).
+    pub chance_mass_dropped_sum: f64,
+    /// Compressed cells that dropped more than 5% of their prior mass.
+    pub cells_dropped_over_5pct: u64,
 }
 
 /// Borrowed bag of mutable state threaded through the recursion. Kept
@@ -729,6 +733,8 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
                 self.battle, row_joint, col_joint, self.state.cfg.record_seed, cc);
             let st = &mut *self.state.stats;
             st.chance_mass_dropped_max = st.chance_mass_dropped_max.max(dropped);
+            st.chance_mass_dropped_sum += dropped;
+            st.cells_dropped_over_5pct += (dropped > 0.05) as u64;
             f
         } else if let Some(limit) = self.state.cfg.max_chance_combinations {
             match crate::enumerate_outcomes_bounded(self.battle, row_joint, col_joint, self.state.cfg.record_seed, opts, Some(limit)) {

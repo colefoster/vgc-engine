@@ -33,6 +33,24 @@ fn main() {
         let t: u64 = log.iter().map(|d| count(&d.space)).product();
         all.push((t, r.clone(), c.clone(), log));
     }}
+    if a.iter().any(|x| x == "--dropped") {
+        let cc = vgc_solver::ChanceCompression::default();
+        let mut worst: Vec<(f64, usize)> = Vec::new();
+        for (k, (_, r, c, _)) in all.iter().enumerate() {
+            let (_f, d) = vgc_solver::enumerate_outcomes_compressed(&b, r, c, 0xC0DE, cc);
+            worst.push((d, k));
+        }
+        worst.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let n = worst.len() as f64;
+        println!("dropped mean {:.3} >0.05: {}/{}", worst.iter().map(|x| x.0).sum::<f64>() / n,
+                 worst.iter().filter(|x| x.0 > 0.05).count(), worst.len());
+        for &(d, k) in worst.iter().take(maxc) {
+            let (t, r, c, log) = &all[k];
+            println!("dropped {:.3} tensor {} {:?} x {:?}", d, t, r, c);
+            for e in log { println!("   {:?} {:?} -> {}", e.key, e.space, count(&e.space)); }
+        }
+        return;
+    }
     let mut ts: Vec<u64> = all.iter().map(|x| x.0).collect();
     ts.sort();
     println!("tensor p50 {} p90 {} max {}", ts[ts.len()/2], ts[ts.len()*9/10], ts[ts.len()-1]);

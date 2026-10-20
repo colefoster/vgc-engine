@@ -18,8 +18,9 @@
 //!    the survivor-HP spread is not.
 //! 2. **Probability-ordered truncation.** Combos are replayed best-first by
 //!    prior probability (k-best over the product lattice) until the covered
-//!    mass reaches `1 − mass_eps` or `max_combos` replays. The kept outcomes
-//!    are renormalized. Low-probability branches (crits at 1/24, 10%
+//!    mass reaches `1 − mass_eps`, or `max_combos` replays once at least
+//!    [`MIN_MASS`] is covered (hard stop at `8 × max_combos`). The kept
+//!    outcomes are renormalized. Low-probability branches (crits at 1/24, 10%
 //!    secondaries stacked across targets, misses on 95% moves) are what
 //!    falls off; equal-weight branches (damage classes) are never dropped
 //!    before more probable ones.
@@ -46,9 +47,14 @@ use crate::{discover_new_sites, expand, EnumerateOpts, Outcome, OutcomeFrontier,
 pub struct ChanceCompression {
     /// Stop once the replayed combos cover `1 − mass_eps` of the prior.
     pub mass_eps: f64,
-    /// Hard cap on replays per cell (per lazy re-record pass).
+    /// Soft cap on replays per cell (per lazy re-record pass): it stops
+    /// the pass only once `min_mass` is covered. `8 × max_combos` is the
+    /// hard cap.
     pub max_combos: usize,
 }
+
+/// Mass a cell must cover before the soft `max_combos` cap may stop it.
+pub const MIN_MASS: f64 = 0.9;
 
 impl Default for ChanceCompression {
     fn default() -> Self {
@@ -163,7 +169,10 @@ fn best_first_pass(
         raw += 1;
         covered += c.prob;
         dedup.entry(h).and_modify(|e| e.prob += c.prob).or_insert(Outcome { hash: h, battle: combo, prob: c.prob });
-        if covered >= 1.0 - cc.mass_eps - 1e-12 || raw >= cc.max_combos {
+        if covered >= 1.0 - cc.mass_eps - 1e-12
+            || (raw >= cc.max_combos && covered >= MIN_MASS)
+            || raw >= cc.max_combos.saturating_mul(8)
+        {
             break;
         }
         for j in c.last..n {
@@ -216,7 +225,7 @@ mod tests {
         let (f, dropped) = enumerate_outcomes_compressed(&b, &r, &c, 0xC0DE, cc);
         let total: f64 = f.outcomes.iter().map(|o| o.prob).sum();
         assert!((total - 1.0).abs() < 1e-9, "renormalized mass {total}");
-        assert!(f.raw_combos <= 32 * (f.lazy_iterations as usize + 1));
+        assert!(f.raw_combos <= 8 * 32 * (f.lazy_iterations as usize + 1));
         assert!((0.0..1.0).contains(&dropped));
     }
 
@@ -243,14 +252,13 @@ mod tests {
 
     #[test]
     fn best_first_replays_in_descending_prior_order() {
-        // The first replay is the single most likely combo (all modal
-        // branches), so with max_combos = 1 the covered mass is that combo's
-        // prior and nothing more.
+        // Replays go best-first, so a larger replay budget can only cover
+        // more of the prior.
         let b = spread_fixture();
         let (r, c) = cell(&b);
         let (f1, d1) = enumerate_outcomes_compressed(&b, &r, &c, 0xC0DE, ChanceCompression { mass_eps: 0.0, max_combos: 1 });
         let (_f8, d8) = enumerate_outcomes_compressed(&b, &r, &c, 0xC0DE, ChanceCompression { mass_eps: 0.0, max_combos: 8 });
-        assert_eq!(f1.outcomes.len(), 1);
+        assert!(!f1.outcomes.is_empty());
         assert!(d8 < d1, "more replays must cover more mass ({d8} vs {d1})");
     }
 }
