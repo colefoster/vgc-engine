@@ -23277,8 +23277,10 @@ fn apply_secondary_effect(
     // <https://bulbapedia.bulbagarden.net/wiki/Throat_Chop_(move)>.
     if move_slug == "throatchop" {
         // PS rolls random(100) for every secondary, a 100% one included
-        // (sim/battle-actions.ts:1343), then applies it.
-        let _ = rng.percent_1_100();
+        // (sim/battle-actions.ts:1343), then applies it. The roll is
+        // unused; threshold 100 records that, so the outcome enumerator
+        // sees one branch instead of 100.
+        let _ = rng.percent_1_100_t(100);
         let mut started = false;
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             // addVolatile on a mon that already has it does nothing (the
@@ -23305,8 +23307,10 @@ fn apply_secondary_effect(
     // <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
     if move_slug == "saltcure" {
         // PS rolls random(100) for every secondary, a 100% one included
-        // (sim/battle-actions.ts:1343), then applies it.
-        let _ = rng.percent_1_100();
+        // (sim/battle-actions.ts:1343), then applies it. The roll is
+        // unused; threshold 100 records that, so the outcome enumerator
+        // sees one branch instead of 100.
+        let _ = rng.percent_1_100_t(100);
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::SaltCure) {
                 let _ = t.volatiles.add(crate::pokemon::Volatile {
@@ -23332,8 +23336,10 @@ fn apply_secondary_effect(
     // <https://bulbapedia.bulbagarden.net/wiki/Psychic_Noise_(move)>.
     if move_slug == "psychicnoise" {
         // PS rolls random(100) for every secondary, a 100% one included
-        // (sim/battle-actions.ts:1343), then applies it.
-        let _ = rng.percent_1_100();
+        // (sim/battle-actions.ts:1343), then applies it. The roll is
+        // unused; threshold 100 records that, so the outcome enumerator
+        // sees one branch instead of 100.
+        let _ = rng.percent_1_100_t(100);
         let mut started = false;
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() && t.heal_block_turns() == 0 {
