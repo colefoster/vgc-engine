@@ -2645,14 +2645,16 @@ impl Battle {
             // first-choice consumers still pick a foe. PS validates against
             // the request's (effective) target (sim/side.ts:594, sim/pokemon.ts:
             // 997-1008) with validTargetLoc (sim/battle.ts:2416-2428):
-            // `normal` = adjacent, `any` = not self; `adjacentFoe` never the
-            // ally. It does not look at the partner's state: a fainted
+            // `normal` = adjacent, `any` = not self, `adjacentAllyOrSelf`
+            // (Acupressure; its targetless choice above is the user) = ally
+            // or self; `adjacentFoe` never the ally. It does not look at the
+            // partner's state: a fainted
             // partner (sim/battle.ts:2471-2476 keeps it, the move fails) or a
             // commanding one (sim/battle-actions.ts:625, the move misses) is
             // still a valid pick.
             if self.ally_targets
                 && self.config.format.active_count() == 2
-                && matches!(self.effective_move_target(active, move_id), 0 | 10)
+                && matches!(self.effective_move_target(active, move_id), 0 | 3 | 10)
             {
                 let target = Some(Target { side, slot: 1 - actor_slot });
                 out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
