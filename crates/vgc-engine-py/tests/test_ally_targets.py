@@ -52,11 +52,8 @@ def test_snapshots_need_the_kwarg():
     assert on.to_json() == off.to_json()
     assert vgc_engine.Battle.from_json(on.to_json()).ally_targets is False
     assert vgc_engine.Battle.from_json(on.to_json(), ally_targets=True).ally_targets is True
-
-
 # to_bytes -> from_bytes fails on main for any battle: Battle.fairy_lock_turns
 # is `skip_serializing_if`, which bincode (not self-describing) can't read back.
-@pytest.mark.xfail(reason="bincode round-trip broken by skip_serializing_if fairy_lock_turns", raises=ValueError)
 def test_from_bytes_kwarg():
     on = vgc_engine.Battle.from_teams(P1, P2, format="doubles", ally_targets=True)
     assert vgc_engine.Battle.from_bytes(on.to_bytes(), ally_targets=True).ally_targets is True
