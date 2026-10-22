@@ -409,6 +409,9 @@ struct CanonicalBattleView<'a> {
     gravity_turns: u8,
     magic_room_turns: u8,
     wonder_room_turns: u8,
+    // Skipped while 0 so every Fairy-Lock-free hash is unchanged.
+    #[serde(skip_serializing_if = "crate::battle::is_zero_u8")]
+    fairy_lock_turns: u8,
     future_pending: &'a [[Option<FutureEffect>; 2]; 2],
     wish_pending: &'a [[Option<WishEffect>; 2]; 2],
     turn: u32,
@@ -512,6 +515,7 @@ impl Battle {
             gravity_turns: self.gravity_turns,
             magic_room_turns: self.magic_room_turns,
             wonder_room_turns: self.wonder_room_turns,
+            fairy_lock_turns: self.fairy_lock_turns,
             future_pending: &self.future_pending,
             wish_pending: &self.wish_pending,
             turn: self.turn,

@@ -546,6 +546,10 @@ impl Battle {
             if m.volatiles.has(VolatileKind::Ingrain) {
                 trapped = Some(false);
             }
+            // Fairy Lock's field onTrapPokemon (data/moves.ts:5050).
+            if self.fairy_lock_turns > 0 {
+                trapped = Some(false);
+            }
         }
         let foe = side.opposing();
         let my_ability = m.effective_ability_id();

@@ -404,6 +404,14 @@ pub struct Battle {
     /// SpD stage, on the swapped Def base). Toggles off if reused while
     /// active (`onFieldRestart`).
     pub wonder_room_turns: u8,
+    /// Fairy Lock remaining turns (0 = inactive). PS `data/moves.ts:5050`
+    /// fairylock pseudoWeather, duration 2: set during turn N, it ticks at
+    /// that turn's residual and ends at turn N+1's, so every active mon is
+    /// trapped (onTrapPokemon tryTrap; Ghost / Shed Shell escape) for the
+    /// choice of turn N+1 only. Silent end (no onFieldEnd). Not serialized
+    /// while 0, so Fairy-Lock-free battle JSON is unchanged.
+    #[serde(default, skip_serializing_if = "crate::battle::is_zero_u8")]
+    pub fairy_lock_turns: u8,
     /// Transient within-turn action-queue reorder request set by After You /
     /// Quash and consumed by the `step` action loop after each move
     /// resolves. `Some((side, slot, to_front))` re-positions the pending
@@ -841,6 +849,7 @@ impl Battle {
             gravity_turns: 0,
             magic_room_turns: 0,
             wonder_room_turns: 0,
+            fairy_lock_turns: 0,
             pending_queue_reorder: None,
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
@@ -3461,6 +3470,8 @@ self.trigger_emergency_exits();
         if self.gravity_turns > 0 { push(&mut h, (27, 0, 0, 2)); }
         if self.wonder_room_turns > 0 { push(&mut h, (27, 0, 0, 5)); }
         if self.magic_room_turns > 0 { push(&mut h, (27, 0, 0, 6)); }
+        // Fairy Lock: no onFieldResidualOrder, a field condition's subOrder 5.
+        if self.fairy_lock_turns > 0 { push(&mut h, (NONE, 0, 0, 5)); }
         // Sides (onSideResidualOrder 26 and subOrder; duration-1 guards
         // have no order and the side default 4).
         for side in [SideRef::P1, SideRef::P2] {
@@ -5220,6 +5231,11 @@ self.trigger_emergency_exits();
         // per-mon state — the Def/SpD swap is read live in the damage calc.
         if self.wonder_room_turns > 0 {
             self.wonder_room_turns -= 1;
+        }
+        // Fairy Lock's duration ticks in the residual's fieldEvent (PS
+        // sim/battle.ts fieldEvent: a handler with `duration` counts down).
+        if self.fairy_lock_turns > 0 {
+            self.fairy_lock_turns -= 1;
         }
         // Gravity field pseudo-weather ticks down each end-of-turn
         // (PS `data/moves.ts:gravity` condition, `onFieldResidual`).
@@ -11286,6 +11302,21 @@ self.trigger_emergency_exits();
         if hit_sub {
             return;
         }
+        // Jaw Lock — PS data/moves.ts:9789 jawlock onHit:
+        // `source.addVolatile('trapped', target, move, 'trapper')` then
+        // `target.addVolatile('trapped', source, move, 'trapper')`. Each side
+        // fails on its own (Ghost immunity, an existing `trapped`), and both
+        // fail once the target is KO'd (`!this.hp` / `!source.hp`). Each
+        // trap ends when the other mon leaves (`release_linked_traps`).
+        // Not a secondary: Sheer Force / Shield Dust don't touch it.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Jaw_Lock_(move)>.
+        if ctx.move_id == data::move_id::JAWLOCK {
+            if self.plog() {
+                self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+            }
+            self.apply_move_trap(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
+            self.apply_move_trap(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot);
+        }
         // Bug Bite / Pluck — PS data/moves.ts bugbite / pluck onHit: a user
         // with HP takes the target's Berry (takeItem; Sticky Hold blocks while
         // its holder has HP) and eats it (singleEvent 'Eat', no Unnerve check).
@@ -14912,6 +14943,7 @@ self.trigger_emergency_exits();
                 self.gravity_turns,
                 self.magic_room_turns,
                 self.wonder_room_turns,
+                self.fairy_lock_turns,
             ],
             weather: self.weather,
             terrain: self.terrain,
@@ -15362,6 +15394,10 @@ self.trigger_emergency_exits();
         if (0..n_types as usize).any(|i| types[i] == 13) {
             return false;
         }
+        // Fairy Lock's field onTrapPokemon (data/moves.ts:5050): everyone.
+        if self.fairy_lock_turns > 0 {
+            return true;
+        }
         // Partial-trap volatile (Bind / Wrap / Fire Spin / Whirlpool / ...):
         // switch-locked while the volatile is alive. No Retreat self-traps the
         // user the same way (PS data/moves.ts:noretreat condition
@@ -15378,7 +15414,8 @@ self.trigger_emergency_exits();
                 return true;
             }
         }
-        // Spirit Shackle's `trapped` (data/conditions.ts onTrapPokemon).
+        // The move-trap `trapped` volatile (Spirit Shackle, Mean Look,
+        // Block, Jaw Lock; data/conditions.ts trapped onTrapPokemon).
         if let Some(v) = mon.volatiles.get(crate::pokemon::VolatileKind::Trapped) {
             if self.trap_source_active(v.payload) {
                 return true;
@@ -17463,11 +17500,13 @@ self.trigger_emergency_exits();
         (0..self.format().active_count()).any(|slot| s.active[slot] == idx && s.active_mon(slot).is_some_and(|m| m.is_alive()))
     }
 
-    /// `target.addVolatile('trapped', source, move, 'trapper')`: see the
-    /// Spirit Shackle arm of `apply_secondary_effect`.
+    /// `target.addVolatile('trapped', source, move, 'trapper')` (Spirit
+    /// Shackle's secondary, Mean Look / Block / Jaw Lock onHit). Fails on a
+    /// fainted target or source (`linkedStatus && !source.hp`), an existing
+    /// `trapped`, and a Ghost (runStatusImmunity, sim/pokemon.ts:1969-1990).
     fn apply_move_trap(&mut self, tside: SideRef, tslot: u8, sside: SideRef, sslot: u8) {
         let src_idx = self.side(sside).active[sslot as usize];
-        if self.side(sside).active_mon(sslot as usize).is_none() {
+        if !self.side(sside).active_mon(sslot as usize).is_some_and(|m| m.is_alive()) {
             return;
         }
         let Some(t) = self.side(tside).active_mon(tslot as usize) else { return };
@@ -17485,14 +17524,16 @@ self.trigger_emergency_exits();
     }
 
     /// PS `removeLinkedVolatiles` for a leaving trapper (sim/pokemon.ts
-    /// clearVolatile): its foes' `trapped` ends.
+    /// clearVolatile): the `trapped` it linked ends, on either side (Mean
+    /// Look / Block can target an ally).
     fn release_linked_traps(&mut self, side: SideRef, idx: u8) {
         let payload = ((side as u32) << 16) | idx as u32;
-        let foe = side.opposing();
-        for slot in 0..self.format().active_count() {
-            if let Some(m) = self.side_mut(foe).active_mon_mut(slot) {
-                if m.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| v.payload == payload) {
-                    m.volatiles.remove(crate::pokemon::VolatileKind::Trapped);
+        for s in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(m) = self.side_mut(s).active_mon_mut(slot) {
+                    if m.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| v.payload == payload) {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::Trapped);
+                    }
                 }
             }
         }
@@ -20419,6 +20460,39 @@ self.trigger_emergency_exits();
                 // (data/moves.ts magicpowder onHit).
                 pmon!(self, "-start", ts, tslot, "|typechange|Psychic");
             }
+            data::move_id::FAIRYLOCK => {
+                // PS data/moves.ts:5050 fairylock: `pseudoWeather:
+                // 'fairylock'`, duration 2; addPseudoWeather fails while it
+                // is up (no onFieldRestart, sim/field.ts:186-199), so the
+                // move `-fail`s (status_move_result). onFieldStart prints
+                // `-fieldactivate|move: Fairy Lock`. Trap: `is_trapped`.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fairy_Lock_(move)>.
+                if self.fairy_lock_turns == 0 {
+                    self.fairy_lock_turns = 2;
+                    plog!(self, "|-fieldactivate|move: Fairy Lock");
+                }
+            }
+            data::move_id::MEANLOOK | data::move_id::BLOCK => {
+                // PS data/moves.ts:11492 meanlook / :1511 block: accuracy
+                // true, no `protect` flag (goes through Protect), reflectable;
+                // onHit `return target.addVolatile('trapped', source, move,
+                // 'trapper')`. A Substitute stops it (no bypasssub: substitute
+                // onTryPrimaryHit `-fail`). addVolatile fails on an existing
+                // `trapped` and on a Ghost (runStatusImmunity('trapped'),
+                // data/typechart.ts; no `-immune`, the move has no `status`),
+                // so runMoveEffects prints `-fail` (status_move_result). The
+                // trap (data/conditions.ts trapped onTrapPokemon) lasts while
+                // the source stays in: `is_trapped`, `release_linked_traps`.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mean_Look_(move)>,
+                // <https://bulbapedia.bulbagarden.net/wiki/Block_(move)>.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                    self.ps_status_failed();
+                    return;
+                }
+                self.apply_move_trap(ts, tslot, actor_side, actor_slot);
+            }
             data::move_id::OCTOLOCK => {
                 // PS data/moves.ts:12960 octolock (re-enabled by
                 // data/mods/champions/moves.ts:703). onTryImmunity:
@@ -21979,7 +22053,7 @@ struct StatusEffectSnapshot {
     mons: [[MonEffectSnapshot; 2]; 2],
     sides: [crate::side::SideConditions; 2],
     active: [[u8; 2]; 2],
-    field: [u8; 4],
+    field: [u8; 5],
     weather: crate::weather::Weather,
     terrain: crate::terrain::Terrain,
     pending: [u8; 4],
@@ -50157,3 +50231,12 @@ mod r10_tests;
 #[cfg(test)]
 #[path = "battle_r11_tests.rs"]
 mod r11_tests;
+
+/// serde `skip_serializing_if` for a counter that is new to the format.
+pub(crate) fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+#[cfg(test)]
+#[path = "battle_trap_tests.rs"]
+mod trap_tests;
