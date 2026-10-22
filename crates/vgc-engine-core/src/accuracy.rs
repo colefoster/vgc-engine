@@ -98,7 +98,8 @@ pub(crate) fn effective_accuracy(
     // them.
     let protect_blocked = m.blocked_by_protect && ((battle.side(tside).conditions.wide_guard_this_turn
         && matches!(m.target, 5 | 6 | 11))
-        || (battle.side(tside).conditions.quick_guard_this_turn && m.priority > 0)
+        || (battle.side(tside).conditions.quick_guard_this_turn
+            && crate::order::effective_move_priority(battle, attacker, move_id, m.priority as i32, m.category) > 0)
         || (battle.side(tside).conditions.mat_block_this_turn
             && damaging
             && is_targeting_move(m.target))
