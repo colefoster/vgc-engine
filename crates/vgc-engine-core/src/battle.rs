@@ -15362,7 +15362,8 @@ self.trigger_emergency_exits();
                 return true;
             }
         }
-        // Spirit Shackle's `trapped` (data/conditions.ts onTrapPokemon).
+        // The move-trap `trapped` volatile (Spirit Shackle, Mean Look,
+        // Block, Jaw Lock; data/conditions.ts trapped onTrapPokemon).
         if let Some(v) = mon.volatiles.get(crate::pokemon::VolatileKind::Trapped) {
             if self.trap_source_active(v.payload) {
                 return true;
@@ -17447,11 +17448,13 @@ self.trigger_emergency_exits();
         (0..self.format().active_count()).any(|slot| s.active[slot] == idx && s.active_mon(slot).is_some_and(|m| m.is_alive()))
     }
 
-    /// `target.addVolatile('trapped', source, move, 'trapper')`: see the
-    /// Spirit Shackle arm of `apply_secondary_effect`.
+    /// `target.addVolatile('trapped', source, move, 'trapper')` (Spirit
+    /// Shackle's secondary, Mean Look / Block / Jaw Lock onHit). Fails on a
+    /// fainted target or source (`linkedStatus && !source.hp`), an existing
+    /// `trapped`, and a Ghost (runStatusImmunity, sim/pokemon.ts:1969-1990).
     fn apply_move_trap(&mut self, tside: SideRef, tslot: u8, sside: SideRef, sslot: u8) {
         let src_idx = self.side(sside).active[sslot as usize];
-        if self.side(sside).active_mon(sslot as usize).is_none() {
+        if !self.side(sside).active_mon(sslot as usize).is_some_and(|m| m.is_alive()) {
             return;
         }
         let Some(t) = self.side(tside).active_mon(tslot as usize) else { return };
@@ -17469,14 +17472,16 @@ self.trigger_emergency_exits();
     }
 
     /// PS `removeLinkedVolatiles` for a leaving trapper (sim/pokemon.ts
-    /// clearVolatile): its foes' `trapped` ends.
+    /// clearVolatile): the `trapped` it linked ends, on either side (Mean
+    /// Look / Block can target an ally).
     fn release_linked_traps(&mut self, side: SideRef, idx: u8) {
         let payload = ((side as u32) << 16) | idx as u32;
-        let foe = side.opposing();
-        for slot in 0..self.format().active_count() {
-            if let Some(m) = self.side_mut(foe).active_mon_mut(slot) {
-                if m.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| v.payload == payload) {
-                    m.volatiles.remove(crate::pokemon::VolatileKind::Trapped);
+        for s in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(m) = self.side_mut(s).active_mon_mut(slot) {
+                    if m.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| v.payload == payload) {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::Trapped);
+                    }
                 }
             }
         }
@@ -20402,6 +20407,27 @@ self.trigger_emergency_exits();
                 // `this.add('-start', target, 'typechange', 'Psychic')`
                 // (data/moves.ts magicpowder onHit).
                 pmon!(self, "-start", ts, tslot, "|typechange|Psychic");
+            }
+            data::move_id::MEANLOOK | data::move_id::BLOCK => {
+                // PS data/moves.ts:11492 meanlook / :1511 block: accuracy
+                // true, no `protect` flag (goes through Protect), reflectable;
+                // onHit `return target.addVolatile('trapped', source, move,
+                // 'trapper')`. A Substitute stops it (no bypasssub: substitute
+                // onTryPrimaryHit `-fail`). addVolatile fails on an existing
+                // `trapped` and on a Ghost (runStatusImmunity('trapped'),
+                // data/typechart.ts; no `-immune`, the move has no `status`),
+                // so runMoveEffects prints `-fail` (status_move_result). The
+                // trap (data/conditions.ts trapped onTrapPokemon) lasts while
+                // the source stays in: `is_trapped`, `release_linked_traps`.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mean_Look_(move)>,
+                // <https://bulbapedia.bulbagarden.net/wiki/Block_(move)>.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                    self.ps_status_failed();
+                    return;
+                }
+                self.apply_move_trap(ts, tslot, actor_side, actor_slot);
             }
             data::move_id::OCTOLOCK => {
                 // PS data/moves.ts:12960 octolock (re-enabled by
@@ -50136,3 +50162,7 @@ mod r10_tests;
 #[cfg(test)]
 #[path = "battle_r11_tests.rs"]
 mod r11_tests;
+
+#[cfg(test)]
+#[path = "battle_trap_tests.rs"]
+mod trap_tests;
