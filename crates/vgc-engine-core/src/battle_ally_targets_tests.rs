@@ -105,14 +105,16 @@ fn ally_choices_follow_the_moves_foe_choices() {
 }
 
 #[test]
-fn no_ally_when_fainted_or_commanding() {
+fn fainted_or_commanding_partner_is_still_offered() {
+    // PS validTargetLoc / chooseMove never look at the partner's state
+    // (sim/battle.ts:2399-2429); the move then fails or misses.
     let mut b = doubles(true);
     b.p1.team[1].current_hp = 0;
     b.p1.team[1].fainted = true;
-    assert!(ally_moves(&b.legal_choices(SideRef::P1, 0), P1B).is_empty(), "fainted ally");
+    assert_eq!(ally_moves(&b.legal_choices(SideRef::P1, 0), P1B).len(), 4, "fainted partner");
     let mut b = doubles(true);
     b.p1.team[1].commanding = true;
-    assert!(ally_moves(&b.legal_choices(SideRef::P1, 0), P1B).is_empty(), "commanding ally");
+    assert_eq!(ally_moves(&b.legal_choices(SideRef::P1, 0), P1B).len(), 4, "commanding partner");
 }
 
 #[test]
@@ -191,4 +193,26 @@ fn ally_targeted_tackle_hits_the_partner() {
     );
     assert!(b.p1.team[1].current_hp < hp, "partner took the Tackle");
     assert_eq!([b.p2.team[0].current_hp, b.p2.team[1].current_hp], foe_hp);
+}
+
+#[test]
+fn status_move_at_fainted_or_commanding_partner_does_nothing() {
+    // sim/battle.ts:2464-2476 keeps the partner as the target: a fainted one
+    // fails the move (sim/battle-actions.ts:510-513), a commanding one makes
+    // it miss (sim/battle-actions.ts:625). Neither retargets a foe.
+    let p1 = r#"[{"species":"staraptor","level":50,"moves":["charm"]},{"species":"snorlax","level":50,"moves":["tackle"]}]"#;
+    for commanding in [false, true] {
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(P2).unwrap());
+        if commanding {
+            b.p1.team[1].commanding = true;
+        } else {
+            b.p1.team[1].current_hp = 0;
+            b.p1.team[1].fainted = true;
+        }
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(P1B) }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!([b.p2.team[0].boosts[0], b.p2.team[1].boosts[0], b.p1.team[1].boosts[0]], [0, 0, 0], "commanding={commanding}");
+    }
 }

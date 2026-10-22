@@ -2646,11 +2646,13 @@ impl Battle {
             // the request's (effective) target (sim/side.ts:594, sim/pokemon.ts:
             // 997-1008) with validTargetLoc (sim/battle.ts:2416-2428):
             // `normal` = adjacent, `any` = not self; `adjacentFoe` never the
-            // ally. Gated alive + not commanding like the foes above.
+            // ally. It does not look at the partner's state: a fainted
+            // partner (sim/battle.ts:2471-2476 keeps it, the move fails) or a
+            // commanding one (sim/battle-actions.ts:625, the move misses) is
+            // still a valid pick.
             if self.ally_targets
                 && self.config.format.active_count() == 2
                 && matches!(self.effective_move_target(active, move_id), 0 | 10)
-                && s.active_mon(1 - actor_slot as usize).is_some_and(|m| m.is_alive() && !m.commanding)
             {
                 let target = Some(Target { side, slot: 1 - actor_slot });
                 out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
@@ -18151,6 +18153,31 @@ self.trigger_emergency_exits();
         // (hazards, screens) read `opp_side` directly. A bounced move
         // (PR-335) overrides the slot pick via `forced_target`.
         let opp_side = actor_side.opposing();
+        // A `normal` / `any` status move aimed at the partner keeps it as the
+        // target (sim/battle.ts:2464-2476 getTarget): a fainted partner fails
+        // the move with `[notarget]` + `-fail` (sim/battle-actions.ts:510-513),
+        // a commanding one makes it miss (sim/battle-actions.ts:625).
+        if forced_target.is_none() && matches!(m.target, 0 | 10) {
+            if let Some(t) = target.filter(|t| t.side == actor_side && t.slot != actor_slot) {
+                match self.side(t.side).active_mon(t.slot as usize).map(|p| (p.is_alive(), p.commanding)) {
+                    Some((false, _)) => {
+                        if self.plog() {
+                            self.p_retarget(t.side, t.slot);
+                            self.p_attr("[notarget]");
+                            pmon!(self, "-fail", actor_side, actor_slot);
+                        }
+                        self.ps_status_failed();
+                        return;
+                    }
+                    Some((true, true)) => {
+                        self.p_miss(actor_side, actor_slot, t.side, t.slot);
+                        self.ps_status_failed();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
         let opp_target = match forced_target {
             Some((ts, tslot))
                 if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) =>
@@ -22522,10 +22549,12 @@ fn enumerate_targets(
                 // so the move fails with `[notarget]` (sim/battle-actions.ts:510-513).
                 // The caller fails it unless a redirect takes the move
                 // (sim/pokemon.ts:822-840).
-                let ally_fainted = t.side == actor_side
+                // A commanding partner stays the target too; the hit step
+                // makes the move miss it (sim/battle-actions.ts:625).
+                let ally_kept = t.side == actor_side
                     && t.slot != actor_slot
-                    && battle.side(t.side).active_mon(t.slot as usize).is_some_and(|m| !m.is_alive());
-                if ally_fainted && matches!(m.target, 0 | 10) {
+                    && battle.side(t.side).active_mon(t.slot as usize).is_some_and(|m| !m.is_alive() || m.commanding);
+                if ally_kept && matches!(m.target, 0 | 10) {
                     return TargetBuf::single((t.side, t.slot));
                 }
             }
