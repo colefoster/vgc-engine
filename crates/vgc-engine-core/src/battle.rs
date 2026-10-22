@@ -7508,17 +7508,8 @@ self.trigger_emergency_exits();
         //   <https://bulbapedia.bulbagarden.net/wiki/Queenly_Majesty_(Ability)>
         //   <https://bulbapedia.bulbagarden.net/wiki/Armor_Tail_(Ability)>
         {
-            // Effective priority — mirror order.rs's integer bumps.
-            let mut eff_priority = m.priority as i32;
-            if m.category == 2 && attacker.effective_ability_id() == data::ability_id::PRANKSTER {
-                eff_priority += 1;
-            }
-            if move_id == data::move_id::GRASSYGLIDE
-                && matches!(self.terrain, crate::terrain::Terrain::Grassy)
-                && attacker.is_grounded()
-            {
-                eff_priority += 1;
-            }
+            // Effective priority — the same value the order sort used.
+            let eff_priority = crate::order::effective_move_priority(self, &attacker, move_id, m.priority as i32, m.category);
             if eff_priority > 0 {
                 let opp = actor_side.opposing();
                 // Does the move reach the protected (opposing) side? PS's
@@ -8395,14 +8386,14 @@ self.trigger_emergency_exits();
             // opponent — PS data/moves.ts:psychicterrain `onTryHit`
             // (priority 4): the move does nothing to that target. Damaging
             // priority moves (Quick Attack, Fake Out, Sucker Punch, Bullet
-            // Punch, Ice Shard, Aqua Jet, Extreme Speed, …) never gain a
-            // priority bump here — Prankster only lifts Status moves and
-            // Grassy Glide can't co-occur with Psychic Terrain — so the
-            // move's base priority IS its effective priority. Allies/self
-            // (`tside == actor_side`) and semi-invulnerable targets (already
-            // `continue`d above) are exempt. Checked before the accuracy
-            // roll so no PRNG draw is consumed, matching the Protect path.
-            if m.priority > 0
+            // Punch, Ice Shard, Aqua Jet, Extreme Speed, …) and moves lifted
+            // by ModifyPriority (Triage drain moves) are blocked: PS reads
+            // `move.priority`, see `order::effective_move_priority`.
+            // Allies/self (`tside == actor_side`) and semi-invulnerable
+            // targets (already `continue`d above) are exempt. Checked before
+            // the accuracy roll so no PRNG draw is consumed, matching the
+            // Protect path.
+            if crate::order::effective_move_priority(self, &attacker, move_id, m.priority as i32, m.category) > 0
                 && matches!(self.terrain, crate::terrain::Terrain::Psychic)
                 && tside != actor_side
                 && defender.is_grounded()
@@ -10640,8 +10631,7 @@ self.trigger_emergency_exits();
             }
         }
         // Psychic Terrain — PS data/moves.ts:psychicterrain onTryHit.
-        let eff_priority = m.priority as i32
-            + if attacker.effective_ability_id() == data::ability_id::PRANKSTER { 1 } else { 0 };
+        let eff_priority = crate::order::effective_move_priority(self, attacker, move_id, m.priority as i32, m.category);
         if eff_priority > 0
             && matches!(self.terrain, crate::terrain::Terrain::Psychic)
             && is_targeting_move(m.target)
