@@ -1,0 +1,367 @@
+{
+  "ok": true,
+  "name": "ally-target-beatup-justified",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Umbreon",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Arcanine",
+      "hp": 165,
+      "max": 165
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Corviknight",
+      "hp": 173,
+      "max": 173
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Beat Up",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 158,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 149,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 140,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 130,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Tackle",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 146,
+      "max": 173,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Beat Up",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 123,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "boost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 114,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "boost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 104,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "crit",
+      "actor": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 88,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 15,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 3,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 5,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": true,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 7,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792675455\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Umbreon, L50, M|\n|poke|p1|Arcanine, L50, M|\n|poke|p1|Machamp, L50, M|\n|poke|p1|Heracross, L50, M|\n|poke|p2|Corviknight, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Audino, L50, F|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1792675455\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Umbreon|Umbreon, L50, M|170/170\n|switch|p1b: Arcanine|Arcanine, L50, M|165/165\n|switch|p2a: Corviknight|Corviknight, L50, M|173/173\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|-ability|p2a: Corviknight|Pressure\n|turn|1|\n|t:|1792675455\n|move|p1b: Arcanine|Splash|p1b: Arcanine\n|-nothing\n|move|p2a: Corviknight|Splash|p2a: Corviknight\n|-nothing\n|move|p1a: Umbreon|Beat Up|p1b: Arcanine\n|debug|BP for Umbreon hit: 11\n|-damage|p1b: Arcanine|158/165\n|-ability|p1b: Arcanine|Justified|boost\n|-boost|p1b: Arcanine|atk|1\n|debug|BP for Arcanine hit: 16\n|-damage|p1b: Arcanine|149/165\n|-ability|p1b: Arcanine|Justified|boost\n|-boost|p1b: Arcanine|atk|1\n|debug|BP for Machamp hit: 18\n|-damage|p1b: Arcanine|140/165\n|-ability|p1b: Arcanine|Justified|boost\n|-boost|p1b: Arcanine|atk|1\n|debug|BP for Heracross hit: 17\n|-damage|p1b: Arcanine|130/165\n|-ability|p1b: Arcanine|Justified|boost\n|-boost|p1b: Arcanine|atk|1\n|-hitcount|p1b: Arcanine|4\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1792675455\n|move|p1b: Arcanine|Tackle|p2a: Corviknight\n|-resisted|p2a: Corviknight\n|-damage|p2a: Corviknight|146/173\n|move|p2a: Corviknight|Splash|p2a: Corviknight\n|-nothing\n|move|p1a: Umbreon|Splash|p1a: Umbreon\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1792675455\n|move|p1b: Arcanine|Splash|p1b: Arcanine\n|-nothing\n|move|p2a: Corviknight|Splash|p2a: Corviknight\n|-nothing\n|move|p1a: Umbreon|Beat Up|p1b: Arcanine\n|debug|BP for Umbreon hit: 11\n|-damage|p1b: Arcanine|123/165\n|-ability|p1b: Arcanine|Justified|boost\n|-boost|p1b: Arcanine|atk|1\n|debug|BP for Arcanine hit: 16\n|-damage|p1b: Arcanine|114/165\n|-ability|p1b: Arcanine|Justified|boost\n|-boost|p1b: Arcanine|atk|1\n|debug|BP for Machamp hit: 18\n|-damage|p1b: Arcanine|104/165\n|debug|BP for Heracross hit: 17\n|-crit|p1b: Arcanine\n|-damage|p1b: Arcanine|88/165\n|-hitcount|p1b: Arcanine|4\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|4"
+}

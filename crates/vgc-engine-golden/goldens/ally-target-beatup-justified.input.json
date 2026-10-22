@@ -1,0 +1,30 @@
+{
+  "name": "ally-target-beatup-justified",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Umbreon (M)\nAbility: Synchronize\nLevel: 50\nHardy Nature\n- Beat Up\n- Splash\n\nArcanine (M)\nAbility: Justified\nLevel: 50\nHardy Nature\n- Tackle\n- Splash\n\nMachamp (M)\nAbility: Guts\nLevel: 50\n- Splash\n\nHeracross (M)\nAbility: Guts\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Corviknight (M)\nAbility: Pressure\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 -2, move 2",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 2, move 1 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 1 -2, move 2",
+      "p2": "move 1, move 1"
+    }
+  ]
+}
