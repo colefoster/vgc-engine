@@ -408,9 +408,10 @@ pub struct Battle {
     /// fairylock pseudoWeather, duration 2: set during turn N, it ticks at
     /// that turn's residual and ends at turn N+1's, so every active mon is
     /// trapped (onTrapPokemon tryTrap; Ghost / Shed Shell escape) for the
-    /// choice of turn N+1 only. Silent end (no onFieldEnd). Not serialized
-    /// while 0, so Fairy-Lock-free battle JSON is unchanged.
-    #[serde(default, skip_serializing_if = "crate::battle::is_zero_u8")]
+    /// choice of turn N+1 only. Silent end (no onFieldEnd). Always
+    /// serialized: `skip_serializing_if` breaks non-self-describing formats
+    /// (bincode `to_bytes`/`from_bytes`). `default` keeps older JSON loading.
+    #[serde(default)]
     pub fairy_lock_turns: u8,
     /// Transient within-turn action-queue reorder request set by After You /
     /// Quash and consumed by the `step` action loop after each move

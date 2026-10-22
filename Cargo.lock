@@ -817,6 +817,7 @@ dependencies = [
 name = "vgc-engine-core"
 version = "0.0.1"
 dependencies = [
+ "bincode",
  "serde",
  "serde_json",
  "vgc-engine-data",
