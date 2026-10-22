@@ -1,0 +1,16 @@
+{
+  "name": "ally-target-normal-any-damage",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Togekiss (F)\nAbility: Hustle\nLevel: 50\nHardy Nature\n- Dark Pulse\n- Air Slash\n- Splash\n\nMachamp (M)\nAbility: Guts\nLevel: 50\nHardy Nature\n- Tackle\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Blissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 -2, move 1 -1", "p2": "move 1, move 1" },
+    { "p1": "move 2 -2, move 1 1", "p2": "move 1, move 1" },
+    { "p1": "move 1 2, move 1 -1", "p2": "move 1, move 1" }
+  ]
+}

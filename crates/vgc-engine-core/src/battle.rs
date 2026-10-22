@@ -330,6 +330,13 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
+    /// Opt-in: `legal_choices` also offers the adjacent ally as the target
+    /// of a `normal` / `any` move in doubles, as PS accepts (`move N -1/-2`,
+    /// sim/battle.ts:2399-2429 validTargetLoc). Off by default: turning it
+    /// on changes the action space. Clones keep it; serialized snapshots
+    /// don't (skipped so `to_json` / bincode bytes stay unchanged).
+    #[serde(skip)]
+    pub ally_targets: bool,
     /// Set while a batched SwitchIn's abilities run: White Herb's
     /// onAnySwitchIn (priority -2, data/items.ts:7692) waits until every
     /// ability handler (Intimidate, priority 0) has run.
@@ -835,6 +842,7 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
+            ally_targets: false,
             defer_white_herb: false,
             white_herb_move_defer: false,
             disguise_hit_this_move: false,
@@ -2352,6 +2360,25 @@ impl Battle {
         Some(self.locked_move_choice(side, Choice::Move { actor_slot, move_slot, target: None }))
     }
 
+    /// The move's target as PS's move request states it (sim/pokemon.ts:
+    /// 997-1008 getMoves): Curse is `self` for a non-Ghost, Pollen Puff is
+    /// `adjacentFoe` for a heal-blocked user, else the data target. A
+    /// `build.rs` target code.
+    pub(crate) fn effective_move_target(&self, mon: &Pokemon, move_id: u16) -> u8 {
+        match move_id {
+            data::move_id::CURSE => {
+                let (types, n) = mon.effective_types();
+                if types[..n as usize].contains(&13) {
+                    self.moves()[move_id as usize].target
+                } else {
+                    1
+                }
+            }
+            data::move_id::POLLENPUFF if mon.heal_block_turns() > 0 => 4,
+            _ => self.moves()[move_id as usize].target,
+        }
+    }
+
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let mut out = Vec::with_capacity(8);
         self.legal_choices_into(side, actor_slot, &mut out);
@@ -2613,6 +2640,30 @@ impl Battle {
                 }
                 if can_mega {
                     out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target: None });
+                }
+            }
+            // Opt-in partner target, after this move's other choices so
+            // first-choice consumers still pick a foe. PS validates against
+            // the request's (effective) target (sim/side.ts:594, sim/pokemon.ts:
+            // 997-1008) with validTargetLoc (sim/battle.ts:2416-2428):
+            // `normal` = adjacent, `any` = not self, `adjacentAllyOrSelf`
+            // (Acupressure; its targetless choice above is the user) = ally
+            // or self; `adjacentFoe` never the ally. It does not look at the
+            // partner's state: a fainted
+            // partner (sim/battle.ts:2471-2476 keeps it, the move fails) or a
+            // commanding one (sim/battle-actions.ts:625, the move misses) is
+            // still a valid pick.
+            if self.ally_targets
+                && self.config.format.active_count() == 2
+                && matches!(self.effective_move_target(active, move_id), 0 | 3 | 10)
+            {
+                let target = Some(Target { side, slot: 1 - actor_slot });
+                out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
+                if can_tera {
+                    out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target });
+                }
+                if can_mega {
+                    out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target });
                 }
             }
         }
@@ -18105,6 +18156,32 @@ self.trigger_emergency_exits();
         // (hazards, screens) read `opp_side` directly. A bounced move
         // (PR-335) overrides the slot pick via `forced_target`.
         let opp_side = actor_side.opposing();
+        // A `normal` / `any` status move aimed at the partner keeps it as the
+        // target (sim/battle.ts:2464-2476 getTarget): a fainted partner fails
+        // the move with `[notarget]` + `-fail` (sim/battle-actions.ts:510-513),
+        // a commanding one makes it miss (sim/battle-actions.ts:625).
+        // Ghost Curse is exempt: its onModifyMove re-picks a foe first.
+        if forced_target.is_none() && matches!(m.target, 0 | 10) && move_id != data::move_id::CURSE {
+            if let Some(t) = target.filter(|t| t.side == actor_side && t.slot != actor_slot) {
+                match self.side(t.side).active_mon(t.slot as usize).map(|p| (p.is_alive(), p.commanding)) {
+                    Some((false, _)) => {
+                        if self.plog() {
+                            self.p_retarget(t.side, t.slot);
+                            self.p_attr("[notarget]");
+                            pmon!(self, "-fail", actor_side, actor_slot);
+                        }
+                        self.ps_status_failed();
+                        return;
+                    }
+                    Some((true, true)) => {
+                        self.p_miss(actor_side, actor_slot, t.side, t.slot);
+                        self.ps_status_failed();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
         let opp_target = match forced_target {
             Some((ts, tslot))
                 if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) =>
@@ -20100,6 +20177,19 @@ self.trigger_emergency_exits();
                                 .is_some_and(|mm| mm.is_alive()) =>
                     {
                         Some((t.side, t.slot))
+                    }
+                    // Aimed at the partner: curse onModifyMove makes it
+                    // randomNormal (data/moves.ts curse), so useMoveInner
+                    // re-picks a random foe twice, after the singleEvent and
+                    // again after the runEvent ModifyMove; the second pick
+                    // stands (sim/battle-actions.ts:430-442).
+                    Some(t) if forced_target.is_none() && t.side == actor_side && t.slot != actor_slot => {
+                        let _ = self.random_target_for(actor_side, actor_slot, move_id);
+                        let pick = self.random_target_for(actor_side, actor_slot, move_id).map(|t| (t.side, t.slot));
+                        if let Some((ps, pslot)) = pick {
+                            self.p_retarget(ps, pslot);
+                        }
+                        pick
                     }
                     _ => opp_target,
                 };
@@ -22476,10 +22566,12 @@ fn enumerate_targets(
                 // so the move fails with `[notarget]` (sim/battle-actions.ts:510-513).
                 // The caller fails it unless a redirect takes the move
                 // (sim/pokemon.ts:822-840).
-                let ally_fainted = t.side == actor_side
+                // A commanding partner stays the target too; the hit step
+                // makes the move miss it (sim/battle-actions.ts:625).
+                let ally_kept = t.side == actor_side
                     && t.slot != actor_slot
-                    && battle.side(t.side).active_mon(t.slot as usize).is_some_and(|m| !m.is_alive());
-                if ally_fainted && matches!(m.target, 0 | 10) {
+                    && battle.side(t.side).active_mon(t.slot as usize).is_some_and(|m| !m.is_alive() || m.commanding);
+                if ally_kept && matches!(m.target, 0 | 10) {
                     return TargetBuf::single((t.side, t.slot));
                 }
             }
@@ -50240,3 +50332,7 @@ pub(crate) fn is_zero_u8(v: &u8) -> bool {
 #[cfg(test)]
 #[path = "battle_trap_tests.rs"]
 mod trap_tests;
+
+#[cfg(test)]
+#[path = "battle_ally_targets_tests.rs"]
+mod ally_targets_tests;

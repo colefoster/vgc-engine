@@ -173,6 +173,12 @@ impl PsSession {
         &self.base
     }
 
+    /// Set the battle's opt-in [`Battle::ally_targets`] flag (it only
+    /// changes `legal_choices`; PS choice strings may always target the ally).
+    pub fn set_ally_targets(&mut self, on: bool) {
+        self.base.ally_targets = on;
+    }
+
     pub fn is_ended(&self) -> bool {
         self.ended
     }
@@ -416,6 +422,7 @@ impl PsSession {
                 });
                 let mut b = (self.builder)(Some(&picks));
                 b.decision_phases = true;
+                b.ally_targets = self.base.ally_targets;
                 let k0 = 1;
                 self.settle(b, k0, None);
             }

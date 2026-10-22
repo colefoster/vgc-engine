@@ -1,0 +1,34 @@
+{
+  "name": "ally-target-commanding-partner",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Dondozo (M)\nAbility: Unaware\nLevel: 50\nHardy Nature\n- Tackle\n- Splash\n- Charm\n\nTatsugiri (M)\nAbility: Commander\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Blissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 -2, pass",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 1 1, pass",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 3 -2, pass",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 3 2, pass",
+      "p2": "move 1, move 1"
+    }
+  ]
+}

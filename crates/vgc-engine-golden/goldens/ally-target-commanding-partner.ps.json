@@ -1,0 +1,219 @@
+{
+  "ok": true,
+  "name": "ally-target-commanding-partner",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 4,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Dondozo",
+      "hp": 225,
+      "max": 225
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Tatsugiri",
+      "hp": 143,
+      "max": 143
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 0,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "spa",
+      "amount": 2
+    },
+    {
+      "turn": 0,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "spe",
+      "amount": 2
+    },
+    {
+      "turn": 0,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "def",
+      "amount": 2
+    },
+    {
+      "turn": 0,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "spd",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tackle",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "miss",
+      "source": "p1a",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tackle",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 203,
+      "max": 330,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Charm",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "miss",
+      "source": "p1a",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Charm",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "unboost",
+      "actor": "p2b",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792677102\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Dondozo, L50, M|\n|poke|p1|Tatsugiri, L50, M|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Audino, L50, F|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1792677102\n|teamsize|p1|2\n|teamsize|p2|4\n|start\n|switch|p1a: Dondozo|Dondozo, L50, M|225/225\n|switch|p1b: Tatsugiri|Tatsugiri, L50, M|143/143\n|switch|p2a: Blissey|Blissey, L50, F|330/330\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|-activate|p1b: Tatsugiri|ability: Commander|[of] p1a: Dondozo\n|-boost|p1a: Dondozo|atk|2\n|-boost|p1a: Dondozo|spa|2\n|-boost|p1a: Dondozo|spe|2\n|-boost|p1a: Dondozo|def|2\n|-boost|p1a: Dondozo|spd|2\n|turn|1|\n|t:|1792677102\n|move|p1a: Dondozo|Tackle|p1b: Tatsugiri|[miss]\n|-miss|p1a: Dondozo|p1b: Tatsugiri\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1792677102\n|move|p1a: Dondozo|Tackle|p2a: Blissey\n|-damage|p2a: Blissey|203/330\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1792677102\n|move|p1a: Dondozo|Charm|p1b: Tatsugiri|[miss]\n|-miss|p1a: Dondozo|p1b: Tatsugiri\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|4|\n|t:|1792677102\n|move|p1a: Dondozo|Charm|p2b: Chansey\n|-unboost|p2b: Chansey|atk|2\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|5"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "mega-variants",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Charizard @ Charizardite Y\nAbility: Blaze\nLevel: 50\nHardy Nature\n- Flare Blitz\n- Dragon Claw\n- Protect\n\nGardevoir @ Gardevoirite\nAbility: Trace\nLevel: 50\nHardy Nature\n- Moonblast\n- Pollen Puff\n- Protect\n\nIncineroar\nAbility: Intimidate\nLevel: 50\nHardy Nature\n- Fake Out\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nHardy Nature\n- Earthquake"
+  },
+  "p2": {
+    "team": "Amoonguss\nAbility: Regenerator\nLevel: 50\nHardy Nature\n- Spore\n- Pollen Puff\n\nKingambit\nAbility: Defiant\nLevel: 50\nHardy Nature\n- Kowtow Cleave\n\nWhimsicott\nAbility: Prankster\nLevel: 50\nHardy Nature\n- Tailwind\n\nDragonite\nAbility: Multiscale\nLevel: 50\nHardy Nature\n- Extreme Speed"
+  },
+  "turns": []
+}
