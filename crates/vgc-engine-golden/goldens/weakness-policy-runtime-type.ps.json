@@ -1,0 +1,253 @@
+{
+  "ok": true,
+  "name": "weakness-policy-runtime-type",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Sylveon",
+      "hp": 202,
+      "max": 202
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Machamp",
+      "hp": 197,
+      "max": 197
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Conkeldurr",
+      "hp": 212,
+      "max": 212
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Kangaskhan",
+      "hp": 212,
+      "max": 212
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tri Attack",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 38,
+      "max": 212,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "status",
+      "actor": "p2a",
+      "status": "brn",
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "spa",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Seismic Toss",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 162,
+      "max": 212,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 25,
+      "max": 212,
+      "from": "brn"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Body Slam",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 125,
+      "max": 197,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Crunch",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 168,
+      "max": 202,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "def",
+      "amount": 1
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 12,
+      "max": 212,
+      "from": "brn"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 10,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 31,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 14,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 14,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792676595\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Sylveon, L50, M|\n|poke|p1|Machamp, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Snorlax, L50, F|\n|poke|p2|Conkeldurr, L50, M|\n|poke|p2|Kangaskhan, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Snorlax, L50, F|\n|teampreview|\n|t:|1792676595\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Sylveon|Sylveon, L50, M|202/202\n|switch|p1b: Machamp|Machamp, L50, F|197/197\n|switch|p2a: Conkeldurr|Conkeldurr, L50, M|212/212\n|switch|p2b: Kangaskhan|Kangaskhan, L50, F|212/212\n|turn|1|\n|t:|1792676595\n|move|p2b: Kangaskhan|Splash|p2b: Kangaskhan\n|-nothing\n|move|p1a: Sylveon|Tri Attack|p2a: Conkeldurr\n|-supereffective|p2a: Conkeldurr\n|-damage|p2a: Conkeldurr|38/212\n|-status|p2a: Conkeldurr|brn\n|-enditem|p2a: Conkeldurr|Weakness Policy\n|-boost|p2a: Conkeldurr|atk|2|[from] item: Weakness Policy\n|-boost|p2a: Conkeldurr|spa|2|[from] item: Weakness Policy\n|move|p1b: Machamp|Seismic Toss|p2b: Kangaskhan\n|-damage|p2b: Kangaskhan|162/212\n|move|p2a: Conkeldurr|Splash|p2a: Conkeldurr\n|-nothing\n|\n|-damage|p2a: Conkeldurr|25/212 brn|[from] brn\n|upkeep\n|turn|2|\n|t:|1792676595\n|move|p2b: Kangaskhan|Body Slam|p1b: Machamp\n|-damage|p1b: Machamp|125/197\n|move|p1a: Sylveon|Splash|p1a: Sylveon\n|-nothing\n|move|p1b: Machamp|Splash|p1b: Machamp\n|-nothing\n|move|p2a: Conkeldurr|Crunch|p1a: Sylveon\n|-resisted|p1a: Sylveon\n|-damage|p1a: Sylveon|168/202\n|-unboost|p1a: Sylveon|def|1\n|\n|-damage|p2a: Conkeldurr|12/212 brn|[from] brn\n|upkeep\n|turn|3"
+}

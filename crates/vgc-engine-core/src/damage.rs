@@ -763,6 +763,21 @@ pub fn aura_wheel_type(attacker: &Pokemon) -> u8 {
     }
 }
 
+/// The weather `mon` sees: PS sim/pokemon.ts:2199-2205 Pokemon.effectiveWeather
+/// returns '' for Sun/Rain to a Utility Umbrella holder. `ctx.weather` is the
+/// field weather; each consumer applies the umbrella of the Pokemon PS asks
+/// (the user for Weather Ball / Solar Beam / Solar Power, the target for the
+/// Sun/Rain damage modifier).
+pub(crate) fn weather_for_holder(weather: crate::weather::Weather, mon: &Pokemon) -> crate::weather::Weather {
+    if mon.item_id == data::item_id::UTILITYUMBRELLA
+        && matches!(weather, crate::weather::Weather::Sun | crate::weather::Weather::Rain)
+    {
+        crate::weather::Weather::None
+    } else {
+        weather
+    }
+}
+
 /// The weather a move reads for its own effects: PS sim/pokemon.ts:2193
 /// effectiveWeather reports 'sunnyday' during a Mega Sol user's move.
 fn mega_sol_weather(attacker: &Pokemon, weather: crate::weather::Weather) -> crate::weather::Weather {
@@ -794,7 +809,7 @@ fn base_move_type_in_ctx(
         }
     } else if move_id == data::move_id::WEATHERBALL {
         use crate::weather::Weather;
-        match mega_sol_weather(attacker, ctx.weather) {
+        match mega_sol_weather(attacker, weather_for_holder(ctx.weather, attacker)) {
             Weather::Sun => 1,
             Weather::Rain => 2,
             Weather::Sand => 12,
@@ -937,7 +952,7 @@ pub(crate) fn calculate_damage_with_bp(
         (ttype, bp_local)
     } else if move_id == data::move_id::WEATHERBALL {
         use crate::weather::Weather;
-        match mega_sol_weather(attacker, ctx.weather) {
+        match mega_sol_weather(attacker, weather_for_holder(ctx.weather, attacker)) {
             Weather::Sun => (1u8, 100u32),
             Weather::Rain => (2u8, 100),
             Weather::Sand => (12u8, 100),
@@ -1324,7 +1339,7 @@ pub(crate) fn calculate_damage_with_bp(
     // rain, sand or snow.
     if matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
         && matches!(
-            mega_sol_weather(attacker, ctx.weather),
+            mega_sol_weather(attacker, weather_for_holder(ctx.weather, attacker)),
             crate::weather::Weather::Rain | crate::weather::Weather::Sand | crate::weather::Weather::Snow
         )
     {
@@ -2011,7 +2026,7 @@ pub(crate) fn calculate_damage_with_bp(
     // Charizard / Heliolisk / Sunkern signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
     if !physical
-        && matches!(ctx.weather, crate::weather::Weather::Sun)
+        && matches!(weather_for_holder(ctx.weather, attacker), crate::weather::Weather::Sun)
         && attacker.effective_ability_id() == data::ability_id::SOLARPOWER
     {
         atk_stat = atk_stat * 3 / 2;
@@ -2313,7 +2328,10 @@ pub(crate) fn calculate_damage_with_bp(
     {
         crate::weather::Weather::Sun
     } else {
-        ctx.weather
+        // PS data/conditions.ts:487 raindance / :561 sunnyday
+        // onWeatherModifyDamage read `defender.effectiveWeather()`: only the
+        // TARGET's Utility Umbrella cancels the modifier.
+        weather_for_holder(ctx.weather, defender)
     };
     let (wn, wd) = effective_weather.damage_mult(move_type);
     if wn != wd {

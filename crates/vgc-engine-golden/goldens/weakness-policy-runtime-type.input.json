@@ -1,0 +1,26 @@
+{
+  "name": "weakness-policy-runtime-type",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Sylveon\nAbility: Pixilate\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Tri Attack\n- Splash\n\nMachamp\nAbility: No Guard\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Seismic Toss\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash"
+  },
+  "p2": {
+    "team": "Conkeldurr @ Weakness Policy\nAbility: Iron Fist\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Crunch\n- Splash\n\nKangaskhan @ Weakness Policy\nAbility: Scrappy\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Body Slam\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 1, move 1 2",
+      "p2": "move 2, move 2"
+    },
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 1 1, move 1 2"
+    }
+  ]
+}

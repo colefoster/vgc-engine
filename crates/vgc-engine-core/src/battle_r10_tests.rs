@@ -1319,3 +1319,23 @@ fn alluring_voice_confuses_only_a_target_whose_stats_rose_this_turn() {
         );
     }
 }
+
+#[test]
+fn quick_guard_reads_modified_priority() {
+    // PS data/moves.ts:14514 quickguard `if (move.priority <= 0.1) return;`
+    // on the ModifyPriority-adjusted move.priority: a Prankster Thunder Wave
+    // and a Grassy Glide in Grassy Terrain are blocked.
+    let p2 = r#"[{"species":"conkeldurr","level":50,"ability":"guts","moves":["quickguard"]},{"species":"miltank","level":50,"ability":"scrappy","moves":["splash"]}]"#;
+    let p1 = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["thunderwave"]},{"species":"rillaboom","level":50,"ability":"grassysurge","moves":["grassyglide"]}]"#;
+    for seed in 1..5 {
+        let mut b = doubles(p1, p2, seed);
+        assert!(matches!(b.terrain, crate::terrain::Terrain::Grassy));
+        b.step(
+            &[mv(0, 0, Some(t(SideRef::P2, 1))), mv(1, 0, Some(t(SideRef::P2, 1)))],
+            &[mv(0, 0, None), mv(1, 0, None)],
+        );
+        let miltank = &b.p2.team[1];
+        assert_eq!(miltank.status, crate::pokemon::Status::None, "seed {seed}: Thunder Wave blocked");
+        assert_eq!(miltank.current_hp, miltank.stats.hp, "seed {seed}: Grassy Glide blocked");
+    }
+}

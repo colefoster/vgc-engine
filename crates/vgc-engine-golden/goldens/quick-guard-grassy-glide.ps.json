@@ -1,0 +1,139 @@
+{
+  "ok": true,
+  "name": "quick-guard-grassy-glide",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Rillaboom",
+      "hp": 207,
+      "max": 207
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 142,
+      "max": 142
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Conkeldurr",
+      "hp": 212,
+      "max": 212
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 202,
+      "max": 202
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Quick Guard",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Grassy Glide",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Grassy Glide",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 138,
+      "max": 202,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "heal",
+      "actor": "p2b",
+      "hp": 150,
+      "max": 202,
+      "from": "Grassy Terrain"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792675388\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Rillaboom, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Conkeldurr, L50, F|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1792675388\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Rillaboom|Rillaboom, L50, M|207/207\n|switch|p1b: Pikachu|Pikachu, L50, F|142/142\n|switch|p2a: Conkeldurr|Conkeldurr, L50, F|212/212\n|switch|p2b: Miltank|Miltank, L50, F|202/202\n|-fieldstart|move: Grassy Terrain|[from] ability: Grassy Surge|[of] p1a: Rillaboom\n|turn|1|\n|t:|1792675388\n|move|p2a: Conkeldurr|Quick Guard|p2a: Conkeldurr\n|-singleturn|p2a: Conkeldurr|Quick Guard\n|move|p1a: Rillaboom|Grassy Glide|p2b: Miltank\n|-activate|p2b: Miltank|move: Quick Guard\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1792675388\n|move|p1a: Rillaboom|Grassy Glide|p2b: Miltank\n|debug|grassy terrain boost\n|-damage|p2b: Miltank|138/202\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2a: Conkeldurr|Splash|p2a: Conkeldurr\n|-nothing\n|\n|-heal|p2b: Miltank|150/202|[from] Grassy Terrain\n|upkeep\n|turn|3"
+}
