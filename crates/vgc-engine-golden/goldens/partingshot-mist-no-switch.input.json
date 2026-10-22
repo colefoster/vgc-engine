@@ -1,0 +1,17 @@
+{
+  "name": "partingshot-mist-no-switch",
+  "format": "gen9customgame",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "decision_phases": true,
+  "p1": {
+    "team": "Lapras (F)\nAbility: Water Absorb\nLevel: 50\nHardy Nature\nIVs: 0 Spe\n- Mist\n- Tackle"
+  },
+  "p2": {
+    "team": "Incineroar (M)\nAbility: Blaze\nLevel: 50\nJolly Nature\nEVs: 252 Spe\n- Parting Shot\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 2" },
+    { "p1": "move 2", "p2": "move 1", "p2_followups": ["switch 2"] }
+  ]
+}

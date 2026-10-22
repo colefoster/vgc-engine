@@ -1,0 +1,31 @@
+{
+  "name": "pollenpuff-ally-telepathy-healblock",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Ribombee (F)\nAbility: Shield Dust\nLevel: 50\nHardy Nature\n- Pollen Puff\n- Splash\n\nOranguru (M)\nAbility: Telepathy\nLevel: 50\nHardy Nature\nIVs: 0 Spe\n- Pollen Puff\n- Splash"
+  },
+  "p2": {
+    "team": "Mewtwo\nAbility: Pressure\nLevel: 50\nTimid Nature\nEVs: 252 Spe\n- Psychic Noise\n- Tackle\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Tackle\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 2 2, move 1 1"
+    },
+    {
+      "p1": "move 1 -2, move 2",
+      "p2": "move 3, move 2"
+    },
+    {
+      "p1": "move 2, move 1 -1",
+      "p2": "move 1 2, move 2"
+    }
+  ]
+}
