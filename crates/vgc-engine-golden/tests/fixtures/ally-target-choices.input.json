@@ -1,0 +1,12 @@
+{
+  "name": "ally-target-choices",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Staraptor (M)\nAbility: Reckless\nLevel: 50\nTera Type: Flying\nHardy Nature\n- Tackle\n- Brave Bird\n- Me First\n- Earthquake\n\nRibombee (F)\nAbility: Shield Dust\nLevel: 50\nTera Type: Fairy\nHardy Nature\n- Pollen Puff\n- Swords Dance\n- Rock Slide\n- Dark Pulse\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Amoonguss (M)\nAbility: Regenerator\nLevel: 50\nTera Type: Water\nHardy Nature\n- Spore\n- Rage Powder\n- Protect\n- Clear Smog\n\nIndeedee-F\nAbility: Psychic Surge\nLevel: 50\nTera Type: Psychic\nHardy Nature\n- Skill Swap\n- Instruct\n- Dazzling Gleam\n- Expanding Force\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash"
+  },
+  "turns": []
+}
