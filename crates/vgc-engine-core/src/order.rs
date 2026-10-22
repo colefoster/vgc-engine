@@ -596,6 +596,17 @@ pub(crate) fn effective_move_priority(battle: &Battle, m: &Pokemon, mid: u16, ba
     {
         pri += 3;
     }
+    // Gale Wings — PS data/abilities.ts:1588-1590 `if (move?.type ===
+    // 'Flying' && pokemon.hp === pokemon.maxhp) return priority + 1;`. The
+    // type is the dex type: ModifyType runs at use time, after the sort.
+    // https://bulbapedia.bulbagarden.net/wiki/Gale_Wings_(Ability)
+    if m.effective_ability_id() == data::ability_id::GALEWINGS
+        && m.current_hp == m.stats.hp
+        && (mid as usize) < data::MOVES.len()
+        && data::MOVES[mid as usize].type_ == 9
+    {
+        pri += 1;
+    }
     pri
 }
 
@@ -914,6 +925,19 @@ mod tests {
         assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 3);
         assert_eq!(state_priority(&b, SideRef::P1, 0, 1), 0);
         assert_eq!(state_priority(&b, SideRef::P1, 0, 2), 3);
+    }
+
+    #[test]
+    fn gale_wings_lifts_flying_moves_at_full_hp_only() {
+        // PS data/abilities.ts:1588 galewings onModifyPriority.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"talonflame","level":50,"ability":"galewings","moves":["bravebird","flareblitz","roost"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig::default(), p1, p2);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 1);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 1), 0);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 2), 1);
+        b.p1.team[0].current_hp -= 1;
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 0);
     }
 
     fn t(side: SideRef, slot: u8) -> Target {
