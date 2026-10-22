@@ -8328,34 +8328,6 @@ self.trigger_emergency_exits();
             let no_guard_pair = attacker_no_guard
                 || defender.effective_ability_id() == data::ability_id::NOGUARD;
 
-            // Pollen Puff — PS data/moves.ts:pollenpuff.
-            //   onTryHit(target, source) {
-            //     if (source.isAlly(target)) {
-            //       move.basePower = 0;
-            //       move.heal = [1, 2];
-            //     }
-            //   }
-            // When the chosen target is an adjacent ally, the move
-            // heals 50% of the ally's max HP (rounded down) and deals
-            // no damage. We branch here as a slug-special-case to keep
-            // the per-target damage path untouched. A Heal-Blocked ally
-            // gains no HP — PS gates the heal via the ally's `onTryHeal`
-            // (Heal Block returns `null` for Pollen Puff specifically).
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pollen_Puff_(move)>.
-            if move_id == data::move_id::POLLENPUFF && tside == actor_side && tslot != actor_slot {
-                let before = defender.current_hp;
-                if let Some(ally) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                    if ally.is_alive() && ally.current_hp < ally.stats.hp && !ally.is_heal_blocked() {
-                        let heal = (ally.stats.hp / 2).max(1);
-                        ally.current_hp = ally.current_hp.saturating_add(heal).min(ally.stats.hp);
-                    }
-                }
-                if self.side(tside).active_mon(tslot as usize).is_some_and(|a| a.current_hp != before) {
-                    self.p_heal(tside, tslot, "");
-                }
-                continue;
-            }
-
             // Semi-invulnerable defender: dodge unless the incoming move
             // is in the per-state hit-through list. PS
             // `data/moves.ts:fly/dig/dive/bounce/phantomforce/shadowforce`
@@ -9224,6 +9196,27 @@ self.trigger_emergency_exits();
                 c.reflect_turns = 0;
                 c.light_screen_turns = 0;
                 c.aurora_veil_turns = 0;
+            }
+            // Pollen Puff on an ally — PS data/moves.ts:13571-13590: its
+            // onTryHit (basePower 0) runs here, after Protect, the target's
+            // TryHit abilities (Telepathy, data/abilities.ts:4931-4937, and
+            // Bulletproof both stop it) and the accuracy roll; onHit then
+            // heals `Math.floor(target.baseMaxhp * 0.5)` (heal() floors at
+            // 1), failing silently (NOT_FAIL) at full HP or when the ally
+            // is Heal-Blocked (healblock onTryHeal, data/moves.ts:8324).
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pollen_Puff_(move)>.
+            if move_id == data::move_id::POLLENPUFF && tside == actor_side && tslot != actor_slot {
+                let before = defender.current_hp;
+                if let Some(ally) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    if ally.is_alive() && ally.current_hp < ally.stats.hp && !ally.is_heal_blocked() {
+                        let heal = (ally.stats.hp / 2).max(1);
+                        ally.current_hp = ally.current_hp.saturating_add(heal).min(ally.stats.hp);
+                    }
+                }
+                if self.side(tside).active_mon(tslot as usize).is_some_and(|a| a.current_hp != before) {
+                    self.p_heal(tside, tslot, "");
+                }
+                continue;
             }
             // Poltergeist (data/moves.ts:13607-13609).
             if move_id == data::move_id::POLTERGEIST && self.plog() {
@@ -13503,6 +13496,29 @@ self.trigger_emergency_exits();
                 crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
             }
+        }
+
+        // 1g. Pollen Puff — PS data/moves.ts:13577-13583 onTryMove: aimed
+        // at an ally by a Heal-Blocked user it fails (`[still]`, then
+        // `cant`). Only reachable when Heal Block lands earlier in the same
+        // turn (Psychic Noise): a heal-blocked user's request only offers
+        // foes (sim/pokemon.ts:1004-1008). PP is spent, as for Damp.
+        if move_id == data::move_id::POLLENPUFF
+            && attacker.is_heal_blocked()
+            && target.is_some_and(|t| t.side == actor_side && t.slot != actor_slot)
+        {
+            if self.plog() {
+                self.p_attr("[still]");
+                pmon!(self, "cant", actor_side, actor_slot, "|move: Heal Block|{}", m.name);
+            }
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                mon.spend_pp(move_slot, 1 + extra);
+                mon.last_used_move_slot = move_slot;
+                mon.last_used_move_target = enc_target(target);
+            }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
+            return MoveIdentityOutcome::Abort;
         }
 
         // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
