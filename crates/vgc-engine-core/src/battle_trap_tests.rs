@@ -289,3 +289,45 @@ fn jaw_lock_into_a_substitute_traps_nobody() {
     assert!(!b.p1.team[0].volatiles.has(VolatileKind::Trapped));
     assert!(!b.p2.team[0].volatiles.has(VolatileKind::Trapped));
 }
+
+// ---- Fairy Lock ----
+
+#[test]
+fn fairy_lock_traps_every_active_for_the_next_turn_only() {
+    // PS data/moves.ts:5050 fairylock: pseudoWeather duration 2, field
+    // onTrapPokemon tryTrap() on every active; Ghosts are immune.
+    let p1 = r#"[{"species":"klefki","level":50,"ability":"prankster","moves":["fairylock","splash"]},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]},
+        {"species":"blissey","level":50,"ability":"naturalcure","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"rillaboom","level":50,"ability":"overgrow","moves":["splash"]},
+        {"species":"gengar","level":50,"ability":"cursedbody","moves":["splash"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let mut b = logged(Format::Doubles, p1, p2, 1);
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(log_lines(&b).iter().any(|l| l == "|-fieldactivate|move: Fairy Lock"));
+    assert!(!can_switch(&b, SideRef::P1, 0) && !can_switch(&b, SideRef::P1, 1));
+    assert!(!can_switch(&b, SideRef::P2, 0), "Rillaboom locked");
+    assert!(can_switch(&b, SideRef::P2, 1), "Gengar (Ghost) free");
+    let b2: Battle = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+    assert_eq!(b2.fairy_lock_turns, 1, "round-trips");
+    // Used again while it is up: addPseudoWeather fails -> `-fail`.
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let log = log_lines(&b);
+    assert_eq!(log.iter().filter(|l| *l == "|-fieldactivate|move: Fairy Lock").count(), 1, "{log:?}");
+    assert!(log.iter().any(|l| l == "|-fail|p1a: Klefki"), "{log:?}");
+    // It ended at the second turn's residual.
+    assert_eq!(b.fairy_lock_turns, 0);
+    assert!(can_switch(&b, SideRef::P1, 0) && can_switch(&b, SideRef::P2, 0));
+}
+
+#[test]
+fn shed_shell_escapes_fairy_lock() {
+    let p1 = r#"[{"species":"klefki","level":50,"ability":"prankster","moves":["fairylock"]},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"rillaboom","level":50,"ability":"overgrow","item":"shedshell","moves":["splash"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let mut b = logged(Format::Singles, p1, p2, 1);
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert!(!can_switch(&b, SideRef::P1, 0));
+    assert!(can_switch(&b, SideRef::P2, 0));
+}
