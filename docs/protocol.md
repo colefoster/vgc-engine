@@ -334,8 +334,8 @@ b = vgc_engine.position_from_replay(log, turn=5, ally_targets=True)
   only while the partner is alive and not a commanding Tatsugiri. Singles
   is unchanged.
 - Not serialized: `to_json` / `to_bytes` snapshots are byte-identical to
-  flag-off ones and load with it off. Set it again after `from_json` /
-  `from_bytes`, or pass `ally_targets=True` to `from_position`.
+  flag-off ones and load with it off. Pass `ally_targets=True` to
+  `from_json` / `from_bytes` / `from_position`, or set the property.
 - `step_move` and PS sessions (`choose(side, "move 1 -2")`) always accept
   a partner target; the flag only changes what `legal_choices` lists.
 - Rust: `Battle::ally_targets` (a `pub bool`). Parity test:
