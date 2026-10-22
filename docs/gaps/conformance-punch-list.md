@@ -76,7 +76,7 @@ DamageContext):
 
 Real engine divergences surfaced by the Champions PS-conformance harness on a
 50-battle Reg M-B doubles batch (`/tmp/conf-batch`, teams from
-`~/Dev/mimikyu/data/generated_teams/regmb_random_100`). Each entry is
+mimikyu's `data/generated_teams/regmb_random_100`). Each entry is
 `unmatched_draws == 0` (RNG fully keyed → genuine mechanic bug, not a draw
 desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
 /tmp/conf-batch/out_<NN>.json` to CLEAN.

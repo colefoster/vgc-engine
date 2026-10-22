@@ -13,10 +13,10 @@ export PS_DIST=/tmp/ps/dist/sim
 # engine tools (the ps-rng feature is needed for psrng / trace)
 cargo build --release -p vgc-engine-conformance --features ps-rng
 
-# a random sample of real Reg M-C ladder logs (read-only copy from hil)
-ssh hil 'cd /opt/mimikyu/data/replays/gen9championsvgc2026regmc && nice -n 19 find 2026-09-1* 2026-09-2[0-8] -name "*.json" \
-  | shuf -n 3000 --random-source=<(yes 42) | nice -n 19 tar czf /tmp/mc_sample.tgz -T -'
-mkdir -p mc && scp hil:/tmp/mc_sample.tgz mc/ && (cd mc && tar xzf mc_sample.tgz)
+# a random sample of real Reg M-C ladder logs (one PS replay JSON per battle),
+# from wherever your corpus lives ($REPLAY_DIR)
+mkdir -p mc && (cd "$REPLAY_DIR" && find 2026-09-1* 2026-09-2[0-8] -name "*.json" \
+  | shuf -n 3000 --random-source=<(yes 42) | tar czf - -T -) | (cd mc && tar xzf -)
 ```
 
 ## Pipeline

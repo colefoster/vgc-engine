@@ -142,8 +142,9 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
 #[test]
 fn argmax_output_is_byte_identical_to_0_4_1() {
     // Recorded at ad420d9 (0.4.1): without `prior_sample_seed` the prior
-    // fill is the argmax, unchanged.
-    assert_eq!(digest(ReconOptions::new), "9dc4662704b3a6e801cb09b61f7bcee4af2852323a4f4bfb2c6a4c11659f09ab");
+    // fill is the argmax, unchanged. Re-recorded when the sample's player
+    // names were anonymized (names are the only input change).
+    assert_eq!(digest(ReconOptions::new), "69cd8824beb3f1f18919906be941b6ffce60d056e576c1534e445633255bb47b");
 }
 
 fn sampled(seed: u64) -> ReconOptions {
