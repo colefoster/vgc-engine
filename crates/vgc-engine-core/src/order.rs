@@ -406,42 +406,15 @@ fn schedule_move(
                 let mv = &data::MOVES[mid as usize];
                 (mv.priority as i32, mv.category)
             };
-            // Prankster: +1 priority to status moves used by the holder.
-            // Dark-type immunity to the boosted move is enforced at
-            // resolve time (gen 7+), not here — order-resolution still
-            // uses the bumped priority. PS data/abilities.ts prankster
-            // onModifyPriority.
-            let pri_after_ability = if category == 2
-                && m.effective_ability_id() == data::ability_id::PRANKSTER
-            {
-                base_pri + 1
-            } else {
+            // ModifyPriority handlers (Prankster, Grassy Glide): see
+            // `effective_move_priority`. Prankster's Dark-type immunity is
+            // enforced at resolve time (gen 7+), not here. Quick Claw and
+            // Quick Draw are fractional priority (+0.1): see `quick` below.
+            let pri_after_item = if m.must_recharge {
                 base_pri
-            };
-            // Quick Claw and Quick Draw are fractional priority (+0.1): see
-            // `quick` below.
-            let pri_after_item = pri_after_ability;
-            // Grassy Glide — PS data/moves.ts:grassyglide
-            //   onModifyPriority(priority, source, target, move) {
-            //     if (this.field.isTerrain('grassyterrain') && source.isGrounded()) {
-            //       return priority + 1;
-            //     }
-            //   }
-            // +1 priority bump when the USER is grounded under Grassy
-            // Terrain. PR-275 left this branch unwired (gap doc:
-            // "grassyglide priority-bump branch not yet wired").
-            // Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
-            let pri_after_terrain = if mid == data::move_id::GRASSYGLIDE
-                && !m.must_recharge
-                && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
-                && m.is_grounded()
-            {
-                pri_after_item + 1
             } else {
-                pri_after_item
+                effective_move_priority(battle, m, mid, base_pri, category)
             };
-            let pri_after_item = pri_after_terrain;
             // Fractional-priority items:
             //   Custap Berry — PS `data/items.ts:custapberry`
             //   `onFractionalPriority(priority, pokemon) {
@@ -591,12 +564,24 @@ pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, mov
         let mv = &data::MOVES[mid as usize];
         (mv.priority as i32, mv.category)
     };
+    if m.must_recharge {
+        return base;
+    }
+    effective_move_priority(battle, m, mid, base, category)
+}
+
+/// A move's integer priority after the `ModifyPriority` handlers, the value
+/// PS writes back to `action.move.priority` (sim/battle.ts:2643-2649) and
+/// that Quick Guard / Dazzling read as `move.priority`. Fractional bumps
+/// (Quick Claw, Custap) are excluded: PS keeps them in
+/// `action.fractionalPriority`. `base`/`category` come from the caller's
+/// move record.
+pub(crate) fn effective_move_priority(battle: &Battle, m: &Pokemon, mid: u16, base: i32, category: u8) -> i32 {
     let mut pri = base;
     if category == 2 && m.effective_ability_id() == data::ability_id::PRANKSTER {
         pri += 1;
     }
     if mid == data::move_id::GRASSYGLIDE
-        && !m.must_recharge
         && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
         && m.is_grounded()
     {

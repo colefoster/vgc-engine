@@ -8645,14 +8645,17 @@ self.trigger_emergency_exits();
                 n_protected += 1;
                 continue;
             }
-            // Quick Guard — blocks priority moves (priority > 0) aimed
-            // at this side. Sucker Punch's onTry runs first, so it
-            // never reaches Quick Guard's check when target queues
-            // a status move; the common interaction is Fake Out being
-            // blocked.
+            // Quick Guard — blocks priority moves aimed at this side.
+            // Sucker Punch's onTry runs first, so it never reaches Quick
+            // Guard's check when target queues a status move.
+            // PS data/moves.ts:14514 `if (move.priority <= 0.1) return;`
+            // reads the ModifyPriority-adjusted priority (Prankster status
+            // moves, Grassy Glide in Grassy Terrain are blocked); Quick
+            // Claw / Custap's +0.1 lives in fractionalPriority and never
+            // counts.
             if protect_flag
                 && self.side(tside).conditions.quick_guard_this_turn
-                && m.priority > 0
+                && crate::order::effective_move_priority(self, &attacker, move_id, m.priority as i32, m.category) > 0
             {
                 self.p_tag_tryhit(0, tside, tslot);
                 pmon!(self, "-activate", tside, tslot, "|move: Quick Guard");
@@ -10671,6 +10674,38 @@ self.trigger_emergency_exits();
                         .is_some_and(|t| t.is_alive() && t.is_grounded() && t.semi_invuln == 0);
                 if blocked {
                     pmon!(self, "-activate", tside, tslot, "|move: Psychic Terrain");
+                    return;
+                }
+            }
+        }
+        // Quick Guard — PS data/moves.ts:14510-14525 quickguard condition
+        // onTryHit (onTryHitPriority 4, ahead of Protect and the target's
+        // abilities): blocks a move whose ModifyPriority-adjusted priority
+        // is positive (here: a Prankster status move) and that has the
+        // `protect` flag. Self-targeted moves never reach TryHit.
+        if m.blocked_by_protect
+            && crate::order::effective_move_priority(self, attacker, move_id, m.priority as i32, m.category) > 0
+        {
+            let opp = actor_side.opposing();
+            let qg_target: Option<(SideRef, u8)> = if m.target == 6 {
+                (0..self.format().active_count() as u8)
+                    .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|d| d.is_alive()))
+                    .map(|s| (opp, s))
+            } else if is_targeting_move(m.target) {
+                match target {
+                    Some(t) => Some((t.side, t.slot)),
+                    None => (0..self.format().active_count() as u8)
+                        .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|d| d.is_alive()))
+                        .map(|s| (opp, s)),
+                }
+            } else {
+                None
+            };
+            if let Some((tside, tslot)) = qg_target {
+                if !(tside == actor_side && tslot == actor_slot)
+                    && self.side(tside).conditions.quick_guard_this_turn
+                {
+                    pmon!(self, "-activate", tside, tslot, "|move: Quick Guard");
                     return;
                 }
             }

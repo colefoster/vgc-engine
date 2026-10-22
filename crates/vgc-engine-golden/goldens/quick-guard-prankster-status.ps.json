@@ -1,0 +1,181 @@
+{
+  "ok": true,
+  "name": "quick-guard-prankster-status",
+  "seed": [
+    4,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Whimsicott",
+      "hp": 167,
+      "max": 167
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 142,
+      "max": 142
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Conkeldurr",
+      "hp": 212,
+      "max": 212
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 202,
+      "max": 202
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Quick Guard",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Yawn",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Thunderbolt",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 154,
+      "max": 202,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Thunderbolt",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 108,
+      "max": 202,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "Chance",
+      "value": true,
+      "num": 1,
+      "denom": 5,
+      "site": "Battle.onFractionalPriority (data/items.js:4993)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 3,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 80,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 1,
+      "denom": 5,
+      "site": "Battle.onFractionalPriority (data/items.js:4993)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 51,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792675724\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Whimsicott, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Conkeldurr, L50, F|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1792675724\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Whimsicott|Whimsicott, L50, M|167/167\n|switch|p1b: Pikachu|Pikachu, L50, F|142/142\n|switch|p2a: Conkeldurr|Conkeldurr, L50, F|212/212\n|switch|p2b: Miltank|Miltank, L50, F|202/202\n|turn|1|-activate|p1b: Pikachu|item: Quick Claw\n|\n|t:|1792675724\n|move|p2a: Conkeldurr|Quick Guard|p2a: Conkeldurr\n|-singleturn|p2a: Conkeldurr|Quick Guard\n|move|p1a: Whimsicott|Yawn|p2b: Miltank\n|-activate|p2b: Miltank|move: Quick Guard\n|move|p1b: Pikachu|Thunderbolt|p2b: Miltank\n|-damage|p2b: Miltank|154/202\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1792675724\n|move|p1a: Whimsicott|Splash|p1a: Whimsicott\n|-nothing\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1b: Pikachu|Thunderbolt|p2b: Miltank\n|-damage|p2b: Miltank|108/202\n|move|p2a: Conkeldurr|Splash|p2a: Conkeldurr\n|-nothing\n|\n|upkeep\n|turn|3"
+}
