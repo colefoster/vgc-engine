@@ -1,0 +1,26 @@
+{
+  "name": "utility-umbrella-weather-orientation",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Torkoal @ Utility Umbrella\nAbility: Drought\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Flamethrower\n\nPikachu\nAbility: Static\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Weather Ball\n\nChansey\nAbility: Natural Cure\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash"
+  },
+  "p2": {
+    "team": "Blissey @ Utility Umbrella\nAbility: Natural Cure\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash\n\nMiltank\nAbility: Scrappy\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpA\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 2, move 1 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 1 2, move 1 1",
+      "p2": "move 1, move 1"
+    }
+  ]
+}

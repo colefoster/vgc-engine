@@ -69,7 +69,7 @@ pub(crate) fn effective_accuracy(
     // Weather-modified base accuracy. See the inline call site for the PS
     // citations — the wiring is preserved verbatim.
     let weather_for_acc =
-        battle.effective_weather_for_pair(actor_side, actor_slot, tside, tslot);
+        battle.effective_weather_for(tside, tslot);
     let base_acc: u8 = match move_id {
         data::move_id::HURRICANE | data::move_id::THUNDER => match weather_for_acc {
             crate::weather::Weather::Rain => 255,

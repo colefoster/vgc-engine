@@ -1318,30 +1318,6 @@ impl Battle {
         }
     }
 
-    /// Effective weather for a damage exchange — Utility Umbrella on
-    /// EITHER the attacker OR the defender suppresses Sun/Rain effects
-    /// in PS's damage formula (the field effectiveWeather is queried by
-    /// each side at calc time; an umbrella holder reads '' regardless of
-    /// orientation). Used by the damage calc + accuracy block.
-    pub fn effective_weather_for_pair(
-        &self,
-        attacker_side: SideRef,
-        attacker_slot: u8,
-        defender_side: SideRef,
-        defender_slot: u8,
-    ) -> crate::weather::Weather {
-        let a = self.effective_weather_for(attacker_side, attacker_slot);
-        if matches!(a, crate::weather::Weather::None) {
-            return a;
-        }
-        // If defender also holds umbrella, suppress.
-        let d = self.effective_weather_for(defender_side, defender_slot);
-        if matches!(d, crate::weather::Weather::None) {
-            return d;
-        }
-        a
-    }
-
     /// True if any active mon's ability suppresses weather.
     pub(crate) fn weather_suppressed(&self) -> bool {
         let n = self.format().active_count();
@@ -9034,9 +9010,7 @@ self.trigger_emergency_exits();
                     // value PS's `runEffectiveness` returns. Block unless
                     // strictly super-effective.
                     let eff_ctx = DamageContext {
-                        weather: self.effective_weather_for_pair(
-                            actor_side, actor_slot, tside, tslot,
-                        ),
+                        weather: self.effective_weather(),
                         terrain: self.terrain,
                         champions: self.champions,
                         ..DamageContext::default()
@@ -9122,7 +9096,7 @@ self.trigger_emergency_exits();
             // gated on grounding above (PS runImmunity uses isGrounded).
             if damaging && !is_fixed_damage {
                 let eff_ctx = DamageContext {
-                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    weather: self.effective_weather(),
                     terrain: self.terrain,
                     champions: self.champions,
                     ..DamageContext::default()
@@ -9631,7 +9605,7 @@ self.trigger_emergency_exits();
                     guarded || (tside == SideRef::P2 && self.calc_mods.friend_guard)
                 };
             let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                weather: self.effective_weather(),
                 terrain: active_terrain,
                 champions: self.champions,
                 ..DamageContext::default()
@@ -9658,7 +9632,7 @@ self.trigger_emergency_exits();
             }
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
-                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                weather: self.effective_weather(),
                 terrain: active_terrain,
                 defender_has_reflect, defender_has_light_screen,
                 defender_has_aurora_veil,
@@ -9936,7 +9910,7 @@ self.trigger_emergency_exits();
                 self.p_tag(crate::protocol::step::CALC, tside, tslot);
                 self.p_sub(1);
                 let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    weather: self.effective_weather(),
                     terrain: self.terrain,
                     champions: self.champions,
                     ..DamageContext::default()
