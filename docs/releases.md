@@ -15,6 +15,7 @@ CARGO_BUILD_JOBS=4 maturin build --release --features ps-rng -i PYTHON -o ../../
 | 0.4.0 | 3492745 (`position_from_replay`, `vgc recon`) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site), mimikyu analytics venv |
 | 0.4.1 | 6b8461d (default prior `smogon:2026-09/gen9championsvgc2026regmc-1500`, pinnable prior ids) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site), mimikyu analytics venv |
 | 0.4.2 | 426ac13 (explicit recharge/lock `legal_choices`, `prior_sample_seed`) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site), mimikyu analytics venv |
+| 0.5.0 | (see below) niche doubles pass: opt-in `ally_targets` (default off; on = larger doubles action space), Mean Look/Block/Jaw Lock/Fairy Lock traps, Parting Shot ally/no-change fixes, Pollen Puff ally Telepathy/Heal Block, Quick Guard adjusted priority + Triage/Gale Wings, Utility Umbrella holder orientation, Weakness Policy real type, bincode round-trip fix. Battle JSON now always carries `fairy_lock_turns`. | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | **not installed** (dist only; install per the rule below) |
 
 ## Install rule for mimikyu
 
