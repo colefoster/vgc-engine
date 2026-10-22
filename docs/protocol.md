@@ -308,6 +308,40 @@ wraps; it takes a builder closure (team-preview picks -> `Battle`).
   the streams stop there. Replays are deterministic, so what a player
   already saw never changes.
 
+### Ally targets (`ally_targets`, opt-in)
+
+PS lets a doubles player aim a `normal` or `any` move at its partner
+(`move 1 -2` from slot a, `move 1 -1` from slot b; sim/battle.ts:2399-2429
+validTargetLoc). `Battle.legal_choices` offers those choices only when the
+battle's `ally_targets` flag is on:
+
+```python
+b = vgc_engine.Battle.from_teams(p1, p2, format="doubles", ally_targets=True)
+b.ally_targets = False  # settable property; clone() keeps it
+b = vgc_engine.Battle.from_position(snapshot, ally_targets=True)
+b = vgc_engine.position_from_replay(log, turn=5, ally_targets=True)
+```
+
+- **Default off. Turning it on changes the action space**: consumers that
+  enumerate `legal_choices` (policy heads, search, `solve_endgame*`, RL
+  envs, pre-registered evals) see more choices. With it off the list is
+  byte-identical to earlier versions.
+- A partner choice is the tuple `("move" | "tera" | "mega", slot, move,
+  own_side, 1 - slot)`. It follows that move's foe choices, so the first
+  choice is still a foe target.
+- Offered only for `normal` / `any` moves, never `adjacentFoe` (Me First),
+  self, spread or partner-auto moves (Helping Hand keeps target `-1`), and
+  only while the partner is alive and not a commanding Tatsugiri. Singles
+  is unchanged.
+- Not serialized: `to_json` / `to_bytes` snapshots are byte-identical to
+  flag-off ones and load with it off. Set it again after `from_json` /
+  `from_bytes`, or pass `ally_targets=True` to `from_position`.
+- `step_move` and PS sessions (`choose(side, "move 1 -2")`) always accept
+  a partner target; the flag only changes what `legal_choices` lists.
+- Rust: `Battle::ally_targets` (a `pub bool`). Parity test:
+  `crates/vgc-engine-golden/tests/ally_target_choices.rs`, PS side from
+  `tools/ps-target-choices/target-choices.js`.
+
 ### Observations
 
 `Battle.observe(side)` (`ps_observe.rs`) reads nothing but the side's
