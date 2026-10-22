@@ -69,7 +69,7 @@ the mega action, the rule overrides) is engine code. One mechanic per PR; each P
 adds a synthetic golden; cite PS `file:line` + Bulbapedia in the commit.
 
 Behavioral oracle for validation: **18,730 reg-MB replays** already scraping in
-`~/Dev/mimikyu/data/replays/gen9championsvgc2026regmb/` (PS protocol logs,
+mimikyu's `data/replays/gen9championsvgc2026regmb/` (PS protocol logs,
 doubles). Use these the same way as the PsGen5 corpus signal.
 
 ## Engine readiness map (the good news — verified 2026-06-19)

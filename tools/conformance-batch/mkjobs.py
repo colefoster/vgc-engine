@@ -19,14 +19,17 @@ original 50-battle batch (team i vs team i+50, one seed each) — those battles
 keep stable IDs from now on.
 
 Env overrides:
-    CONF_TEAMS_FILE  team list  (default ~/Dev/mimikyu/.../regmb_random_100.txt)
+    CONF_TEAMS_FILE  team list  (default $MIMIKYU_DIR/data/generated_teams/regmb_random_100.txt;
+                     MIMIKYU_DIR defaults to a mimikyu checkout next to this repo)
     CONF_JOBS_DIR    output dir (default /tmp/conf-batch/jobs)
 """
 import re, json, os, sys, hashlib
 
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_MIMIKYU = os.environ.get('MIMIKYU_DIR', os.path.join(os.path.dirname(_REPO), 'mimikyu'))
 TEAMS_FILE = os.environ.get(
     'CONF_TEAMS_FILE',
-    os.path.expanduser('~/Dev/mimikyu/data/generated_teams/regmb_random_100.txt'),
+    os.path.join(_MIMIKYU, 'data/generated_teams/regmb_random_100.txt'),
 )
 JOBS_DIR = os.environ.get('CONF_JOBS_DIR', '/tmp/conf-batch/jobs')
 FORMAT = 'gen9championsdoublescustomgame'

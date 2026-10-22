@@ -1051,8 +1051,8 @@ yet.
 cargo build --release -p vgc-engine-conformance --features ps-rng --bin recon_gate
 target/release/recon_gate --dirs <B>,<C> --count 1000 --threads 4 --out recon.jsonl
 cargo build --release -p vgc-engine-replay --bin recon_corpus
-ssh unraid 'cd .../gen9championsvgc2026regmc && find 2026-10-03 ... 2026-10-11 -name "*.json" -print0 | xargs -0 cat | gzip -1' \
-  | gunzip | target/release/recon_corpus --threads 3 --out corpus.jsonl
+(cd "$REPLAY_DIR/gen9championsvgc2026regmc" && find 2026-10-03 ... 2026-10-11 -name "*.json" -print0 | xargs -0 cat) \
+  | target/release/recon_corpus --threads 3 --out corpus.jsonl
 ```
 
 `recon_gate` plays `resume_gate`'s forced-RNG battles: phase-1 records,

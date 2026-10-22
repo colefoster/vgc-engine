@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Differential: engine vs PS (Champions mod) on the real-hit scenarios, same inputs.
 Uses the TIGHT query per eligible hit (most-common Reg M-B spread; a role default
-32 HP / 32 offence when the species has no M-B stats). Writes diff_ps.json."""
+32 HP / 32 offence when the species has no M-B stats). Writes diff_ps.json.
+Needs PS_DIR set for ps_calc.js (a built pokemon-showdown checkout)."""
 import collections, json, subprocess, sys, os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path

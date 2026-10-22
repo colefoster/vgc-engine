@@ -1,12 +1,13 @@
 //! Build-time data generation.
 //!
 //! Reads `@pkmn/dex` JSON dumps from `$VGC_DEX_DIR` (default
-//! `~/Dev/localdex/data`) and emits Rust source for the gen-9 species, move,
+//! `$HOME/Dev/localdex/data`, the maintainer's local dump; see
+//! `docs/plans/standalone-build.md`) and emits Rust source for the gen-9 species, move,
 //! item, ability, and type-chart tables. The output is `include!`d by
 //! `src/lib.rs` at compile time.
 //!
 //! Sources cited in commits:
-//!   @pkmn/dex JSON dump (see ~/Dev/localdex)
+//!   @pkmn/dex JSON dump (in `$VGC_DEX_DIR`)
 //!   Type chart cross-checked against PS `data/typechart.ts`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,7 +55,7 @@ struct MegaFix {
     /// Corrected slot-0 ability **slug** (already slugified), or "" to leave
     /// the dump's ability untouched. MUST exist in the abilities dump, else the
     /// mega row would be silently dropped at resolve time — all slugs below are
-    /// verified present in `~/Dev/localdex/data/abilities.json`.
+    /// verified present in `$VGC_DEX_DIR/abilities.json`.
     ability: &'static str,
     /// Corrected base Attack stat, or 0 to leave the dump's value untouched.
     atk: u8,
@@ -66,7 +67,7 @@ struct MegaFix {
 /// species' ability (e.g. Mega Dragonite gets Inner Focus, not Multiscale)
 /// instead of the mega's intended Champions ability, and Mega Starmie's base
 /// Attack is wrong (140, should be 100). We do NOT edit the shared upstream
-/// JSON (`~/Dev/localdex`, consumed by other tools); instead we override the
+/// JSON (`$VGC_DEX_DIR`, consumed by other tools); instead we override the
 /// affected forme rows here, after the dump is read and before the resolve/emit
 /// step. Ability fixes are applied in the MEGA_STONES loop; stat fixes in the
 /// SPECIES emit loop.
@@ -132,7 +133,7 @@ struct ExtraAbility {
 /// `ability_id::*` indices stay stable and these get fresh trailing ids. Each
 /// is then wired to its mega forme in `MEGA_FORME_FIXES` (the forme row would be
 /// dropped at resolve time if its ability slug didn't exist — hence registered
-/// here first). We do NOT edit the shared upstream JSON (`~/Dev/localdex`).
+/// here first). We do NOT edit the shared upstream JSON (`$VGC_DEX_DIR`).
 ///
 /// Source: serebii.net/pokemonchampions/newabilities.shtml
 const EXTRA_ABILITIES: &[ExtraAbility] = &[
