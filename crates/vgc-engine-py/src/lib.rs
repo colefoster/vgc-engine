@@ -513,7 +513,12 @@ impl PyBattle {
     /// side's `request(side)` / `player_stream(side)`, answer with
     /// `choose(side, "move 1 2, switch 3")`. The battle starts at team
     /// preview when the format has one. `step_*` are unavailable then.
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None, protocol = None, player_names = None, ps_session = false))]
+    ///
+    /// `ally_targets=True` makes `legal_choices` also offer the doubles
+    /// partner as the target of `normal` / `any` moves (PS `move N -1/-2`).
+    /// Default off: turning it on changes the action space. Also a settable
+    /// property; `clone()` keeps it, `to_json` / `to_bytes` snapshots don't.
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None, protocol = None, player_names = None, ps_session = false, ally_targets = false))]
     #[allow(clippy::too_many_arguments)]
     fn from_teams(
         p1_team_json: &str,
@@ -528,6 +533,7 @@ impl PyBattle {
         protocol: Option<&str>,
         player_names: Option<(String, String)>,
         ps_session: bool,
+        ally_targets: bool,
     ) -> PyResult<Self> {
         let protocol = match (protocol, ps_session) {
             (None, true) => Some("ps"),
@@ -589,6 +595,7 @@ impl PyBattle {
         };
         inner.decision_phases = decision_phases;
         inner.champions = champions;
+        inner.ally_targets = ally_targets;
         if !tera_allowed {
             inner.p1.conditions.tera_used = true;
             inner.p2.conditions.tera_used = true;
@@ -612,6 +619,7 @@ impl PyBattle {
             let mut b = core::Battle::with_protocol(cfg.clone(), make_rng(), p1.clone(), p2.clone(), &opts, &id, picks);
             b.decision_phases = true;
             b.champions = champions;
+            b.ally_targets = ally_targets;
             if !tera_allowed {
                 b.p1.conditions.tera_used = true;
                 b.p2.conditions.tera_used = true;
@@ -655,8 +663,11 @@ impl PyBattle {
     /// default: the JSON's `format_id` (set by `position_from_board`), else
     /// Champions Reg M-C / gen 9 VGC. `player_names` default to the
     /// prefix's `|player|` names, else "Player 1" / "Player 2".
+    ///
+    /// `ally_targets` sets the opt-in flag (see `from_teams`; JSON
+    /// snapshots don't carry it). Default off.
     #[staticmethod]
-    #[pyo3(signature = (battle_json, ps_seed = None, prefix = None, reveals = None, switch_in_effects = false, protocol = "ps", format = None, player_names = None))]
+    #[pyo3(signature = (battle_json, ps_seed = None, prefix = None, reveals = None, switch_in_effects = false, protocol = "ps", format = None, player_names = None, ally_targets = false))]
     #[allow(clippy::too_many_arguments)]
     fn from_position(
         py: Python<'_>,
@@ -668,6 +679,7 @@ impl PyBattle {
         protocol: &str,
         format: Option<&str>,
         player_names: Option<(String, String)>,
+        ally_targets: bool,
     ) -> PyResult<Self> {
         let text: String = match battle_json.extract::<String>() {
             Ok(s) => s,
@@ -675,7 +687,8 @@ impl PyBattle {
         };
         let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
         let json_format = value.get("format_id").and_then(|v| v.as_str()).map(str::to_string);
-        let inner: core::Battle = serde_json::from_value(value).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
+        let mut inner: core::Battle = serde_json::from_value(value).map_err(|e| PyValueError::new_err(format!("battle_json: {e}")))?;
+        inner.ally_targets = ally_targets;
         Self::open_position(inner, json_format, ps_seed, prefix_value(prefix)?, reveals, switch_in_effects, protocol, format, player_names)
     }
 
@@ -771,6 +784,23 @@ impl PyBattle {
     #[getter]
     fn champions(&self) -> bool {
         self.inner.champions
+    }
+
+    /// Opt-in: `legal_choices` also offers the doubles partner as the
+    /// target of `normal` / `any` moves (PS `move N -1/-2`). Default off;
+    /// turning it on changes the action space. `clone()` keeps it;
+    /// `to_json` / `to_bytes` snapshots don't.
+    #[getter]
+    fn ally_targets(&self) -> bool {
+        self.inner.ally_targets
+    }
+
+    #[setter]
+    fn set_ally_targets(&mut self, on: bool) {
+        self.inner.ally_targets = on;
+        if let Some(sess) = self.session.as_mut() {
+            sess.set_ally_targets(on);
+        }
     }
 
     #[getter]
@@ -1667,9 +1697,10 @@ fn py_sets(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<Vec<core::TeamMembe
 /// after the stop. `prior_sample_seed`: sample the prior-filled fields
 /// (spread and nature, unrevealed moves, item, ability) from the prior,
 /// deterministically per seed, instead of taking the most likely.
+/// `ally_targets`: see `Battle.from_teams` (default off).
 /// The report is `battle.reconstruction_report()`.
 #[pyfunction]
-#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = None, sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None, prior_sample_seed = None))]
+#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = None, sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None, prior_sample_seed = None, ally_targets = false))]
 #[allow(clippy::too_many_arguments)]
 fn position_from_replay(
     py: Python<'_>,
@@ -1686,6 +1717,7 @@ fn position_from_replay(
     protocol: &str,
     player_names: Option<(String, String)>,
     prior_sample_seed: Option<u64>,
+    ally_targets: bool,
 ) -> PyResult<PyBattle> {
     use vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions, Stop};
     let text: String = if let Ok(s) = log.extract::<String>() {
@@ -1744,7 +1776,9 @@ fn position_from_replay(
         (Some(a), Some(b)) => Some((a.clone(), b.clone())),
         _ => None,
     });
-    let mut b = PyBattle::open_position(rec.battle, Some(rec.format_id.clone()), ps_seed, rec.prefix, None, false, protocol, Some(&rec.format_id), names)?;
+    let mut battle = rec.battle;
+    battle.ally_targets = ally_targets;
+    let mut b = PyBattle::open_position(battle, Some(rec.format_id.clone()), ps_seed, rec.prefix, None, false, protocol, Some(&rec.format_id), names)?;
     b.report = Some(report);
     Ok(b)
 }
