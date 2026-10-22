@@ -1,0 +1,51 @@
+{
+  "p1": [
+    [
+      "move 1 -2",
+      "move 1 -2 mega",
+      "move 1 1",
+      "move 1 1 mega",
+      "move 1 2",
+      "move 1 2 mega",
+      "move 2 -2",
+      "move 2 -2 mega",
+      "move 2 1",
+      "move 2 1 mega",
+      "move 2 2",
+      "move 2 2 mega",
+      "move 3",
+      "move 3 mega"
+    ],
+    [
+      "move 1 -1",
+      "move 1 -1 mega",
+      "move 1 1",
+      "move 1 1 mega",
+      "move 1 2",
+      "move 1 2 mega",
+      "move 2 -1",
+      "move 2 -1 mega",
+      "move 2 1",
+      "move 2 1 mega",
+      "move 2 2",
+      "move 2 2 mega",
+      "move 3",
+      "move 3 mega"
+    ]
+  ],
+  "p2": [
+    [
+      "move 1 -2",
+      "move 1 1",
+      "move 1 2",
+      "move 2 -2",
+      "move 2 1",
+      "move 2 2"
+    ],
+    [
+      "move 1 -1",
+      "move 1 1",
+      "move 1 2"
+    ]
+  ]
+}
