@@ -412,6 +412,11 @@ struct CanonicalBattleView<'a> {
     // Skipped while 0 so every Fairy-Lock-free hash is unchanged.
     #[serde(skip_serializing_if = "crate::battle::is_zero_u8")]
     fairy_lock_turns: u8,
+    // The opt-in ally-target action space: a transposition table must not
+    // mix nodes expanded with and without it. Skipped while off so every
+    // existing hash is unchanged.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    ally_targets: bool,
     future_pending: &'a [[Option<FutureEffect>; 2]; 2],
     wish_pending: &'a [[Option<WishEffect>; 2]; 2],
     turn: u32,
@@ -504,6 +509,7 @@ impl Battle {
     pub fn canonical_hash(&self) -> u64 {
         let view = CanonicalBattleView {
             decision_phases: self.decision_phases,
+            ally_targets: self.ally_targets,
             config: &self.config,
             p1: canonical_side(&self.p1),
             p2: canonical_side(&self.p2),
@@ -595,6 +601,18 @@ mod tests {
 
         let h_swapped = a.canonical_hash();
         assert_eq!(h_orig, h_swapped, "bench permutation must collapse");
+    }
+
+    #[test]
+    fn ally_targets_flag_splits_the_hash() {
+        // Different action spaces must not share a TT node; off is the
+        // pre-flag projection (the field is skipped while false).
+        let a = fixture();
+        let mut b = fixture();
+        b.ally_targets = true;
+        assert_ne!(a.canonical_hash(), b.canonical_hash());
+        b.ally_targets = false;
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
     }
 
     #[test]
