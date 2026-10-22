@@ -650,7 +650,7 @@ impl Battle {
     pub(crate) fn p_hit_messages(
         &mut self,
         a_side: SideRef,
-        a_slot: u8,
+        _a_slot: u8,
         t_side: SideRef,
         t_slot: u8,
         move_id: u16,
