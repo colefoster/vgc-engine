@@ -1,0 +1,360 @@
+{
+  "ok": true,
+  "name": "pollenpuff-ally-telepathy-healblock",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Ribombee",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Oranguru",
+      "hp": 165,
+      "max": 165
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Mewtwo",
+      "hp": 181,
+      "max": 181
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 146,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 95,
+      "max": 135,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Pollen Puff",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Psychic Noise",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "resisted",
+      "actor": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 116,
+      "max": 165,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Pollen Puff",
+      "target": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 82,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792675481\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Ribombee, L50, F|\n|poke|p1|Oranguru, L50, M|\n|poke|p2|Mewtwo, L50|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1792675481\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Ribombee|Ribombee, L50, F|135/135\n|switch|p1b: Oranguru|Oranguru, L50, M|165/165\n|switch|p2a: Mewtwo|Mewtwo, L50|181/181\n|switch|p2b: Snorlax|Snorlax, L50, M|235/235\n|-ability|p2a: Mewtwo|Pressure\n|turn|1|\n|t:|1792675481\n|move|p2a: Mewtwo|Tackle|p1b: Oranguru\n|-damage|p1b: Oranguru|146/165\n|move|p1a: Ribombee|Splash|p1a: Ribombee\n|-nothing\n|move|p1b: Oranguru|Splash|p1b: Oranguru\n|-nothing\n|move|p2b: Snorlax|Tackle|p1a: Ribombee\n|-damage|p1a: Ribombee|95/135\n|\n|upkeep\n|turn|2|\n|t:|1792675481\n|move|p2a: Mewtwo|Splash|p2a: Mewtwo\n|-nothing\n|move|p1a: Ribombee|Pollen Puff|p1b: Oranguru\n|-activate|p1b: Oranguru|ability: Telepathy\n|move|p1b: Oranguru|Splash|p1b: Oranguru\n|-nothing\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1792675481\n|move|p2a: Mewtwo|Psychic Noise|p1b: Oranguru\n|-resisted|p1b: Oranguru\n|-damage|p1b: Oranguru|116/165\n|-start|p1b: Oranguru|move: Heal Block\n|move|p1a: Ribombee|Splash|p1a: Ribombee\n|-nothing\n|move|p1b: Oranguru|Pollen Puff||[still]\n|cant|p1b: Oranguru|move: Heal Block|Pollen Puff\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|4",
+  "keyed": [
+    {
+      "turn": 1,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "tackle",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "tackle",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "tackle",
+      "decision": "damage",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p2b",
+      "target": "p1a",
+      "move": "tackle",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p2b",
+      "target": "p1a",
+      "move": "tackle",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p2b",
+      "target": "p1a",
+      "move": "tackle",
+      "decision": "damage",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 3,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "psychicnoise",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 3,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "psychicnoise",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 3,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "psychicnoise",
+      "decision": "damage",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 3,
+      "actor": "p2a",
+      "target": "p1b",
+      "move": "psychicnoise",
+      "decision": "secondary",
+      "value": 82,
+      "raw_is_bool": false,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)",
+      "op": "random",
+      "args": [
+        100
+      ]
+    }
+  ]
+}
