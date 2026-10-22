@@ -20709,15 +20709,13 @@ self.trigger_emergency_exits();
             data::move_id::PARTINGSHOT => {
                 // Parting Shot — PS data/moves.ts:partingshot:13171.
                 // Status move with `onHit: this.boost({atk:-1,spa:-1},
-                // target, source)` followed by `selfSwitch: true`. If
-                // the boost call returns success on at least one stat,
-                // the self-switch fires; otherwise PS deletes the
-                // selfSwitch (Mirror Armor edge — not modelled). We
-                // approximate "succeeded" as "the user is still alive
-                // AND at least one alive opposing target exists" — the
-                // intersection of PS's failure modes (no target, no
-                // valid boost, no bench) collapses to that predicate
-                // for top-50 corpus replays. Drops Defiant /
+                // target, source)` followed by `selfSwitch: true`:
+                //   if (!success && !target.hasAbility('mirrorarmor'))
+                //     delete move.selfSwitch;
+                // (data/moves.ts:13174-13179, a5df8274). boost() succeeds
+                // only when a stage actually moved (sim/battle.ts:2048),
+                // so a target already at -6/-6, Mist, Flower Veil or a
+                // Clear Body veto keeps the user in. Drops Defiant /
                 // Competitive react via `react_to_opposing_stat_drop`,
                 // shared with Intimidate. accuracy 100 — gate on the
                 // standard accuracy roll. Bulbapedia:
@@ -20744,17 +20742,21 @@ self.trigger_emergency_exits();
                     if k < 2 {
                         self.p_drop_blocked(opp, slot, &[0, 2]);
                     }
+                    let mirror_armor = self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| t.effective_ability_id() == data::ability_id::MIRRORARMOR);
                     if k > 0 {
                         // Opposing drop — source is the Parting Shot user.
                         let before = self.side(opp).active_mon(slot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(opp, slot, &drops[..k], actor_side, actor_slot);
+                        let moved = self.side(opp).active_mon(slot as usize).is_some_and(|t| t.boosts != before);
                         // Eject Pack ignores Parting Shot (data/items.ts:1712).
                         // Aimed at the user's ally, Defiant / Competitive
                         // stay quiet (data/abilities.ts:647, :903 return on
                         // `target.isAlly(source)`), as for Charm.
                         self.after_drop(opp, slot, before, false, opp != actor_side);
-                        dropped_any = true;
+                        dropped_any = moved;
                     }
+                    dropped_any |= mirror_armor;
                 }
                 if dropped_any && self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
