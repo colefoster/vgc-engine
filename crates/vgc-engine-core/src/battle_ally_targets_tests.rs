@@ -127,8 +127,12 @@ fn effective_target_gates_the_partner() {
     let p1 = r#"[{"species":"snorlax","level":50,"moves":["curse","acupressure"]},{"species":"gengar","level":50,"moves":["curse"]}]"#;
     let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(P2).unwrap());
     b.ally_targets = true;
-    // Snorlax: non-Ghost Curse is self, no partner.
-    assert!(ally_moves(&b.legal_choices(SideRef::P1, 0), P1B).is_empty());
+    // Snorlax: Curse (self) no partner; Acupressure (adjacentAllyOrSelf) adds
+    // the partner after its targetless (self) choice.
+    let lc = b.legal_choices(SideRef::P1, 0);
+    assert_eq!(ally_moves(&lc, P1B), vec![(1, "move"), (1, "tera")]);
+    let acu: Vec<Option<Target>> = lc.iter().filter_map(|c| match *c { Choice::Move { move_slot: 1, target, .. } => Some(target), _ => None }).collect();
+    assert_eq!(acu, vec![None, Some(P1B)]);
     // Ghost Curse keeps its data target `normal`: the partner is a valid pick.
     assert_eq!(ally_moves(&b.legal_choices(SideRef::P1, 1), P1A), vec![(0, "move"), (0, "tera")]);
 }
