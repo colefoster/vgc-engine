@@ -1,0 +1,15 @@
+{
+  "name": "partingshot-ally-no-defiant",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Incineroar (M)\nAbility: Blaze\nLevel: 50\nJolly Nature\nEVs: 252 Spe\n- Parting Shot\n- Splash\n\nKingambit (M)\nAbility: Defiant\nLevel: 50\nBrave Nature\nIVs: 0 Spe\n- Iron Head\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 -2, move 1 1", "p2": "move 1, move 1" }
+  ]
+}

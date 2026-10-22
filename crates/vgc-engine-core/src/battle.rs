@@ -20749,7 +20749,10 @@ self.trigger_emergency_exits();
                         let before = self.side(opp).active_mon(slot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(opp, slot, &drops[..k], actor_side, actor_slot);
                         // Eject Pack ignores Parting Shot (data/items.ts:1712).
-                        self.after_foe_drop(opp, slot, before, false);
+                        // Aimed at the user's ally, Defiant / Competitive
+                        // stay quiet (data/abilities.ts:647, :903 return on
+                        // `target.isAlly(source)`), as for Charm.
+                        self.after_drop(opp, slot, before, false, opp != actor_side);
                         dropped_any = true;
                     }
                 }
