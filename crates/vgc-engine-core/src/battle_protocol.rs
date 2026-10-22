@@ -668,7 +668,7 @@ impl Battle {
             self.p_push("|-hint|Rising Voltage's BP doubled on grounded target.".to_string());
         }
         let ctx = crate::damage::DamageContext {
-            weather: self.effective_weather_for_pair(a_side, a_slot, t_side, t_slot),
+            weather: self.effective_weather(),
             terrain: self.terrain,
             champions: self.champions,
             ..crate::damage::DamageContext::default()

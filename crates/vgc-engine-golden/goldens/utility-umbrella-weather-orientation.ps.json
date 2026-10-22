@@ -1,0 +1,235 @@
+{
+  "ok": true,
+  "name": "utility-umbrella-weather-orientation",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Torkoal",
+      "hp": 177,
+      "max": 177
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 142,
+      "max": 142
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Blissey",
+      "hp": 362,
+      "max": 362
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 202,
+      "max": 202
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Weather Ball",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 343,
+      "max": 362,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Flamethrower",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 99,
+      "max": 202,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "status",
+      "actor": "p2b",
+      "status": "brn",
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 87,
+      "max": 202,
+      "from": "brn"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Weather Ball",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 324,
+      "max": 362,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Flamethrower",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "faint",
+      "actor": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 3,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 6,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 1,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792676283\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Torkoal, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Snorlax, L50, F|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1792676283\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Torkoal|Torkoal, L50, M|177/177\n|switch|p1b: Pikachu|Pikachu, L50, F|142/142\n|switch|p2a: Blissey|Blissey, L50, F|362/362\n|switch|p2b: Miltank|Miltank, L50, F|202/202\n|-weather|SunnyDay|[from] ability: Drought|[of] p1a: Torkoal\n|turn|1|\n|t:|1792676283\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|debug|BP: 100\n|move|p1b: Pikachu|Weather Ball|p2a: Blissey\n|-damage|p2a: Blissey|343/362\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p1a: Torkoal|Flamethrower|p2b: Miltank\n|debug|Sunny Day fire boost\n|-damage|p2b: Miltank|99/202\n|-status|p2b: Miltank|brn\n|\n|-weather|SunnyDay|[upkeep]\n|-damage|p2b: Miltank|87/202 brn|[from] brn\n|upkeep\n|turn|2|\n|t:|1792676283\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|debug|BP: 100\n|move|p1b: Pikachu|Weather Ball|p2a: Blissey\n|-damage|p2a: Blissey|324/362\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p1a: Torkoal|Flamethrower|p2b: Miltank\n|debug|Sunny Day fire boost\n|-damage|p2b: Miltank|0 fnt\n|debug|move failed because it did nothing\n|faint|p2b: Miltank\n|\n|-weather|SunnyDay|[upkeep]\n|upkeep"
+}
