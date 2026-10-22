@@ -404,6 +404,14 @@ pub struct Battle {
     /// SpD stage, on the swapped Def base). Toggles off if reused while
     /// active (`onFieldRestart`).
     pub wonder_room_turns: u8,
+    /// Fairy Lock remaining turns (0 = inactive). PS `data/moves.ts:5050`
+    /// fairylock pseudoWeather, duration 2: set during turn N, it ticks at
+    /// that turn's residual and ends at turn N+1's, so every active mon is
+    /// trapped (onTrapPokemon tryTrap; Ghost / Shed Shell escape) for the
+    /// choice of turn N+1 only. Silent end (no onFieldEnd). Not serialized
+    /// while 0, so Fairy-Lock-free battle JSON is unchanged.
+    #[serde(default, skip_serializing_if = "crate::battle::is_zero_u8")]
+    pub fairy_lock_turns: u8,
     /// Transient within-turn action-queue reorder request set by After You /
     /// Quash and consumed by the `step` action loop after each move
     /// resolves. `Some((side, slot, to_front))` re-positions the pending
@@ -841,6 +849,7 @@ impl Battle {
             gravity_turns: 0,
             magic_room_turns: 0,
             wonder_room_turns: 0,
+            fairy_lock_turns: 0,
             pending_queue_reorder: None,
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
@@ -3461,6 +3470,8 @@ self.trigger_emergency_exits();
         if self.gravity_turns > 0 { push(&mut h, (27, 0, 0, 2)); }
         if self.wonder_room_turns > 0 { push(&mut h, (27, 0, 0, 5)); }
         if self.magic_room_turns > 0 { push(&mut h, (27, 0, 0, 6)); }
+        // Fairy Lock: no onFieldResidualOrder, a field condition's subOrder 5.
+        if self.fairy_lock_turns > 0 { push(&mut h, (NONE, 0, 0, 5)); }
         // Sides (onSideResidualOrder 26 and subOrder; duration-1 guards
         // have no order and the side default 4).
         for side in [SideRef::P1, SideRef::P2] {
@@ -5220,6 +5231,11 @@ self.trigger_emergency_exits();
         // per-mon state — the Def/SpD swap is read live in the damage calc.
         if self.wonder_room_turns > 0 {
             self.wonder_room_turns -= 1;
+        }
+        // Fairy Lock's duration ticks in the residual's fieldEvent (PS
+        // sim/battle.ts fieldEvent: a handler with `duration` counts down).
+        if self.fairy_lock_turns > 0 {
+            self.fairy_lock_turns -= 1;
         }
         // Gravity field pseudo-weather ticks down each end-of-turn
         // (PS `data/moves.ts:gravity` condition, `onFieldResidual`).
@@ -14911,6 +14927,7 @@ self.trigger_emergency_exits();
                 self.gravity_turns,
                 self.magic_room_turns,
                 self.wonder_room_turns,
+                self.fairy_lock_turns,
             ],
             weather: self.weather,
             terrain: self.terrain,
@@ -15360,6 +15377,10 @@ self.trigger_emergency_exits();
         let (types, n_types) = mon.effective_types();
         if (0..n_types as usize).any(|i| types[i] == 13) {
             return false;
+        }
+        // Fairy Lock's field onTrapPokemon (data/moves.ts:5050): everyone.
+        if self.fairy_lock_turns > 0 {
+            return true;
         }
         // Partial-trap volatile (Bind / Wrap / Fire Spin / Whirlpool / ...):
         // switch-locked while the volatile is alive. No Retreat self-traps the
@@ -20423,6 +20444,18 @@ self.trigger_emergency_exits();
                 // (data/moves.ts magicpowder onHit).
                 pmon!(self, "-start", ts, tslot, "|typechange|Psychic");
             }
+            data::move_id::FAIRYLOCK => {
+                // PS data/moves.ts:5050 fairylock: `pseudoWeather:
+                // 'fairylock'`, duration 2; addPseudoWeather fails while it
+                // is up (no onFieldRestart, sim/field.ts:186-199), so the
+                // move `-fail`s (status_move_result). onFieldStart prints
+                // `-fieldactivate|move: Fairy Lock`. Trap: `is_trapped`.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fairy_Lock_(move)>.
+                if self.fairy_lock_turns == 0 {
+                    self.fairy_lock_turns = 2;
+                    plog!(self, "|-fieldactivate|move: Fairy Lock");
+                }
+            }
             data::move_id::MEANLOOK | data::move_id::BLOCK => {
                 // PS data/moves.ts:11492 meanlook / :1511 block: accuracy
                 // true, no `protect` flag (goes through Protect), reflectable;
@@ -21999,7 +22032,7 @@ struct StatusEffectSnapshot {
     mons: [[MonEffectSnapshot; 2]; 2],
     sides: [crate::side::SideConditions; 2],
     active: [[u8; 2]; 2],
-    field: [u8; 4],
+    field: [u8; 5],
     weather: crate::weather::Weather,
     terrain: crate::terrain::Terrain,
     pending: [u8; 4],
@@ -50177,6 +50210,11 @@ mod r10_tests;
 #[cfg(test)]
 #[path = "battle_r11_tests.rs"]
 mod r11_tests;
+
+/// serde `skip_serializing_if` for a counter that is new to the format.
+pub(crate) fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
 
 #[cfg(test)]
 #[path = "battle_trap_tests.rs"]

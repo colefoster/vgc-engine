@@ -1,0 +1,16 @@
+{
+  "name": "fairy-lock-next-turn-only",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Klefki\nAbility: Prankster\nLevel: 50\n- Fairy Lock\n- Seismic Toss\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\n- Seismic Toss"
+  },
+  "p2": {
+    "team": "Rillaboom\nAbility: Overgrow\nLevel: 50\n- Seismic Toss\n\nPikachu\nAbility: Static\nLevel: 50\n- Seismic Toss"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 2", "p2": "switch 2" }
+  ]
+}
