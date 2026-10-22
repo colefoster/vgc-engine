@@ -2359,6 +2359,25 @@ impl Battle {
         Some(self.locked_move_choice(side, Choice::Move { actor_slot, move_slot, target: None }))
     }
 
+    /// The move's target as PS's move request states it (sim/pokemon.ts:
+    /// 997-1008 getMoves): Curse is `self` for a non-Ghost, Pollen Puff is
+    /// `adjacentFoe` for a heal-blocked user, else the data target. A
+    /// `build.rs` target code.
+    pub(crate) fn effective_move_target(&self, mon: &Pokemon, move_id: u16) -> u8 {
+        match move_id {
+            data::move_id::CURSE => {
+                let (types, n) = mon.effective_types();
+                if types[..n as usize].contains(&13) {
+                    self.moves()[move_id as usize].target
+                } else {
+                    1
+                }
+            }
+            data::move_id::POLLENPUFF if mon.heal_block_turns() > 0 => 4,
+            _ => self.moves()[move_id as usize].target,
+        }
+    }
+
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let mut out = Vec::with_capacity(8);
         self.legal_choices_into(side, actor_slot, &mut out);
@@ -2613,24 +2632,6 @@ impl Battle {
                         }
                     }
                 }
-                // Opt-in ally target, after every foe choice so first-choice
-                // consumers still pick a foe. PS validTargetLoc
-                // (sim/battle.ts:2416-2428): `normal` = adjacent (the doubles
-                // partner is adjacent), `any` = not self; `adjacentFoe` never
-                // the ally. Gated alive + not commanding like the foes above.
-                if self.ally_targets && m.target != 4 && self.config.format.active_count() == 2 {
-                    let ally_slot = 1 - actor_slot;
-                    if s.active_mon(ally_slot as usize).is_some_and(|m| m.is_alive() && !m.commanding) {
-                        let target = Some(Target { side, slot: ally_slot });
-                        out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
-                        if can_tera {
-                            out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target });
-                        }
-                        if can_mega {
-                            out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target });
-                        }
-                    }
-                }
             } else {
                 out.push(Choice::Move { actor_slot, move_slot: i as u8, target: None });
                 if can_tera {
@@ -2638,6 +2639,26 @@ impl Battle {
                 }
                 if can_mega {
                     out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target: None });
+                }
+            }
+            // Opt-in partner target, after this move's other choices so
+            // first-choice consumers still pick a foe. PS validates against
+            // the request's (effective) target (sim/side.ts:594, sim/pokemon.ts:
+            // 997-1008) with validTargetLoc (sim/battle.ts:2416-2428):
+            // `normal` = adjacent, `any` = not self; `adjacentFoe` never the
+            // ally. Gated alive + not commanding like the foes above.
+            if self.ally_targets
+                && self.config.format.active_count() == 2
+                && matches!(self.effective_move_target(active, move_id), 0 | 10)
+                && s.active_mon(1 - actor_slot as usize).is_some_and(|m| m.is_alive() && !m.commanding)
+            {
+                let target = Some(Target { side, slot: 1 - actor_slot });
+                out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
+                if can_tera {
+                    out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target });
+                }
+                if can_mega {
+                    out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target });
                 }
             }
         }
