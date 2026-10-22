@@ -218,3 +218,74 @@ fn mean_look_in_doubles_hits_the_chosen_foe_and_can_target_an_ally() {
     assert!(!b.is_trapped(SideRef::P1, 1));
     assert!(!b.is_trapped(SideRef::P2, 1));
 }
+
+// ---- Jaw Lock ----
+
+const BITER: &str = r#"[{"species":"tyranitar","level":50,"ability":"unnerve","moves":["jawlock","splash"]},
+    {"species":"blissey","level":50,"ability":"naturalcure","moves":["splash"]}]"#;
+const BITTEN: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash","uturn"],"evs":{"hp":252,"def":252}},
+    {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+
+#[test]
+fn jaw_lock_traps_both_user_and_target() {
+    // PS data/moves.ts:9789 jawlock onHit: source first, then target.
+    let mut b = logged(Format::Singles, BITER, BITTEN, 1);
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert!(b.is_trapped(SideRef::P1, 0) && b.is_trapped(SideRef::P2, 0));
+    assert!(!can_switch(&b, SideRef::P1, 0) && !can_switch(&b, SideRef::P2, 0));
+    let log = log_lines(&b);
+    let user = log.iter().position(|l| l == "|-activate|p1a: Tyranitar|trapped");
+    let target = log.iter().position(|l| l == "|-activate|p2a: Snorlax|trapped");
+    assert!(user.is_some() && target.is_some() && user < target, "{log:?}");
+}
+
+#[test]
+fn jaw_lock_ghost_immunity_is_per_side() {
+    // runStatusImmunity('trapped') on each addVolatile separately.
+    let ghost_target = r#"[{"species":"gengar","level":50,"ability":"cursedbody","moves":["splash"],"evs":{"hp":252,"def":252}},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let mut b = logged(Format::Singles, BITER, ghost_target, 1);
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert!(b.is_trapped(SideRef::P1, 0), "user trapped by the Ghost");
+    assert!(!b.p2.team[0].volatiles.has(VolatileKind::Trapped), "Ghost target not trapped");
+
+    let ghost_user = r#"[{"species":"gengar","level":50,"ability":"cursedbody","moves":["jawlock"]},
+        {"species":"blissey","level":50,"ability":"naturalcure","moves":["splash"]}]"#;
+    let mut b = logged(Format::Singles, ghost_user, BITTEN, 1);
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert!(!b.p1.team[0].volatiles.has(VolatileKind::Trapped), "Ghost user not trapped");
+    assert!(b.is_trapped(SideRef::P2, 0));
+}
+
+#[test]
+fn jaw_lock_releases_the_user_when_the_target_leaves() {
+    // The target U-turns out (selfSwitch ignores the trap); its link on the
+    // user is removed with it.
+    let mut b = logged(Format::Singles, BITER, BITTEN, 1);
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    b.step(&[mv(0, 1, None)], &[mv(0, 1, Some(t(SideRef::P1, 0))), Choice::Switch { actor_slot: 0, team_index: 1 }]);
+    assert_eq!(b.p2.active[0], 1);
+    assert!(!b.p1.team[0].volatiles.has(VolatileKind::Trapped));
+    assert!(can_switch(&b, SideRef::P1, 0), "user released");
+}
+
+#[test]
+fn jaw_lock_that_kos_traps_nobody() {
+    // addVolatile: a fainted holder (`!this.hp`) and a fainted linked
+    // source (`linkedStatus && !source.hp`) both fail.
+    let mut b = logged(Format::Singles, BITER, BITTEN, 1);
+    b.p2.team[0].current_hp = 1;
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert!(!b.p2.team[0].is_alive());
+    assert!(!b.p1.team[0].volatiles.has(VolatileKind::Trapped));
+}
+
+#[test]
+fn jaw_lock_into_a_substitute_traps_nobody() {
+    // The Substitute's HIT_SUBSTITUTE drops the target before runMoveEffects.
+    let mut b = logged(Format::Singles, BITER, BITTEN, 1);
+    b.p2.team[0].set_substitute_hp(200);
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert!(!b.p1.team[0].volatiles.has(VolatileKind::Trapped));
+    assert!(!b.p2.team[0].volatiles.has(VolatileKind::Trapped));
+}
