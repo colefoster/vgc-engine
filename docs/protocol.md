@@ -329,18 +329,28 @@ b = vgc_engine.position_from_replay(log, turn=5, ally_targets=True)
 - A partner choice is the tuple `("move" | "tera" | "mega", slot, move,
   own_side, 1 - slot)`. It follows that move's foe choices, so the first
   choice is still a foe target.
-- Offered only for `normal` / `any` moves, never `adjacentFoe` (Me First),
-  self, spread or partner-auto moves (Helping Hand keeps target `-1`), and
-  only while the partner is alive and not a commanding Tatsugiri. Singles
-  is unchanged.
+- Offered for `normal` / `any` moves and Acupressure (`adjacentAllyOrSelf`;
+  its targetless choice is the user), judged by the move's request target
+  (sim/pokemon.ts:997-1008): a heal-blocked Pollen Puff is `adjacentFoe`,
+  a non-Ghost Curse is `self`, so neither offers the partner. Never
+  `adjacentFoe` (Me First), self, spread or Helping Hand (target `-1`
+  already means the partner). Singles is unchanged.
+- Like PS, the partner's state doesn't matter: a fainted partner (the move
+  fails) or a commanding Tatsugiri (the move misses) is still offered.
+- `canonical_hash` includes the flag when it is on, so a reused
+  transposition table never mixes the two action spaces.
 - Not serialized: `to_json` / `to_bytes` snapshots are byte-identical to
   flag-off ones and load with it off. Pass `ally_targets=True` to
   `from_json` / `from_bytes` / `from_position`, or set the property.
 - `step_move` and PS sessions (`choose(side, "move 1 -2")`) always accept
   a partner target; the flag only changes what `legal_choices` lists.
 - Rust: `Battle::ally_targets` (a `pub bool`). Parity test:
-  `crates/vgc-engine-golden/tests/ally_target_choices.rs`, PS side from
-  `tools/ps-target-choices/target-choices.js`.
+  `crates/vgc-engine-golden/tests/ally_target_choices.rs` (7 positions),
+  PS side from `PS_DIST=<ps>/dist/sim node
+  tools/ps-target-choices/target-choices.js <fixture>.input.json`.
+- Known flag-off gaps the flag leaves alone: a non-Ghost Curse still offers
+  foe targets PS rejects, and PS also accepts a fainted or commanding foe
+  slot that `legal_choices` omits.
 
 ### Observations
 
