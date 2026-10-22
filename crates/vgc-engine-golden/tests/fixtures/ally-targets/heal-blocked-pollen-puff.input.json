@@ -1,0 +1,22 @@
+{
+  "name": "heal-blocked-pollen-puff",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Staraptor\nAbility: Keen Eye\nLevel: 50\nHardy Nature\n- Tackle\n- Splash\n\nRibombee\nAbility: Sweet Veil\nLevel: 50\nHardy Nature\n- Pollen Puff\n- Splash\n- Dazzling Gleam"
+  },
+  "p2": {
+    "team": "Blissey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n- Encore\n- Psychic Noise\n\nChansey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n- Tackle\n\nAudino\nAbility: Healer\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 3 2, move 1"
+    }
+  ]
+}

@@ -333,7 +333,7 @@ pub fn run_golden(input_path: &Path, ps_path: &Path) -> Result<GoldenReport, Gol
 /// an error, not wrapped.
 ///
 /// Errors keep `TeamLoadError`'s Debug text (`Empty`, `TooMany(n)`, ...).
-pub fn load_golden_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
+fn load_golden_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
     if !champions {
         return TeamBuilder::from_showdown_text_in(text, false).map_err(|e| format!("{e:?}"));
     }

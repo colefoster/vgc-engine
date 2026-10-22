@@ -1,0 +1,17 @@
+{
+  "name": "commanding-partner",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Dondozo\nAbility: Unaware\nLevel: 50\nHardy Nature\n- Tackle\n- Charm\n- Order Up\n\nTatsugiri\nAbility: Commander\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Blissey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n- Encore\n- Psychic Noise\n\nChansey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n- Tackle\n\nAudino\nAbility: Healer\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": []
+}
