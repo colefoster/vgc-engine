@@ -11293,6 +11293,21 @@ self.trigger_emergency_exits();
         if hit_sub {
             return;
         }
+        // Jaw Lock — PS data/moves.ts:9789 jawlock onHit:
+        // `source.addVolatile('trapped', target, move, 'trapper')` then
+        // `target.addVolatile('trapped', source, move, 'trapper')`. Each side
+        // fails on its own (Ghost immunity, an existing `trapped`), and both
+        // fail once the target is KO'd (`!this.hp` / `!source.hp`). Each
+        // trap ends when the other mon leaves (`release_linked_traps`).
+        // Not a secondary: Sheer Force / Shield Dust don't touch it.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Jaw_Lock_(move)>.
+        if ctx.move_id == data::move_id::JAWLOCK {
+            if self.plog() {
+                self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+            }
+            self.apply_move_trap(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
+            self.apply_move_trap(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot);
+        }
         // Bug Bite / Pluck — PS data/moves.ts bugbite / pluck onHit: a user
         // with HP takes the target's Berry (takeItem; Sticky Hold blocks while
         // its holder has HP) and eats it (singleEvent 'Eat', no Unnerve check).
