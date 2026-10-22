@@ -22,6 +22,8 @@ use crate::protocol::{ResEntry, ResId, ResPlan};
 use crate::pokemon::Status;
 
 const NONE: i64 = 4_294_967_296;
+/// `ResId::Pseudo` id for Fairy Lock, clear of the real subOrders.
+const FAIRY_LOCK_RES: u8 = 0xF0;
 
 /// Shuffle kinds handed in by a replaying harness.
 pub const SHUFFLE_RESIDUAL: u8 = 0;
@@ -124,6 +126,11 @@ impl Battle {
             if turns > 0 {
                 push(&mut e, (27, 0, 0, sub as i64), ResId::Pseudo(sub), turns == 1, false);
             }
+        }
+        // Fairy Lock (no onFieldResidualOrder; silent): its own id, it never
+        // starts a handler of its own (`p_res`).
+        if self.fairy_lock_turns > 0 {
+            push(&mut e, (NONE, 0, 0, 5), ResId::Pseudo(FAIRY_LOCK_RES), self.fairy_lock_turns == 1, false);
         }
         if self.weather != crate::weather::Weather::None {
             push(&mut e, (1, 0, 0, 5), ResId::Weather, self.weather_turns == 1, false);

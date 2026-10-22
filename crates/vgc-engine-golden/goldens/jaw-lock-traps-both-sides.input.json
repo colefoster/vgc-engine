@@ -1,0 +1,33 @@
+{
+  "name": "jaw-lock-traps-both-sides",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Tyranitar\nAbility: Unnerve\nLevel: 50\n- Jaw Lock\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Seismic Toss"
+  },
+  "p2": {
+    "team": "Snorlax\nAbility: Thick Fat\nLevel: 50\nEVs: 252 HP / 252 Def\n- Splash\n- U-turn\n\nGengar\nAbility: Cursed Body\nLevel: 50\nEVs: 252 HP / 252 Def\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    },
+    {
+      "p1": "move 2",
+      "p2": "move 2",
+      "p2_followups": [
+        "switch 2"
+      ]
+    },
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    }
+  ]
+}

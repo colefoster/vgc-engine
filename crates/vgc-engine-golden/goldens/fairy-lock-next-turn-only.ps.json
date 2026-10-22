@@ -1,0 +1,127 @@
+{
+  "ok": true,
+  "name": "fairy-lock-next-turn-only",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Klefki",
+      "hp": 132,
+      "max": 132
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Rillaboom",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Fairy Lock",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Seismic Toss",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 82,
+      "max": 132,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Fairy Lock",
+      "target": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Seismic Toss",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 32,
+      "max": 132,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 60,
+      "max": 110,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 3,
+      "denom": 10,
+      "site": "Battle.onDamagingHit (data/abilities.js:4496)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792676066\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Klefki, L50, M|\n|poke|p1|Snorlax, L50, F|\n|poke|p2|Rillaboom, L50, F|\n|poke|p2|Pikachu, L50, M|\n|teampreview|\n|t:|1792676066\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Klefki|Klefki, L50, M|132/132\n|switch|p2a: Rillaboom|Rillaboom, L50, F|175/175\n|turn|1|\n|t:|1792676066\n|move|p1a: Klefki|Fairy Lock|p1a: Klefki\n|-fieldactivate|move: Fairy Lock\n|move|p2a: Rillaboom|Seismic Toss|p1a: Klefki\n|-damage|p1a: Klefki|82/132\n|\n|upkeep\n|turn|2|\n|t:|1792676066\n|move|p1a: Klefki|Fairy Lock||[still]\n|-fail|p1a: Klefki\n|debug|move failed because it did nothing\n|move|p2a: Rillaboom|Seismic Toss|p1a: Klefki\n|-damage|p1a: Klefki|32/132\n|\n|upkeep\n|turn|3|\n|t:|1792676066\n|switch|p2a: Pikachu|Pikachu, L50, M|110/110\n|move|p1a: Klefki|Seismic Toss|p2a: Pikachu\n|-damage|p2a: Pikachu|60/110\n|\n|upkeep\n|turn|4"
+}
