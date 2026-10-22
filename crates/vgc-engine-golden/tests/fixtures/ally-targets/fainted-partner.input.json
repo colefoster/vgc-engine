@@ -1,0 +1,22 @@
+{
+  "name": "fainted-partner",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Staraptor\nAbility: Keen Eye\nLevel: 50\nHardy Nature\n- Tackle\n- Brave Bird\n- Charm\n- Acupressure\n\nWobbuffet\nAbility: Shadow Tag\nLevel: 50\nHardy Nature\n- Memento"
+  },
+  "p2": {
+    "team": "Blissey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n- Encore\n- Psychic Noise\n\nChansey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n- Tackle\n\nAudino\nAbility: Healer\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 1, move 1 1",
+      "p2": "move 1, move 1"
+    }
+  ]
+}

@@ -657,3 +657,25 @@ fn champions_sleep_sample_is_keyed_apart_from_the_last_move() {
         assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
     }
 }
+
+/// Ghost Curse aimed at the partner (an `ally_targets` choice; PS accepts
+/// `move N -2`, sim/battle.ts:2399-2429): curse onModifyMove makes it
+/// randomNormal and useMoveInner re-picks a random foe (data/moves.ts curse;
+/// data/mods/champions/moves.ts curse; sim/battle-actions.ts:432-436). Seeds
+/// 01-03 land on both foes. Captured from `tools/accuracy/repros/ally-target-jobs.jsonl`.
+#[test]
+fn ghost_curse_at_partner_curses_a_random_foe() {
+    for fmt in ["gen9", "champions"] {
+        for k in 1..=3 {
+            let name = format!("ghost-curse-at-partner-{fmt}-{k:02}");
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/accuracy/repros/battles").join(format!("{name}.json"));
+            let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(&name)).expect(&name);
+            let rep = replay_keyed(&acc);
+            assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+            assert!(rep.turns_compared > 0, "{name}");
+            assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+            assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+            assert_eq!(rep.repaired, 0, "{name}");
+        }
+    }
+}

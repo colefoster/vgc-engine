@@ -1,0 +1,26 @@
+{
+  "name": "locked-and-encored",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Staraptor @ Choice Scarf\nAbility: Keen Eye\nLevel: 50\nHardy Nature\n- Tackle\n- Brave Bird\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Tackle\n- Pollen Puff\n- Splash"
+  },
+  "p2": {
+    "team": "Whimsicott\nAbility: Prankster\nLevel: 50\nHardy Nature\n- Encore\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nAudino\nAbility: Healer\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 1, move 1 2",
+      "p2": "move 2, move 1"
+    },
+    {
+      "p1": "move 1 1, move 1 2",
+      "p2": "move 1 2, move 1"
+    }
+  ]
+}

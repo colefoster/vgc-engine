@@ -1,0 +1,225 @@
+{
+  "ok": true,
+  "name": "ally-target-fainted-partner-fails",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 5,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Staraptor",
+      "hp": 160,
+      "max": 160
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Wobbuffet",
+      "hp": 265,
+      "max": 265
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Memento",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "spa",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "faint",
+      "actor": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tackle",
+      "target": "p1"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tackle",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 207,
+      "max": 330,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Charm",
+      "target": "p1"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Charm",
+      "target": "p2a"
+    },
+    {
+      "turn": 5,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792677092\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Staraptor, L50, M|\n|poke|p1|Wobbuffet, L50, M|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Audino, L50, F|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1792677092\n|teamsize|p1|2\n|teamsize|p2|4\n|start\n|switch|p1a: Staraptor|Staraptor, L50, M|160/160\n|switch|p1b: Wobbuffet|Wobbuffet, L50, M|265/265\n|switch|p2a: Blissey|Blissey, L50, F|330/330\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|turn|1|\n|t:|1792677092\n|move|p1a: Staraptor|Splash|p1a: Staraptor\n|-nothing\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|move|p1b: Wobbuffet|Memento|p2a: Blissey\n|-unboost|p2a: Blissey|atk|2\n|-unboost|p2a: Blissey|spa|2\n|faint|p1b: Wobbuffet\n|\n|upkeep\n|turn|2|\n|t:|1792677092\n|move|p1a: Staraptor|Tackle|p1: Wobbuffet|[notarget]\n|-fail|p1a: Staraptor\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1792677092\n|move|p1a: Staraptor|Tackle|p2a: Blissey\n|-damage|p2a: Blissey|207/330\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|4|\n|t:|1792677092\n|move|p1a: Staraptor|Charm|p1: Wobbuffet|[notarget]\n|-fail|p1a: Staraptor\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|5|\n|t:|1792677092\n|move|p1a: Staraptor|Charm|p2a: Blissey\n|-unboost|p2a: Blissey|atk|2\n|move|p2a: Blissey|Splash|p2a: Blissey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|6"
+}
