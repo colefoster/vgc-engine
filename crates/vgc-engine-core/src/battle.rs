@@ -330,6 +330,13 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
+    /// Opt-in: `legal_choices` also offers the adjacent ally as the target
+    /// of a `normal` / `any` move in doubles, as PS accepts (`move N -1/-2`,
+    /// sim/battle.ts:2399-2429 validTargetLoc). Off by default: turning it
+    /// on changes the action space. Clones keep it; serialized snapshots
+    /// don't (skipped so `to_json` / bincode bytes stay unchanged).
+    #[serde(skip)]
+    pub ally_targets: bool,
     /// Set while a batched SwitchIn's abilities run: White Herb's
     /// onAnySwitchIn (priority -2, data/items.ts:7692) waits until every
     /// ability handler (Intimidate, priority 0) has run.
@@ -834,6 +841,7 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
+            ally_targets: false,
             defer_white_herb: false,
             white_herb_move_defer: false,
             disguise_hit_this_move: false,
@@ -2596,6 +2604,24 @@ impl Battle {
                         .is_some_and(|m| m.is_alive() && !m.commanding)
                     {
                         let target = Some(Target { side: side.opposing(), slot: opp_slot });
+                        out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
+                        if can_tera {
+                            out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target });
+                        }
+                        if can_mega {
+                            out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target });
+                        }
+                    }
+                }
+                // Opt-in ally target, after every foe choice so first-choice
+                // consumers still pick a foe. PS validTargetLoc
+                // (sim/battle.ts:2416-2428): `normal` = adjacent (the doubles
+                // partner is adjacent), `any` = not self; `adjacentFoe` never
+                // the ally. Gated alive + not commanding like the foes above.
+                if self.ally_targets && m.target != 4 && self.config.format.active_count() == 2 {
+                    let ally_slot = 1 - actor_slot;
+                    if s.active_mon(ally_slot as usize).is_some_and(|m| m.is_alive() && !m.commanding) {
+                        let target = Some(Target { side, slot: ally_slot });
                         out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
                         if can_tera {
                             out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target });
@@ -50239,3 +50265,7 @@ pub(crate) fn is_zero_u8(v: &u8) -> bool {
 #[cfg(test)]
 #[path = "battle_trap_tests.rs"]
 mod trap_tests;
+
+#[cfg(test)]
+#[path = "battle_ally_targets_tests.rs"]
+mod ally_targets_tests;
