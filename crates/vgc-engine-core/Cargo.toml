@@ -39,3 +39,6 @@ chance = []
 # and compiles in the PS draw-order alignment at gated call sites. Off by
 # default: without it those blocks don't exist and behaviour is unchanged.
 ps-rng = []
+
+[dev-dependencies]
+bincode = "1"

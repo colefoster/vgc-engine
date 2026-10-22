@@ -129,7 +129,14 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                 o.viewer = viewer;
                 o.lookahead = lookahead;
                 let rec = reconstruct(&input.lines, &o, &prior).unwrap();
-                for v in [rec.battle_json(), rec.prefix_json(), rec.report.clone(), rec.board.clone(), rec.sets.clone()] {
+                // `fairy_lock_turns` is always serialized since 0.5.0 (bincode
+                // can't skip fields); drop the zero so the 0.4.1 digest still
+                // guards every pre-existing byte.
+                let mut battle = rec.battle_json();
+                if battle["fairy_lock_turns"] == 0 {
+                    battle.as_object_mut().unwrap().remove("fairy_lock_turns");
+                }
+                for v in [battle, rec.prefix_json(), rec.report.clone(), rec.board.clone(), rec.sets.clone()] {
                     all.push_str(&serde_json::to_string(&v).unwrap());
                     all.push('\n');
                 }
