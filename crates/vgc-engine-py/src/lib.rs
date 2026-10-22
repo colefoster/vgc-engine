@@ -930,10 +930,14 @@ impl PyBattle {
     }
 
     /// Reconstruct a battle from bincode bytes produced by `to_bytes`.
+    /// `ally_targets` sets the opt-in flag (see `from_teams`); snapshots
+    /// don't carry it.
     #[staticmethod]
-    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+    #[pyo3(signature = (data, ally_targets = false))]
+    fn from_bytes(data: &[u8], ally_targets: bool) -> PyResult<Self> {
         let mut inner: core::Battle = bincode::deserialize(data)
             .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
+        inner.ally_targets = ally_targets;
         // See `from_json`: recompute the `#[serde(skip)]` derived caches.
         inner.rehydrate_caches();
         Ok(Self { inner, session: None, report: None })
@@ -947,10 +951,14 @@ impl PyBattle {
     }
 
     /// Reconstruct a battle from a JSON string produced by `to_json`.
+    /// `ally_targets` sets the opt-in flag (see `from_teams`); snapshots
+    /// don't carry it.
     #[staticmethod]
-    fn from_json(data: &str) -> PyResult<Self> {
+    #[pyo3(signature = (data, ally_targets = false))]
+    fn from_json(data: &str, ally_targets: bool) -> PyResult<Self> {
         let mut inner: core::Battle = serde_json::from_str(data)
             .map_err(|e| PyValueError::new_err(format!("from_json failed: {e}")))?;
+        inner.ally_targets = ally_targets;
         // `#[serde(skip)]` derived caches (move_locks / can_mega_evolve /
         // cached weather+terrain) come back at their Default after a
         // round-trip; recompute them from canonical state.
