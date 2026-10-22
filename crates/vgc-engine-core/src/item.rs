@@ -830,48 +830,50 @@ pub fn on_damaging_hit(
     // (Weakness Policy, booster orbs, Air Balloon) are unaffected — gate
     // each Berry arm on this flag rather than the whole function.
     let berry_ok = can_eat_berry(battle, target_side, item_id);
-    // Weakness Policy — PS `data/items.ts:weaknesspolicy`
-    //   onHit(target, source, move) {
-    //     if (target.runEffectiveness(move) > 0) {
-    //       target.useItem();
-    //     }
+    // Weakness Policy — PS `data/items.ts:7602-7606` weaknesspolicy
+    //   onDamagingHit(damage, target, source, move) {
+    //     if (!move.damage && !move.damageCallback &&
+    //         target.getMoveHitData(move).typeMod > 0) target.useItem();
     //   }
-    //   onAfterUseItem(item, pokemon) {
-    //     this.boost({atk: 2, spa: 2});
-    //   }
-    // Fires when the holder takes a super-effective damaging hit (×2 or
-    // ×4 after the type chart). +2 Atk and +2 SpA, consumed. Self-boost
-    // → Clear Amulet / Clear Body / White Smoke don't gate it (those
-    // block boosts from OTHER mons; Weakness Policy is target-on-self).
+    // +2 Atk / +2 SpA (`boosts`), consumed. typeMod is the hit's real
+    // effectiveness: the move's runtime type (-ate, Weather Ball, Tera Blast,
+    // Liquid Voice, ...) against the holder's current (Tera) types, with
+    // Freeze-Dry / Scrappy handled by `effectiveness_for_attack`. Fixed-damage
+    // moves (Seismic Toss, Super Fang, Counter, ...) never trigger it. Self-
+    // boost → Clear Amulet / Clear Body don't gate it.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Weakness_Policy>.
-    if item_id == data::item_id::WEAKNESSPOLICY {
-        // Read effectiveness against the defender's species (post-Tera
-        // would matter — Weakness Policy on a Terastallized Garchomp
-        // reads its Tera type — but `effective_types_for_move` belongs
-        // in damage.rs and is gated on the defender mon's full state,
-        // not just species. For now we use the species-level chart, which
-        // matches the non-Tera case and is the common one for WP holders
-        // (Kyogre, Heracross, etc).
-        let mv = &data::MOVES[move_id as usize];
-        let move_type = mv.type_;
-        if mv.category != 2 {
-            let species = match battle.side(target_side).active_mon(target_slot as usize) {
-                Some(m) => m.species(),
-                None => return,
-            };
-            let eff = crate::damage::type_effectiveness(move_type, species);
-            use crate::damage::TypeEff;
-            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
-                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                    t.consume_item();
-                }
-                // Weakness Policy self-boost: +2 Atk, +2 SpA.
-                battle.p_item_line("-enditem", target_side, target_slot, item_id, "");
-                battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
-                battle.apply_boosts(target_side, target_slot, &[(0, 2), (2, 2)], target_side, target_slot);
+    if item_id == data::item_id::WEAKNESSPOLICY
+        && data::MOVES[move_id as usize].category != 2
+        && !is_fixed_damage_move(move_id)
+    {
+        let super_effective = match (
+            battle.side(attacker_side).active_mon(attacker_slot as usize),
+            battle.side(target_side).active_mon(target_slot as usize),
+        ) {
+            (Some(a), Some(d)) => {
+                let move_type = crate::damage::move_type_in_ctx(a, move_id, &crate::damage::DamageContext {
+                    weather: battle.effective_weather(),
+                    terrain: battle.terrain,
+                    champions: battle.champions,
+                    ..crate::damage::DamageContext::default()
+                });
+                use crate::damage::TypeEff;
+                move_type < 18
+                    && matches!(
+                        crate::damage::effectiveness_for_attack(a, move_id, move_type, d),
+                        TypeEff::DoubleX | TypeEff::QuadrupleX
+                    )
             }
+            _ => false,
+        };
+        if super_effective {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                t.consume_item();
+            }
+            battle.p_item_line("-enditem", target_side, target_slot, item_id, "");
+            battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
+            battle.apply_boosts(target_side, target_slot, &[(0, 2), (2, 2)], target_side, target_slot);
         }
-        let _ = attacker_side; let _ = attacker_slot;
     }
     // Enigma Berry — PS `data/items.ts:1841`
     //   onHit(target, source, move) {
@@ -1751,4 +1753,20 @@ mod inert_tests {
             }
         }
     }
+}
+
+/// PS moves with a fixed `damage` or a `damageCallback` (data/moves.ts):
+/// their hit carries no type-effectiveness for items that read typeMod.
+fn is_fixed_damage_move(move_id: u16) -> bool {
+    matches!(
+        move_id,
+        data::move_id::SEISMICTOSS | data::move_id::NIGHTSHADE
+            | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
+            | data::move_id::SUPERFANG | data::move_id::RUINATION
+            | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
+            | data::move_id::COUNTER | data::move_id::MIRRORCOAT
+            | data::move_id::METALBURST | data::move_id::COMEUPPANCE
+            | data::move_id::PSYWAVE | data::move_id::NATURESMADNESS
+            | data::move_id::GUARDIANOFALOLA
+    )
 }

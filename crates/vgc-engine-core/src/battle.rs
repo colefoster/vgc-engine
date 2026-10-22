@@ -1327,30 +1327,6 @@ impl Battle {
         }
     }
 
-    /// Effective weather for a damage exchange — Utility Umbrella on
-    /// EITHER the attacker OR the defender suppresses Sun/Rain effects
-    /// in PS's damage formula (the field effectiveWeather is queried by
-    /// each side at calc time; an umbrella holder reads '' regardless of
-    /// orientation). Used by the damage calc + accuracy block.
-    pub fn effective_weather_for_pair(
-        &self,
-        attacker_side: SideRef,
-        attacker_slot: u8,
-        defender_side: SideRef,
-        defender_slot: u8,
-    ) -> crate::weather::Weather {
-        let a = self.effective_weather_for(attacker_side, attacker_slot);
-        if matches!(a, crate::weather::Weather::None) {
-            return a;
-        }
-        // If defender also holds umbrella, suppress.
-        let d = self.effective_weather_for(defender_side, defender_slot);
-        if matches!(d, crate::weather::Weather::None) {
-            return d;
-        }
-        a
-    }
-
     /// True if any active mon's ability suppresses weather.
     pub(crate) fn weather_suppressed(&self) -> bool {
         let n = self.format().active_count();
@@ -7524,17 +7500,8 @@ self.trigger_emergency_exits();
         //   <https://bulbapedia.bulbagarden.net/wiki/Queenly_Majesty_(Ability)>
         //   <https://bulbapedia.bulbagarden.net/wiki/Armor_Tail_(Ability)>
         {
-            // Effective priority — mirror order.rs's integer bumps.
-            let mut eff_priority = m.priority as i32;
-            if m.category == 2 && attacker.effective_ability_id() == data::ability_id::PRANKSTER {
-                eff_priority += 1;
-            }
-            if move_id == data::move_id::GRASSYGLIDE
-                && matches!(self.terrain, crate::terrain::Terrain::Grassy)
-                && attacker.is_grounded()
-            {
-                eff_priority += 1;
-            }
+            // Effective priority — the same value the order sort used.
+            let eff_priority = crate::order::effective_move_priority(self, &attacker, move_id, m.priority as i32, m.category);
             if eff_priority > 0 {
                 let opp = actor_side.opposing();
                 // Does the move reach the protected (opposing) side? PS's
@@ -8383,14 +8350,14 @@ self.trigger_emergency_exits();
             // opponent — PS data/moves.ts:psychicterrain `onTryHit`
             // (priority 4): the move does nothing to that target. Damaging
             // priority moves (Quick Attack, Fake Out, Sucker Punch, Bullet
-            // Punch, Ice Shard, Aqua Jet, Extreme Speed, …) never gain a
-            // priority bump here — Prankster only lifts Status moves and
-            // Grassy Glide can't co-occur with Psychic Terrain — so the
-            // move's base priority IS its effective priority. Allies/self
-            // (`tside == actor_side`) and semi-invulnerable targets (already
-            // `continue`d above) are exempt. Checked before the accuracy
-            // roll so no PRNG draw is consumed, matching the Protect path.
-            if m.priority > 0
+            // Punch, Ice Shard, Aqua Jet, Extreme Speed, …) and moves lifted
+            // by ModifyPriority (Triage drain moves) are blocked: PS reads
+            // `move.priority`, see `order::effective_move_priority`.
+            // Allies/self (`tside == actor_side`) and semi-invulnerable
+            // targets (already `continue`d above) are exempt. Checked before
+            // the accuracy roll so no PRNG draw is consumed, matching the
+            // Protect path.
+            if crate::order::effective_move_priority(self, &attacker, move_id, m.priority as i32, m.category) > 0
                 && matches!(self.terrain, crate::terrain::Terrain::Psychic)
                 && tside != actor_side
                 && defender.is_grounded()
@@ -8633,14 +8600,17 @@ self.trigger_emergency_exits();
                 n_protected += 1;
                 continue;
             }
-            // Quick Guard — blocks priority moves (priority > 0) aimed
-            // at this side. Sucker Punch's onTry runs first, so it
-            // never reaches Quick Guard's check when target queues
-            // a status move; the common interaction is Fake Out being
-            // blocked.
+            // Quick Guard — blocks priority moves aimed at this side.
+            // Sucker Punch's onTry runs first, so it never reaches Quick
+            // Guard's check when target queues a status move.
+            // PS data/moves.ts:14514 `if (move.priority <= 0.1) return;`
+            // reads the ModifyPriority-adjusted priority (Prankster status
+            // moves, Grassy Glide in Grassy Terrain are blocked); Quick
+            // Claw / Custap's +0.1 lives in fractionalPriority and never
+            // counts.
             if protect_flag
                 && self.side(tside).conditions.quick_guard_this_turn
-                && m.priority > 0
+                && crate::order::effective_move_priority(self, &attacker, move_id, m.priority as i32, m.category) > 0
             {
                 self.p_tag_tryhit(0, tside, tslot);
                 pmon!(self, "-activate", tside, tslot, "|move: Quick Guard");
@@ -9028,9 +8998,7 @@ self.trigger_emergency_exits();
                     // value PS's `runEffectiveness` returns. Block unless
                     // strictly super-effective.
                     let eff_ctx = DamageContext {
-                        weather: self.effective_weather_for_pair(
-                            actor_side, actor_slot, tside, tslot,
-                        ),
+                        weather: self.effective_weather(),
                         terrain: self.terrain,
                         champions: self.champions,
                         ..DamageContext::default()
@@ -9116,7 +9084,7 @@ self.trigger_emergency_exits();
             // gated on grounding above (PS runImmunity uses isGrounded).
             if damaging && !is_fixed_damage {
                 let eff_ctx = DamageContext {
-                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    weather: self.effective_weather(),
                     terrain: self.terrain,
                     champions: self.champions,
                     ..DamageContext::default()
@@ -9646,7 +9614,7 @@ self.trigger_emergency_exits();
                     guarded || (tside == SideRef::P2 && self.calc_mods.friend_guard)
                 };
             let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                weather: self.effective_weather(),
                 terrain: active_terrain,
                 champions: self.champions,
                 ..DamageContext::default()
@@ -9673,7 +9641,7 @@ self.trigger_emergency_exits();
             }
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
-                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                weather: self.effective_weather(),
                 terrain: active_terrain,
                 defender_has_reflect, defender_has_light_screen,
                 defender_has_aurora_veil,
@@ -9951,7 +9919,7 @@ self.trigger_emergency_exits();
                 self.p_tag(crate::protocol::step::CALC, tside, tslot);
                 self.p_sub(1);
                 let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    weather: self.effective_weather(),
                     terrain: self.terrain,
                     champions: self.champions,
                     ..DamageContext::default()
@@ -10646,8 +10614,7 @@ self.trigger_emergency_exits();
             }
         }
         // Psychic Terrain — PS data/moves.ts:psychicterrain onTryHit.
-        let eff_priority = m.priority as i32
-            + if attacker.effective_ability_id() == data::ability_id::PRANKSTER { 1 } else { 0 };
+        let eff_priority = crate::order::effective_move_priority(self, attacker, move_id, m.priority as i32, m.category);
         if eff_priority > 0
             && matches!(self.terrain, crate::terrain::Terrain::Psychic)
             && is_targeting_move(m.target)
@@ -10680,6 +10647,38 @@ self.trigger_emergency_exits();
                         .is_some_and(|t| t.is_alive() && t.is_grounded() && t.semi_invuln == 0);
                 if blocked {
                     pmon!(self, "-activate", tside, tslot, "|move: Psychic Terrain");
+                    return;
+                }
+            }
+        }
+        // Quick Guard — PS data/moves.ts:14510-14525 quickguard condition
+        // onTryHit (onTryHitPriority 4, ahead of Protect and the target's
+        // abilities): blocks a move whose ModifyPriority-adjusted priority
+        // is positive (here: a Prankster status move) and that has the
+        // `protect` flag. Self-targeted moves never reach TryHit.
+        if m.blocked_by_protect
+            && crate::order::effective_move_priority(self, attacker, move_id, m.priority as i32, m.category) > 0
+        {
+            let opp = actor_side.opposing();
+            let qg_target: Option<(SideRef, u8)> = if m.target == 6 {
+                (0..self.format().active_count() as u8)
+                    .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|d| d.is_alive()))
+                    .map(|s| (opp, s))
+            } else if is_targeting_move(m.target) {
+                match target {
+                    Some(t) => Some((t.side, t.slot)),
+                    None => (0..self.format().active_count() as u8)
+                        .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|d| d.is_alive()))
+                        .map(|s| (opp, s)),
+                }
+            } else {
+                None
+            };
+            if let Some((tside, tslot)) = qg_target {
+                if !(tside == actor_side && tslot == actor_slot)
+                    && self.side(tside).conditions.quick_guard_this_turn
+                {
+                    pmon!(self, "-activate", tside, tslot, "|move: Quick Guard");
                     return;
                 }
             }

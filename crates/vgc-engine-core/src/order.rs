@@ -406,42 +406,15 @@ fn schedule_move(
                 let mv = &data::MOVES[mid as usize];
                 (mv.priority as i32, mv.category)
             };
-            // Prankster: +1 priority to status moves used by the holder.
-            // Dark-type immunity to the boosted move is enforced at
-            // resolve time (gen 7+), not here — order-resolution still
-            // uses the bumped priority. PS data/abilities.ts prankster
-            // onModifyPriority.
-            let pri_after_ability = if category == 2
-                && m.effective_ability_id() == data::ability_id::PRANKSTER
-            {
-                base_pri + 1
-            } else {
+            // ModifyPriority handlers (Prankster, Grassy Glide): see
+            // `effective_move_priority`. Prankster's Dark-type immunity is
+            // enforced at resolve time (gen 7+), not here. Quick Claw and
+            // Quick Draw are fractional priority (+0.1): see `quick` below.
+            let pri_after_item = if m.must_recharge {
                 base_pri
-            };
-            // Quick Claw and Quick Draw are fractional priority (+0.1): see
-            // `quick` below.
-            let pri_after_item = pri_after_ability;
-            // Grassy Glide — PS data/moves.ts:grassyglide
-            //   onModifyPriority(priority, source, target, move) {
-            //     if (this.field.isTerrain('grassyterrain') && source.isGrounded()) {
-            //       return priority + 1;
-            //     }
-            //   }
-            // +1 priority bump when the USER is grounded under Grassy
-            // Terrain. PR-275 left this branch unwired (gap doc:
-            // "grassyglide priority-bump branch not yet wired").
-            // Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
-            let pri_after_terrain = if mid == data::move_id::GRASSYGLIDE
-                && !m.must_recharge
-                && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
-                && m.is_grounded()
-            {
-                pri_after_item + 1
             } else {
-                pri_after_item
+                effective_move_priority(battle, m, mid, base_pri, category)
             };
-            let pri_after_item = pri_after_terrain;
             // Fractional-priority items:
             //   Custap Berry — PS `data/items.ts:custapberry`
             //   `onFractionalPriority(priority, pokemon) {
@@ -591,14 +564,46 @@ pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, mov
         let mv = &data::MOVES[mid as usize];
         (mv.priority as i32, mv.category)
     };
+    if m.must_recharge {
+        return base;
+    }
+    effective_move_priority(battle, m, mid, base, category)
+}
+
+/// A move's integer priority after the `ModifyPriority` handlers, the value
+/// PS writes back to `action.move.priority` (sim/battle.ts:2643-2649) and
+/// that Quick Guard / Dazzling read as `move.priority`. Fractional bumps
+/// (Quick Claw, Custap) are excluded: PS keeps them in
+/// `action.fractionalPriority`. `base`/`category` come from the caller's
+/// move record.
+pub(crate) fn effective_move_priority(battle: &Battle, m: &Pokemon, mid: u16, base: i32, category: u8) -> i32 {
     let mut pri = base;
     if category == 2 && m.effective_ability_id() == data::ability_id::PRANKSTER {
         pri += 1;
     }
     if mid == data::move_id::GRASSYGLIDE
-        && !m.must_recharge
         && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
         && m.is_grounded()
+    {
+        pri += 1;
+    }
+    // Triage — PS data/abilities.ts:5172 `if (move?.flags['heal']) return
+    // priority + 3;` (Draining Kiss, Drain Punch, Giga Drain, Recover, ...).
+    // https://bulbapedia.bulbagarden.net/wiki/Triage_(Ability)
+    if m.effective_ability_id() == data::ability_id::TRIAGE
+        && (mid as usize) < data::MOVES.len()
+        && data::MOVES[mid as usize].is_heal
+    {
+        pri += 3;
+    }
+    // Gale Wings — PS data/abilities.ts:1588-1590 `if (move?.type ===
+    // 'Flying' && pokemon.hp === pokemon.maxhp) return priority + 1;`. The
+    // type is the dex type: ModifyType runs at use time, after the sort.
+    // https://bulbapedia.bulbagarden.net/wiki/Gale_Wings_(Ability)
+    if m.effective_ability_id() == data::ability_id::GALEWINGS
+        && m.current_hp == m.stats.hp
+        && (mid as usize) < data::MOVES.len()
+        && data::MOVES[mid as usize].type_ == 9
     {
         pri += 1;
     }
@@ -908,6 +913,30 @@ mod tests {
         let mut b = Battle::new(BattleConfig::default(), p1, p2);
         assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 1);
         b.p1.team[0].ability_override = data::ability_id::SIMPLE;
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 0);
+    }
+
+    #[test]
+    fn triage_lifts_heal_flag_moves_by_three() {
+        // PS data/abilities.ts:5172 triage onModifyPriority: +3 on flags.heal.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"comfey","level":50,"ability":"triage","moves":["drainingkiss","dazzlinggleam","recover"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let b = Battle::new(BattleConfig::default(), p1, p2);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 3);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 1), 0);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 2), 3);
+    }
+
+    #[test]
+    fn gale_wings_lifts_flying_moves_at_full_hp_only() {
+        // PS data/abilities.ts:1588 galewings onModifyPriority.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"talonflame","level":50,"ability":"galewings","moves":["bravebird","flareblitz","roost"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig::default(), p1, p2);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 1);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 1), 0);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 2), 1);
+        b.p1.team[0].current_hp -= 1;
         assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 0);
     }
 

@@ -2037,7 +2037,7 @@ pub fn on_damaging_hit(
     {
         let move_type = match battle.side(attacker_side).active_mon(attacker_slot as usize) {
             Some(a) => crate::damage::move_type_in_ctx(a, move_id, &crate::damage::DamageContext {
-                weather: battle.effective_weather_for_pair(attacker_side, attacker_slot, target_side, target_slot),
+                weather: battle.effective_weather(),
                 terrain: battle.terrain,
                 champions: battle.champions,
                 ..crate::damage::DamageContext::default()
