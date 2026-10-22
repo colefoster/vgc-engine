@@ -116,6 +116,45 @@ fn no_ally_when_fainted_or_commanding() {
 }
 
 #[test]
+fn effective_target_gates_the_partner() {
+    // sim/pokemon.ts:997-1008: heal-blocked Pollen Puff is adjacentFoe,
+    // non-Ghost Curse is self.
+    let mut b = doubles(true);
+    b.p1.active_mon_mut(1).unwrap().set_heal_block(2);
+    assert!(ally_moves(&b.legal_choices(SideRef::P1, 1), P1A).is_empty(), "heal-blocked Pollen Puff");
+    let p1 = r#"[{"species":"snorlax","level":50,"moves":["curse","acupressure"]},{"species":"gengar","level":50,"moves":["curse"]}]"#;
+    let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(P2).unwrap());
+    b.ally_targets = true;
+    // Snorlax: non-Ghost Curse is self, no partner.
+    assert!(ally_moves(&b.legal_choices(SideRef::P1, 0), P1B).is_empty());
+    // Ghost Curse keeps its data target `normal`: the partner is a valid pick.
+    assert_eq!(ally_moves(&b.legal_choices(SideRef::P1, 1), P1A), vec![(0, "move"), (0, "tera")]);
+}
+
+#[test]
+fn mega_variants_follow_foe_variants() {
+    let p1 = r#"[{"species":"charizard","level":50,"item":"charizarditey","teratype":"fire","moves":["tackle"]},{"species":"snorlax","level":50,"moves":["tackle"]}]"#;
+    let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(P2).unwrap());
+    b.ally_targets = true;
+    let foe = |slot| Some(Target { side: SideRef::P2, slot });
+    let got: Vec<(&str, Option<Target>)> = b
+        .legal_choices(SideRef::P1, 0)
+        .iter()
+        .filter_map(|c| match *c {
+            Choice::Move { target, .. } => Some(("move", target)),
+            Choice::Terastallize { target, .. } => Some(("tera", target)),
+            Choice::MegaEvolve { target, .. } => Some(("mega", target)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(got, vec![
+        ("move", foe(0)), ("tera", foe(0)), ("mega", foe(0)),
+        ("move", foe(1)), ("tera", foe(1)), ("mega", foe(1)),
+        ("move", Some(P1B)), ("tera", Some(P1B)), ("mega", Some(P1B)),
+    ]);
+}
+
+#[test]
 fn singles_unaffected() {
     let mk = |on| {
         let mut b = Battle::new(

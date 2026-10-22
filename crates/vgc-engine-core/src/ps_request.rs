@@ -627,13 +627,7 @@ impl Battle {
                     continue;
                 }
                 let d = &self.moves()[mv as usize];
-                let mut target = target_str(d.target);
-                let dm = &data::MOVES[mv as usize];
-                if dm.slug == "curse" && !(0..m.effective_types().1 as usize).any(|k| m.effective_types().0[k] == 13) {
-                    target = "self";
-                } else if dm.slug == "pollenpuff" && m.heal_block_turns() > 0 {
-                    target = "adjacentFoe";
-                }
+                let target = target_str(self.effective_move_target(m, mv));
                 let dis = self.ps_move_disabled(side, m, i);
                 let disabled = match dis {
                     Some(true) => true,
