@@ -1,0 +1,199 @@
+{
+  "ok": true,
+  "name": "triage-quick-guard-draining-kiss",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Comfey",
+      "hp": 158,
+      "max": 158
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 142,
+      "max": 142
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Mienshao",
+      "hp": 172,
+      "max": 172
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Jolteon",
+      "hp": 172,
+      "max": 172
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Quick Guard",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Draining Kiss",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Thunderbolt",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 104,
+      "max": 158,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Draining Kiss",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 142,
+      "max": 172,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "heal",
+      "actor": "p1a",
+      "hp": 127,
+      "max": 158,
+      "from": "drain"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Thunderbolt",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 75,
+      "max": 158,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 82,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 1,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 14,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1792675965\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Comfey, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Mienshao, L50, F|\n|poke|p2|Jolteon, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1792675965\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Comfey|Comfey, L50, M|158/158\n|switch|p1b: Pikachu|Pikachu, L50, F|142/142\n|switch|p2a: Mienshao|Mienshao, L50, F|172/172\n|switch|p2b: Jolteon|Jolteon, L50, M|172/172\n|turn|1|\n|t:|1792675965\n|move|p2a: Mienshao|Quick Guard|p2a: Mienshao\n|-singleturn|p2a: Mienshao|Quick Guard\n|move|p1a: Comfey|Draining Kiss|p2b: Jolteon\n|-activate|p2b: Jolteon|move: Quick Guard\n|move|p2b: Jolteon|Thunderbolt|p1a: Comfey\n|-damage|p1a: Comfey|104/158\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1792675965\n|move|p1a: Comfey|Draining Kiss|p2b: Jolteon\n|-damage|p2b: Jolteon|142/172\n|-heal|p1a: Comfey|127/158|[from] drain|[of] p2b: Jolteon\n|move|p2b: Jolteon|Thunderbolt|p1a: Comfey\n|-damage|p1a: Comfey|75/158\n|move|p2a: Mienshao|Splash|p2a: Mienshao\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|\n|upkeep\n|turn|3"
+}

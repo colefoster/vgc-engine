@@ -587,6 +587,15 @@ pub(crate) fn effective_move_priority(battle: &Battle, m: &Pokemon, mid: u16, ba
     {
         pri += 1;
     }
+    // Triage — PS data/abilities.ts:5172 `if (move?.flags['heal']) return
+    // priority + 3;` (Draining Kiss, Drain Punch, Giga Drain, Recover, ...).
+    // https://bulbapedia.bulbagarden.net/wiki/Triage_(Ability)
+    if m.effective_ability_id() == data::ability_id::TRIAGE
+        && (mid as usize) < data::MOVES.len()
+        && data::MOVES[mid as usize].is_heal
+    {
+        pri += 3;
+    }
     pri
 }
 
@@ -894,6 +903,17 @@ mod tests {
         assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 1);
         b.p1.team[0].ability_override = data::ability_id::SIMPLE;
         assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 0);
+    }
+
+    #[test]
+    fn triage_lifts_heal_flag_moves_by_three() {
+        // PS data/abilities.ts:5172 triage onModifyPriority: +3 on flags.heal.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"comfey","level":50,"ability":"triage","moves":["drainingkiss","dazzlinggleam","recover"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let b = Battle::new(BattleConfig::default(), p1, p2);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 3);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 1), 0);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 2), 3);
     }
 
     fn t(side: SideRef, slot: u8) -> Target {
