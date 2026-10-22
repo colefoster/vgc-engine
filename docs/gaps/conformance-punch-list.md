@@ -206,3 +206,11 @@ out_18, out_20, out_21, out_22, out_27, out_34, out_38, out_39, out_42, out_48).
 The big systematic one (spread-secondary target) is fixed; the tail is
 per-battle (out_20 ability fairyaura/blaze, out_48 paralysis, deeper-turn draw
 attribution). Lower value than the real bugs above.
+
+## Found during the niche-doubles pass (2026-10-22): logged, not fixed
+
+These came up in the Quick Guard / Utility Umbrella / Weakness Policy work (niche/quick-guard). They were out of scope there:
+- **Unseen Fist vs Quick Guard.** A contact move from an Unseen Fist user should bypass Quick Guard (PS `data/abilities.ts` unseenfist onModifyMove deletes `flags.protect`). The engine still blocks it.
+- **Hydro Steam in sun.** It should get a ×1.5 boost in sun, unless the attacker holds Utility Umbrella (PS `data/conditions.ts` sunnyday onWeatherModifyDamage). The engine doesn't apply it.
+- **Enigma Berry** reads the dex type against species types. It should use the hit's real type effectiveness, as Weakness Policy does after f61040a.
+- **Doubles spread Fairy moves into Dragon/Ground targets** diverge on damage. This predates the pass; the root cause isn't triaged.
