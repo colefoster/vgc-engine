@@ -18157,7 +18157,8 @@ self.trigger_emergency_exits();
         // target (sim/battle.ts:2464-2476 getTarget): a fainted partner fails
         // the move with `[notarget]` + `-fail` (sim/battle-actions.ts:510-513),
         // a commanding one makes it miss (sim/battle-actions.ts:625).
-        if forced_target.is_none() && matches!(m.target, 0 | 10) {
+        // Ghost Curse is exempt: its onModifyMove re-picks a foe first.
+        if forced_target.is_none() && matches!(m.target, 0 | 10) && move_id != data::move_id::CURSE {
             if let Some(t) = target.filter(|t| t.side == actor_side && t.slot != actor_slot) {
                 match self.side(t.side).active_mon(t.slot as usize).map(|p| (p.is_alive(), p.commanding)) {
                     Some((false, _)) => {
@@ -20173,6 +20174,19 @@ self.trigger_emergency_exits();
                                 .is_some_and(|mm| mm.is_alive()) =>
                     {
                         Some((t.side, t.slot))
+                    }
+                    // Aimed at the partner: curse onModifyMove makes it
+                    // randomNormal (data/moves.ts curse), so useMoveInner
+                    // re-picks a random foe twice, after the singleEvent and
+                    // again after the runEvent ModifyMove; the second pick
+                    // stands (sim/battle-actions.ts:430-442).
+                    Some(t) if forced_target.is_none() && t.side == actor_side && t.slot != actor_slot => {
+                        let _ = self.random_target_for(actor_side, actor_slot, move_id);
+                        let pick = self.random_target_for(actor_side, actor_slot, move_id).map(|t| (t.side, t.slot));
+                        if let Some((ps, pslot)) = pick {
+                            self.p_retarget(ps, pslot);
+                        }
+                        pick
                     }
                     _ => opp_target,
                 };
