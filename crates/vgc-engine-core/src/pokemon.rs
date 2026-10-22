@@ -437,8 +437,8 @@ pub enum VolatileKind {
     /// hit burns the attacker. Duration 1; removed when its user moves.
     BeakBlast,
     /// PS `trapped` (data/conditions.ts): a move-trap (Spirit Shackle's
-    /// secondary) that blocks the holder's switch choice while its source
-    /// stays in. Linked to the source (PS `addVolatile(..., 'trapper')`):
+    /// secondary, Mean Look / Block / Jaw Lock onHit) that blocks the
+    /// holder's switch choice while its source stays in. Linked to the source (PS `addVolatile(..., 'trapper')`):
     /// dropped when the source switches out, ignored once it has fainted.
     /// Payload: `side << 16 | team index` of the source.
     Trapped,

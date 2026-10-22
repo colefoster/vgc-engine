@@ -1,0 +1,44 @@
+{
+  "name": "mean-look-perish-song-trap",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Umbreon\nAbility: Inner Focus\nLevel: 50\n- Mean Look\n- Perish Song\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Seismic Toss"
+  },
+  "p2": {
+    "team": "Snorlax\nAbility: Thick Fat\nLevel: 50\n- Seismic Toss\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Seismic Toss"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    },
+    {
+      "p1": "move 2",
+      "p2": "move 2"
+    },
+    {
+      "p1": "move 3",
+      "p2": "move 2"
+    },
+    {
+      "p1": "move 3",
+      "p2": "move 2"
+    },
+    {
+      "p1": "move 3",
+      "p2": "move 2",
+      "p1_replace": "switch 2",
+      "p2_replace": "switch 2"
+    },
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    }
+  ]
+}
