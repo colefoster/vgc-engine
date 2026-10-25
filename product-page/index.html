@@ -116,7 +116,7 @@
       </article>
       <article class="who-card">
         <h3>Game-theory &amp; endgames</h3>
-        <p>The <code>vgc-solver</code> crate enumerates outcome frontiers and solves small endgames, returning mixed policies for both sides with provenance and node counts.</p>
+        <p>The <code>vgc-solver</code> crate enumerates outcome frontiers and solves small endgames, returning mixed policies for both sides with provenance and node counts. Every solve stops at a hard time budget and still returns a usable answer.</p>
       </article>
       <article class="who-card">
         <h3>Mechanics &amp; tooling</h3>
@@ -266,11 +266,12 @@ mkdir -p .dex
 curl -fsSL https://registry.npmjs.org/localdex/-/localdex-0.1.1.tgz | tar xz -C .dex
 export VGC_DEX_DIR="$PWD/.dex/package/data"
 
-<span class="c"># Build and install the Python module (vgc_engine 0.5.0)</span>
+<span class="c"># Build and install the Python module (vgc_engine 0.5.0).</span>
+<span class="c"># ps-rng enables ps_seed and Showdown sessions; without it they raise.</span>
 python3 -m venv .venv
 .venv/bin/pip install maturin
 .venv/bin/maturin build --release -m crates/vgc-engine-py/Cargo.toml \
-    -i .venv/bin/python -o dist
+    --features ps-rng -i .venv/bin/python -o dist
 .venv/bin/pip install dist/vgc_engine-0.5.0-*.whl
 .venv/bin/python -c "import vgc_engine; print('ok')"
 
@@ -306,10 +307,18 @@ again = vgc_engine.Battle.from_bytes(snapshot)</code></pre>
         <button type="button" class="copy" data-copy="code-solve">Copy</button>
 <pre><code id="code-solve">import vgc_engine
 
-<span class="c"># Exact endgame search with an HP-ratio leaf; returns mixed policies.</span>
-sol = vgc_engine.solve_endgame_exact(b, max_depth=<span class="n">1</span>, node_budget=<span class="n">1_000</span>)
-sol[<span class="s">"value"</span>], sol[<span class="s">"provenance"</span>], sol[<span class="s">"nodes_visited"</span>]
+<span class="c"># Anytime endgame solve under a hard 1.5 s budget; returns mixed policies.</span>
+sol = vgc_engine.solve_endgame_anytime(b, time_budget_ms=<span class="n">1500</span>)
+sol[<span class="s">"value"</span>], sol[<span class="s">"provenance"</span>], sol[<span class="s">"depth_completed"</span>]
+sol[<span class="s">"truncated"</span>], sol[<span class="s">"truncation_reason"</span>]   <span class="c"># best-so-far if over budget</span>
 row_action = sol[<span class="s">"row_joint_policy"</span>][<span class="n">0</span>][<span class="n">0</span>]   <span class="c"># an executable joint choice</span>
+
+<span class="c"># One budget across K sampled opponent sets; own action by EV</span>
+w = vgc_engine.solve_endgame_worlds([b, b.clone()], side=<span class="s">"p1"</span>, time_budget_ms=<span class="n">1500</span>)
+w[<span class="s">"chosen"</span>], w[<span class="s">"chosen_ev_own"</span>], w[<span class="s">"robust"</span>]
+
+<span class="c"># Exact search with depth and node limits (also deadline-bounded)</span>
+sol = vgc_engine.solve_endgame_exact(b, max_depth=<span class="n">1</span>, node_budget=<span class="n">1_000</span>)
 
 <span class="c"># Or plug in your own batched leaf evaluator (a model, a heuristic…)</span>
 sol = vgc_engine.solve_endgame(b, lambda obs: [<span class="n">0.0</span>] * len(obs))
@@ -343,7 +352,7 @@ cargo test -p vgc-engine-core --features ps-rng</code></pre>
       <p class="sr-only" aria-live="polite" id="copy-live"></p>
     </div>
 
-    <p class="fine">Verified on macOS arm64 with Python 3.9 and 3.12 from a fresh clone of <code>main</code> at 0.5.0 (2026-10-24). On Linux, CI runs <code>cargo test</code>; the wheel steps there are untested.</p>
+    <p class="fine">Verified on macOS arm64 with Python 3.9 and 3.12 from a fresh clone of <code>main</code> at 0.5.0 (2026-10-24). On Linux, CI runs <code>cargo test</code>, and wheels for x86_64 serving hosts are built natively with <code>--features ps-rng</code>.</p>
 
     <div class="cta-strip">
       <p>Full build notes, the Python API and protocol docs live in the repo.</p>
@@ -360,7 +369,7 @@ cargo test -p vgc-engine-core --features ps-rng</code></pre>
     <div class="use-table" role="list">
       <div class="use-row" role="listitem"><h3>Rollouts for MCTS</h3><p>Clone, step joint actions, read HP and terminal results.</p><code>Battle.clone · step_move · legal_choices</code></div>
       <div class="use-row" role="listitem"><h3>Chance-aware search</h3><p>Enumerate every next state of a turn with its prior, deduplicated.</p><code>step_chance · vgc-solver</code></div>
-      <div class="use-row" role="listitem"><h3>Small endgames</h3><p>Solve for mixed policies with depth, node and chance budgets.</p><code>solve_endgame_exact · solve_endgame</code></div>
+      <div class="use-row" role="listitem"><h3>Small endgames</h3><p>Solve for mixed policies under a hard deadline, alone or across sampled opponent sets.</p><code>solve_endgame_anytime · solve_endgame_worlds · solve_endgame_exact</code></div>
       <div class="use-row" role="listitem"><h3>Start from a real replay</h3><p>Rebuild the position at turn N of a Showdown replay, filling hidden sets from a usage prior.</p><code>position_from_replay · from_position · vgc recon</code></div>
       <div class="use-row" role="listitem"><h3>Snapshots &amp; datasets</h3><p>Persist states mid-game and restore them elsewhere.</p><code>to_bytes · from_bytes · to_json</code></div>
       <div class="use-row" role="listitem"><h3>Team legality</h3><p>Check a Showdown export against Champions Reg M-B or Reg M-C rules.</p><code>parse_and_verify</code></div>
@@ -395,8 +404,16 @@ cargo test -p vgc-engine-core --features ps-rng</code></pre>
           <li><span class="big">serde</span><span>fix: <code>to_bytes</code> / <code>from_bytes</code> round-trips again.</span></li>
         </ul>
         <p class="ledger-p"><a href="https://github.com/colefoster/vgc-engine/blob/main/docs/releases.md">Release notes</a> · <a href="https://github.com/colefoster/vgc-engine/blob/main/docs/accuracy/fix-log.md">Fix log</a></p>
+        <h3 class="mt"><span class="tag tag-current">Current</span> Solver budgets, on <code>main</code> since 0.5.0</h3>
+        <ul class="ledger-list">
+          <li><span class="big">0.5 ms</span><span>largest overrun of the 1.5 s served budget on 1,031 real endgame positions. The deadline and <code>replay_budget</code> are checked before every simulated turn on every solver path; panics are caught.</span></li>
+          <li><span class="big">0.85 → 0.24</span><span>largest value error against a brute-force reference, after a frontier-merge bug that made results depend on enumeration order was fixed.</span></li>
+          <li><span class="big">best-so-far</span><span>an over-budget solve returns a well-formed result flagged <code>truncated</code> with a reason, never nothing.</span></li>
+        </ul>
+        <p class="ledger-p"><a href="https://github.com/colefoster/vgc-engine/blob/main/docs/solver_coverage_map.md">Solver coverage map</a></p>
         <h3 class="mt"><span class="tag tag-diag">Not yet passed</span> Open items</h3>
         <ul class="ledger-list">
+          <li><span class="big">+0.12 pp</span><span>win-rate change, i.e. no measurable lift, from letting the solver override a bot's play model in endgames, in pre-registered tests in a downstream bot project (95% CI −1.91 to +1.92). The solver gives correct, bounded answers; it does not by itself make a bot win more.</span></li>
           <li><span class="big">1–2%</span><span>of unseen battles still diverge, mostly in rare interactions: added types (Forest's Curse), batched double switches, contact-ability procs, some terrain and Life Orb edge cases.</span></li>
           <li><span class="big">—</span><span>Speed claims are withheld. No representative performance workload has been agreed and measured.</span></li>
         </ul>
@@ -441,7 +458,8 @@ cargo test -p vgc-engine-core --features ps-rng</code></pre>
           <li>Showdown protocol output and a local <code>simulate-battle</code> stdio sim</li>
           <li><code>chance</code> frontier (record/replay wrapper)</li>
           <li><code>ps-rng</code> Showdown PRNG mode</li>
-          <li>Endgame solver, damage-calc CLI, golden &amp; conformance harnesses</li>
+          <li>Endgame solvers (exact, anytime, sampled worlds) with hard time budgets</li>
+          <li>Damage-calc CLI, golden &amp; conformance harnesses</li>
         </ul>
       </section>
       <section class="rm-col rm-next" aria-labelledby="rm-next">
@@ -474,6 +492,10 @@ cargo test -p vgc-engine-core --features ps-rng</code></pre>
     <details>
       <summary>Is it accurate enough to replace Showdown?</summary>
       <p>For local self-play, the 2026-10-11 accuracy report says yes: about 98–99% of unseen real Reg M-C battles replay turn for turn identically. As the final evaluator, not yet. The remaining errors cluster in rare interactions, and a policy trained only on engine self-play could learn to exploit one. Keep a periodic check against Showdown, and treat Showdown as ground truth.</p>
+    </details>
+    <details>
+      <summary>Will the endgame solver make my bot win more?</summary>
+      <p>Not on the evidence so far. In pre-registered tests in a downstream bot project, overriding a trained play model with the solver's endgame choice showed no measurable win-rate change. What the solver does guarantee is a correct answer for the position it was given, inside a hard time budget.</p>
     </details>
     <details>
       <summary>How much faster is it?</summary>
