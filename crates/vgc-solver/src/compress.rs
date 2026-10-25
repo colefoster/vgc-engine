@@ -102,6 +102,9 @@ pub fn enumerate_outcomes_compressed(
     cc: ChanceCompression,
 ) -> (OutcomeFrontier, f64) {
     let opts = EnumerateOpts { lossy_damage_3bucket: true, auto_lossy_damage_threshold: None };
+    if crate::budget::tick() {
+        return (OutcomeFrontier::aborted(), 1.0);
+    }
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
     let _ = rec.step(p1, p2);
@@ -117,10 +120,12 @@ pub fn enumerate_outcomes_compressed(
         resolve_damage(&mut per_site, cc.max_combos, opts);
         let (dedup, raw, covered, unmatched, misses) = best_first_pass(base, p1, p2, record_seed, &per_site, cc);
         let new_sites = discover_new_sites(&per_site, &misses, opts);
-        if new_sites.is_empty() || lazy >= MAX_LAZY_ITERATIONS {
+        if new_sites.is_empty() || lazy >= MAX_LAZY_ITERATIONS || crate::budget::tripped().is_some() {
             let mut outcomes: Vec<Outcome> = dedup.into_values().collect();
+            // covered == 0 only when the solve budget tripped before the
+            // first replay (outcomes empty); the solver discards the cell.
             for o in &mut outcomes {
-                o.prob /= covered;
+                o.prob /= covered.max(f64::MIN_POSITIVE);
             }
             outcomes.sort_by_key(|o| o.hash);
             let f = OutcomeFrontier { outcomes, raw_combos: raw, unmatched_total: unmatched, lazy_iterations: lazy };
@@ -229,6 +234,9 @@ fn best_first_pass(
         let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
         for (s, site) in per_site.iter().enumerate() {
             table.entry(site.0).or_default().push_back(site.1[c.idx[s] as usize].0);
+        }
+        if crate::budget::tick() {
+            break;
         }
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));

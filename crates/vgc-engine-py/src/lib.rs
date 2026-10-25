@@ -1505,6 +1505,7 @@ fn provenance_slug(p: vgc_solver::Provenance) -> &'static str {
         vgc_solver::Provenance::Exact => "exact",
         vgc_solver::Provenance::Estimated(vgc_solver::EstReason::DepthLimit) => "depth_limit",
         vgc_solver::Provenance::Estimated(vgc_solver::EstReason::NodeLimit) => "node_limit",
+        vgc_solver::Provenance::Estimated(vgc_solver::EstReason::Aborted) => "timeout",
     }
 }
 
@@ -1550,7 +1551,8 @@ fn provenance_slug(p: vgc_solver::Provenance) -> &'static str {
 ///   sol = vgc_engine.solve_endgame_exact(b, max_depth=32)
 ///   sol["value"], sol["provenance"]
 #[pyfunction]
-#[pyo3(signature = (battle, max_depth = 16, node_budget = 1_000_000, exact_hp = false, max_actions = None, max_chance_combinations = None))]
+#[pyo3(signature = (battle, max_depth = 16, node_budget = 1_000_000, exact_hp = false, max_actions = None, max_chance_combinations = None, time_budget_ms = Some(60_000), replay_budget = None))]
+#[allow(clippy::too_many_arguments)]
 fn solve_endgame_exact<'py>(
     py: Python<'py>,
     battle: &PyBattle,
@@ -1559,33 +1561,92 @@ fn solve_endgame_exact<'py>(
     exact_hp: bool,
     max_actions: Option<usize>,
     max_chance_combinations: Option<u64>,
+    time_budget_ms: Option<u64>,
+    replay_budget: Option<u64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     if max_actions.is_some_and(|n| n < 2) { return Err(PyValueError::new_err("max_actions must be at least two")); }
+    let t0 = std::time::Instant::now();
     let cfg = vgc_solver::SolverConfig {
         max_depth,
         node_budget,
         exact_hp,
         max_actions,
         max_chance_combinations,
+        deadline: time_budget_ms.map(|ms| t0 + std::time::Duration::from_millis(ms)),
+        replay_budget,
         ..vgc_solver::SolverConfig::default()
     };
-
-    let mut stats = vgc_solver::SolverStats::default();
-    let node = vgc_solver::endgame_solve_with_tt_stats(&battle.inner, &cfg, vgc_solver::hp_ratio_leaf,
-        &mut std::collections::HashMap::new(), &mut stats);
-
+    let (r, stats) = match bounded_solve(py, &battle.inner, &cfg, false) {
+        Ok(x) => x,
+        Err(msg) => return solver_error_dict(py, &msg, t0),
+    };
     let d = PyDict::new(py);
+    let node = &r.node;
     d.set_item("value", node.value)?;
-    d.set_item("provenance", if stats.chance_cutoffs > 0 { "chance_limit" } else if max_actions.is_some() { "action_limit" } else { provenance_slug(node.provenance) })?;
+    let prov = if r.depth_completed == 0 && r.truncated.is_some() { "timeout" }
+        else if stats.chance_cutoffs > 0 { "chance_limit" }
+        else if max_actions.is_some() { "action_limit" }
+        else { provenance_slug(node.provenance) };
+    d.set_item("provenance", prov)?;
     d.set_item("depth_remaining", node.depth_remaining)?;
+    d.set_item("depth_completed", r.depth_completed)?;
     d.set_item("nodes_visited", stats.nodes_visited)?;
     d.set_item("action_limit", max_actions)?;
     d.set_item("chance_cutoffs", stats.chance_cutoffs)?;
     d.set_item("exact_hp", exact_hp)?;
+    set_truncation(&d, &r, t0)?;
     d.set_item("row_joint_policy", joint_policy_to_py(py, &node.row_joint_policy)?)?;
     d.set_item("col_joint_policy", joint_policy_to_py(py, &node.col_joint_policy)?)?;
     d.set_item("row_policy", policy_to_py(py, &node.row_policy)?)?;
     d.set_item("col_policy", policy_to_py(py, &node.col_policy)?)?;
+    Ok(d)
+}
+
+/// Run [`vgc_solver::endgame_solve_bounded`] with the GIL released, turning an
+/// engine panic into `Err(message)` so nothing throws past the binding.
+fn bounded_solve(
+    py: Python<'_>,
+    battle: &core::Battle,
+    cfg: &vgc_solver::SolverConfig,
+    anytime: bool,
+) -> Result<(vgc_solver::BoundedSolve, vgc_solver::SolverStats), String> {
+    let b = battle.clone();
+    py.allow_threads(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut stats = vgc_solver::SolverStats::default();
+            let r = vgc_solver::endgame_solve_bounded(&b, cfg, vgc_solver::hp_ratio_leaf,
+                &mut std::collections::HashMap::new(), &mut stats, anytime);
+            (r, stats)
+        }))
+        .map_err(|e| {
+            e.downcast_ref::<&str>().map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "solver panicked".into())
+        })
+    })
+}
+
+/// `truncated` / `truncation_reason` / `elapsed_ms` (shared by both solvers).
+fn set_truncation(d: &Bound<'_, PyDict>, r: &vgc_solver::BoundedSolve, t0: std::time::Instant) -> PyResult<()> {
+    d.set_item("truncated", r.truncated.is_some())?;
+    d.set_item("truncation_reason", r.truncated.map(|t| t.as_str()))?;
+    d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)
+}
+
+/// Well-formed result for a solve that panicked inside the engine.
+fn solver_error_dict<'py>(py: Python<'py>, msg: &str, t0: std::time::Instant) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("value", py.None())?;
+    d.set_item("provenance", "error")?;
+    d.set_item("error", msg)?;
+    d.set_item("depth_completed", 0)?;
+    d.set_item("truncated", true)?;
+    d.set_item("truncation_reason", "error")?;
+    d.set_item("timed_out", false)?;
+    d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)?;
+    for k in ["row_joint_policy", "col_joint_policy", "row_policy", "col_policy"] {
+        d.set_item(k, PyList::empty(py))?;
+    }
     Ok(d)
 }
 
@@ -1608,12 +1669,14 @@ fn solve_endgame_exact<'py>(
 /// `exact` provenance means "solved to terminal on the compressed chance
 /// tree", not bit-exact.
 ///
-/// Returns `None` for `value` / provenance `"timeout"` when not even
-/// depth 1 finished. Otherwise the dict carries the same keys as
-/// `solve_endgame_exact` plus `depth_completed`, `timed_out`, `elapsed_ms`,
-/// `chance_mass_dropped_max`, `cells`, `outcomes`, `raw_combos`.
+/// When not even depth 1 finished, provenance is `"timeout"`,
+/// `depth_completed` is 0, `value` is the static leaf value and the policies
+/// are uniform over the legal joint actions (a well-formed placeholder; gate
+/// on `depth_completed`). The dict carries the same keys as
+/// `solve_endgame_exact` plus `timed_out`, `chance_mass_dropped_max`,
+/// `cells`, `outcomes`, `raw_combos`.
 #[pyfunction]
-#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64))]
+#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64, replay_budget = None))]
 fn solve_endgame_anytime<'py>(
     py: Python<'py>,
     battle: &PyBattle,
@@ -1622,38 +1685,30 @@ fn solve_endgame_anytime<'py>(
     compress: bool,
     mass_eps: f64,
     max_combos: usize,
+    replay_budget: Option<u64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let t0 = std::time::Instant::now();
-    let b = battle.inner.clone();
     let cfg = vgc_solver::SolverConfig {
         max_depth,
         node_budget: u64::MAX,
         deadline: Some(t0 + std::time::Duration::from_millis(time_budget_ms)),
+        replay_budget,
         chance_compression: compress.then_some(vgc_solver::ChanceCompression { mass_eps, max_combos }),
         ..vgc_solver::SolverConfig::default()
     };
-    let mut stats = vgc_solver::SolverStats::default();
-    let r = py.allow_threads(|| {
-        vgc_solver::endgame_solve_anytime(&b, &cfg, vgc_solver::hp_ratio_leaf, &mut std::collections::HashMap::new(), &mut stats)
-    });
+    let (r, stats) = match bounded_solve(py, &battle.inner, &cfg, true) {
+        Ok(x) => x,
+        Err(msg) => return solver_error_dict(py, &msg, t0),
+    };
     let d = PyDict::new(py);
-    match &r.node {
-        Some(node) => {
-            d.set_item("value", node.value)?;
-            d.set_item("provenance", provenance_slug(node.provenance))?;
-            d.set_item("row_joint_policy", joint_policy_to_py(py, &node.row_joint_policy)?)?;
-            d.set_item("col_joint_policy", joint_policy_to_py(py, &node.col_joint_policy)?)?;
-        }
-        None => {
-            d.set_item("value", py.None())?;
-            d.set_item("provenance", "timeout")?;
-            d.set_item("row_joint_policy", PyList::empty(py))?;
-            d.set_item("col_joint_policy", PyList::empty(py))?;
-        }
-    }
+    let node = &r.node;
+    d.set_item("value", node.value)?;
+    d.set_item("provenance", if r.depth_completed == 0 && r.truncated.is_some() { "timeout" } else { provenance_slug(node.provenance) })?;
+    d.set_item("row_joint_policy", joint_policy_to_py(py, &node.row_joint_policy)?)?;
+    d.set_item("col_joint_policy", joint_policy_to_py(py, &node.col_joint_policy)?)?;
     d.set_item("depth_completed", r.depth_completed)?;
-    d.set_item("timed_out", r.timed_out)?;
-    d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)?;
+    d.set_item("timed_out", stats.stop_reason.is_some())?;
+    set_truncation(&d, &r, t0)?;
     d.set_item("compress", compress)?;
     d.set_item("chance_mass_dropped_max", stats.chance_mass_dropped_max)?;
     d.set_item("chance_mass_dropped_mean", stats.chance_mass_dropped_sum / (stats.cells.max(1) as f64))?;

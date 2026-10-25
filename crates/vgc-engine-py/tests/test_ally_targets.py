@@ -31,7 +31,8 @@ def test_default_off_and_kwarg():
     assert on.ally_targets is True
     # Tackle (normal) and Brave Bird (any), each with its Tera variant; never
     # Me First (adjacentFoe) or Earthquake (spread).
-    assert sorted((c[0], c[2]) for c in ally(on)) == [("move", 0), ("move", 1), ("tera", 0), ("tera", 1)]
+    # from_teams defaults to Champions, which has no Tera (1ef1646).
+    assert sorted((c[0], c[2]) for c in ally(on)) == [("move", 0), ("move", 1)]
     # Flag on only adds choices, after each move's foe choices.
     lc = on.legal_choices(0, 0)
     assert [c for c in lc if c not in ally(on)] == off.legal_choices(0, 0)
