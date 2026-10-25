@@ -1436,13 +1436,16 @@ fn joint_policy_to_py<'py>(py: Python<'py>, policy: &[(Vec<core::Choice>, f64)])
 ///   sol = vgc_engine.solve_endgame(b, lambda obs: [0.0] * len(obs))
 ///   sol["value"], sol["row_policy"]
 #[pyfunction]
-#[pyo3(signature = (battle, leaf, record_seed = 0))]
+#[pyo3(signature = (battle, leaf, record_seed = 0, time_budget_ms = None, replay_budget = None))]
 fn solve_endgame<'py>(
     py: Python<'py>,
     battle: &PyBattle,
     leaf: PyObject,
     record_seed: u64,
+    time_budget_ms: Option<u64>,
+    replay_budget: Option<u64>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let deadline = time_budget_ms.map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
     // Any error raised by the Python callback (or observation build) is
     // stashed here and re-raised after the solve returns, since the
     // `BatchLeafEval` signature is infallible (`-> Vec<f64>`). `Rc<RefCell>`
@@ -1472,7 +1475,7 @@ fn solve_endgame<'py>(
                 })
             });
 
-        vgc_solver::solve_turn(&battle.inner, batch_leaf, record_seed)
+        vgc_solver::solve_turn_budgeted(&battle.inner, batch_leaf, record_seed, deadline, replay_budget)
     };
 
     if let Some(e) = callback_err.borrow_mut().take() {
@@ -1480,12 +1483,23 @@ fn solve_endgame<'py>(
     }
 
     let sol = match value {
-        Some(s) => s,
-        None => return Ok(None),
+        Ok(Some(s)) => s,
+        Ok(None) => return Ok(None),
+        Err(reason) => {
+            // Budget cut the single-ply solve: nothing usable was solved.
+            let d = PyDict::new(py);
+            d.set_item("value", py.None())?;
+            d.set_item("row_policy", PyList::empty(py))?;
+            d.set_item("col_policy", PyList::empty(py))?;
+            d.set_item("truncated", true)?;
+            d.set_item("truncation_reason", reason.as_str())?;
+            return Ok(Some(d));
+        }
     };
 
     let d = PyDict::new(py);
     d.set_item("value", sol.value)?;
+    d.set_item("truncated", false)?;
     d.set_item("row_policy", policy_to_py(py, &sol.row_policy)?)?;
     d.set_item("col_policy", policy_to_py(py, &sol.col_policy)?)?;
     d.set_item("iterations", sol.iterations)?;

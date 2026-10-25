@@ -169,3 +169,20 @@ fn node_budget_hit_is_reported() {
     let (r, _) = run(&b, &cfg, false);
     assert_eq!(r.truncated, Some(Truncation::NodeBudget));
 }
+
+#[test]
+fn single_ply_solve_turn_respects_deadline() {
+    let b = adversarial_doubles();
+    let budget = Duration::from_millis(100);
+    let t0 = Instant::now();
+    let r = vgc_solver::solve_turn_budgeted(
+        &b,
+        vgc_solver::batch_from_scalar(Box::new(hp_ratio_leaf)),
+        0,
+        Some(Instant::now() + budget),
+        None,
+    );
+    let el = t0.elapsed();
+    assert!(el < budget + SLACK, "{el:?}");
+    assert_eq!(r.err(), Some(vgc_solver::StopReason::Deadline));
+}
