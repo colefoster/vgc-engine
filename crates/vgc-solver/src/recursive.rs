@@ -242,7 +242,7 @@ pub fn endgame_solve(
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut tt: HashMap<u64, SolvedNode> = HashMap::new();
     let mut stats = SolverStats::default();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats };
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats, root_pending: false, root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -294,7 +294,7 @@ pub fn endgame_solve_with_tt(
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut stats = SolverStats::default();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats };
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats, root_pending: false, root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -311,7 +311,7 @@ pub fn endgame_solve_with_tt_stats(
 ) -> SolvedNode {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats };
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats, root_pending: false, root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -367,6 +367,22 @@ struct SolverState<'a> {
     tt: &'a mut HashMap<u64, SolvedNode>,
     nodes: u64,
     stats: &'a mut SolverStats,
+    /// Set by the caller before the root `solve()`; the root takes it on entry.
+    root_pending: bool,
+    /// The root's per-action values, captured when `root_pending` was set.
+    root_values: Option<RootValues>,
+}
+
+/// Each side's payoff for every one of its root joint actions against the
+/// other side's equilibrium strategy, P1's perspective (P1 maximizes, P2
+/// minimizes). A Nash support action scores the node value; anything else
+/// scores no better for its side. This is what aggregating over sampled
+/// worlds needs: a mixed strategy alone says nothing about off-support
+/// actions.
+#[derive(Debug, Clone)]
+pub struct RootValues {
+    pub row: Vec<(Vec<Choice>, f64)>,
+    pub col: Vec<(Vec<Choice>, f64)>,
 }
 
 fn leaf_eval(state: &mut SolverState, battle: &Battle) -> f64 {
@@ -515,6 +531,7 @@ fn past_deadline(state: &mut SolverState) -> bool {
 }
 
 fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> SolvedNode {
+    let is_root = std::mem::take(&mut state.root_pending);
     state.nodes += 1;
     state.stats.nodes_visited += 1;
 
@@ -644,6 +661,13 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         .map(|(joint, p)| (joint[0], *p))
         .collect();
 
+    if is_root && !do_sol.row_values.is_empty() {
+        let tag = |acts: &[Vec<Choice>], vals: &[f64]| acts.iter().cloned().zip(vals.iter().copied()).collect();
+        game.state.root_values = Some(RootValues {
+            row: tag(&game.row_choices, &do_sol.row_values),
+            col: tag(&game.col_choices, &do_sol.col_values),
+        });
+    }
     let node = SolvedNode {
         value: do_sol.value,
         row_policy,
@@ -671,6 +695,8 @@ pub struct AnytimeSolve {
     pub depth_completed: u32,
     /// The deadline cut a deeper iteration short (or stopped depth 1).
     pub timed_out: bool,
+    /// Per-action root values of the same iteration as `node`.
+    pub root_values: Option<RootValues>,
 }
 
 /// Iterative-deepening solve under [`SolverConfig::deadline`]: depth 1, 2,
@@ -691,13 +717,16 @@ pub fn endgame_solve_anytime(
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut best: Option<SolvedNode> = None;
+    let mut best_values: Option<RootValues> = None;
     let mut depth_completed = 0;
     for depth in 1..=cfg.max_depth.max(1) {
-        let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut *tt, nodes: 0, stats: &mut *stats };
+        let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut *tt, nodes: 0, stats: &mut *stats, root_pending: true, root_values: None };
         let node = solve(battle, depth, &mut state);
+        let values = state.root_values.take();
         if stats.stop_reason.is_some() {
-            return AnytimeSolve { node: best, depth_completed, timed_out: true };
+            return AnytimeSolve { node: best, depth_completed, timed_out: true, root_values: best_values };
         }
+        best_values = values;
         let solved = matches!(node.provenance, Provenance::Exact | Provenance::Terminal);
         best = Some(node);
         depth_completed = depth;
@@ -705,7 +734,7 @@ pub fn endgame_solve_anytime(
             break;
         }
     }
-    AnytimeSolve { node: best, depth_completed, timed_out: false }
+    AnytimeSolve { node: best, depth_completed, timed_out: false, root_values: best_values }
 }
 
 /// Why a [`BoundedSolve`] is not a full solve at the requested depth.
@@ -738,7 +767,9 @@ pub struct BoundedSolve {
     /// Plies of the solve `node` came from (0 = fallback).
     pub depth_completed: u32,
     /// `None` = solved at the requested depth with no budget cut.
-    pub truncated: Option<Truncation>,
+    pub truncated: Option<Truncation>,    /// Root per-action values of `node` (anytime solves only; `None` for the
+    /// fallback node or a root that came straight from the TT).
+    pub root_values: Option<RootValues>,
 }
 
 /// Depth-0 placeholder for a solve that finished nothing: the leaf value and
@@ -779,13 +810,14 @@ pub fn endgame_solve_bounded(
     stats: &mut SolverStats,
     anytime: bool,
 ) -> BoundedSolve {
-    let (node, depth_completed) = if anytime {
+    let (node, depth_completed, root_values) = if anytime {
         let r = endgame_solve_anytime(battle, cfg, &mut leaf, tt, stats);
-        (r.node, r.depth_completed)
+        (r.node, r.depth_completed, r.root_values)
     } else {
         let n = endgame_solve_with_tt_stats(battle, cfg, &mut leaf, tt, stats);
-        if stats.stop_reason.is_some() { (None, 0) } else { (Some(n), cfg.max_depth) }
+        if stats.stop_reason.is_some() { (None, 0, None) } else { (Some(n), cfg.max_depth, None) }
     };
+    let root_values = if node.is_some() { root_values } else { None };
     let node = node.unwrap_or_else(|| fallback_node(battle, &mut leaf));
     let solved = matches!(node.provenance, Provenance::Exact | Provenance::Terminal);
     let truncated = match stats.stop_reason {
@@ -797,7 +829,7 @@ pub fn endgame_solve_bounded(
         None if anytime && !solved && depth_completed < cfg.max_depth => Some(Truncation::NodeBudget),
         None => None,
     };
-    BoundedSolve { node, depth_completed, truncated }
+    BoundedSolve { node, depth_completed, truncated, root_values }
 }
 
 /// Per-node matrix game whose `payoff(i, j)` is the expected recursive

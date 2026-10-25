@@ -188,6 +188,7 @@ pub mod double_oracle;
 pub mod endgame;
 pub mod factoring;
 pub mod recursive;
+pub mod worlds;
 #[cfg(feature = "instrumentation")]
 pub mod instrumentation;
 pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
@@ -200,9 +201,10 @@ pub use compress::{enumerate_outcomes_compressed, ChanceCompression};
 pub use nash::{solve_zero_sum, NashSolution};
 pub use recursive::{
     endgame_solve, endgame_solve_anytime, endgame_solve_bounded, endgame_solve_with_tt, endgame_solve_with_tt_stats,
-    fallback_node, joint_actions, AnytimeSolve, BoundedSolve, EstReason, Provenance, SolvedNode, SolverConfig, SolverStats,
-    Truncation,
+    fallback_node, joint_actions, AnytimeSolve, BoundedSolve, EstReason, Provenance, RootValues, SolvedNode, SolverConfig,
+    SolverStats, Truncation,
 };
+pub use worlds::{endgame_solve_worlds, WorldResult, WorldsSolve};
 pub use budget::StopReason;
 
 /// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
