@@ -76,6 +76,14 @@ pub struct DoubleOracleSolution {
     pub row_support_size: usize,
     /// Final col-support cardinality.
     pub col_support_size: usize,
+    /// Row player's payoff for EVERY row action (index = action id) against
+    /// the final `col_strategy`; empty when the loop stopped at the
+    /// iteration cap instead of converging. Free after convergence: the last
+    /// best-response pass already paid every cell it needs.
+    pub row_values: Vec<f64>,
+    /// Row player's payoff for EVERY column action against the final
+    /// `row_strategy` (row's perspective; the column player minimizes it).
+    pub col_values: Vec<f64>,
 }
 
 /// Cap on DO iterations. Each iteration strictly grows at least one
@@ -151,6 +159,7 @@ pub fn double_oracle<G: MatrixGame>(
     const EPS: f64 = 1e-9;
     let cap = iteration_cap(rc, cc);
     let mut iterations = 0u32;
+    let mut converged = false;
 
     // Carry the last sub-LP's solution out of the loop so the final
     // accepted Nash strategies are available after convergence break.
@@ -231,6 +240,7 @@ pub fn double_oracle<G: MatrixGame>(
 
         // 5. Converged when neither side found an improving action.
         if row_add.is_none() && col_add.is_none() {
+            converged = true;
             break;
         }
 
@@ -259,8 +269,23 @@ pub fn double_oracle<G: MatrixGame>(
         .filter_map(|(&j, &p)| if p > 1e-9 { Some((j, p)) } else { None })
         .collect();
 
+    // On convergence the supports are the ones `last_*_mixed` were solved on.
+    let (row_values, col_values) = if converged {
+        let rv = (0..rc)
+            .map(|i| col_support.iter().zip(&last_col_mixed).map(|(&c, &q)| if q > 0.0 { q * payoff_at(game, &mut cache, i, c) } else { 0.0 }).sum())
+            .collect();
+        let cv = (0..cc)
+            .map(|j| row_support.iter().zip(&last_row_mixed).map(|(&r, &p)| if p > 0.0 { p * payoff_at(game, &mut cache, r, j) } else { 0.0 }).sum())
+            .collect();
+        (rv, cv)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     let out = DoubleOracleSolution {
         value: last_value,
+        row_values,
+        col_values,
         row_strategy,
         col_strategy,
         iterations,

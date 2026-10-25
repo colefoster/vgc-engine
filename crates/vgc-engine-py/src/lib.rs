@@ -1734,6 +1734,144 @@ fn solve_endgame_anytime<'py>(
     Ok(d)
 }
 
+/// **Anytime endgame solve over sampled worlds** (determinized hidden info).
+///
+/// `battles` are belief battles of one position that differ only in the
+/// opponent's hidden sets (e.g. `position_from_replay(..., prior_sample_seed=s)`
+/// per world), `weights` their probabilities (default uniform). Each world
+/// runs `solve_endgame_anytime` with its share of the ONE total
+/// `time_budget_ms` (world i of K gets 1/(K-i) of the time left) and
+/// `replay_budget / K` replays. `side` ("p1" / "p2") is whose action is
+/// chosen.
+///
+/// Every own-side joint action gets its weighted mean value over the worlds
+/// that finished depth >= 1, where a world's value for an action is its
+/// payoff against that world's equilibrium opponent strategy. `chosen` is
+/// the expected-value argmax (ties: higher mixed policy mass, then the first
+/// world's policy order), so one world returns exactly
+/// `solve_endgame_anytime`'s node and the argmax of its own policy.
+///
+/// Returns a dict. Values named `*_own` / `ev` / `robust_value` are from
+/// `side`'s perspective; per-world `value` is P1's, as elsewhere:
+/// ```text
+/// {"chosen": [choice_tuple, ...] | None, "chosen_ev_own": float | None,
+///  "robust": [choice_tuple, ...] | None, "robust_value_own": float | None,
+///  "ev": [[joint, ev_own], ...], "policy_mix": [[joint, p], ...],
+///  "worlds_used": int, "k": int, "depth_completed_min": int,
+///  "truncated": bool, "truncation_reason": str | None, "elapsed_ms": float,
+///  "worlds": [{"weight", "value", "provenance", "depth_completed", "truncated",
+///              "truncation_reason", "elapsed_ms", "budget_ms", "row_joint_policy",
+///              "col_joint_policy", "own_values": [[joint, value_own], ...] | None,
+///              "chance_mass_dropped_max"}, ...]}
+/// ```
+#[pyfunction]
+#[pyo3(signature = (battles, weights = None, side = "p1", time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64, replay_budget = None))]
+#[allow(clippy::too_many_arguments)]
+fn solve_endgame_worlds<'py>(
+    py: Python<'py>,
+    battles: Vec<PyRef<'py, PyBattle>>,
+    weights: Option<Vec<f64>>,
+    side: &str,
+    time_budget_ms: u64,
+    max_depth: u32,
+    compress: bool,
+    mass_eps: f64,
+    max_combos: usize,
+    replay_budget: Option<u64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let t0 = std::time::Instant::now();
+    if battles.is_empty() {
+        return Err(PyValueError::new_err("battles is empty"));
+    }
+    let w = weights.unwrap_or_else(|| vec![1.0; battles.len()]);
+    if w.len() != battles.len() || w.iter().any(|x| !x.is_finite() || *x < 0.0) {
+        return Err(PyValueError::new_err("weights: one finite non-negative weight per battle"));
+    }
+    let side_ref = match side {
+        "p1" => core::SideRef::P1,
+        "p2" => core::SideRef::P2,
+        s => return Err(PyValueError::new_err(format!("side={s:?} (\"p1\" | \"p2\")"))),
+    };
+    let cfg = vgc_solver::SolverConfig {
+        max_depth,
+        node_budget: u64::MAX,
+        deadline: Some(t0 + std::time::Duration::from_millis(time_budget_ms)),
+        replay_budget,
+        chance_compression: compress.then_some(vgc_solver::ChanceCompression { mass_eps, max_combos }),
+        ..vgc_solver::SolverConfig::default()
+    };
+    let owned: Vec<core::Battle> = battles.iter().map(|b| b.inner.clone()).collect();
+    let r = py.allow_threads(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let worlds: Vec<(&core::Battle, f64)> = owned.iter().zip(w.iter().copied()).collect();
+            vgc_solver::endgame_solve_worlds(&worlds, side_ref, &cfg, vgc_solver::hp_ratio_leaf)
+        }))
+        .map_err(|e| {
+            e.downcast_ref::<&str>().map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "solver panicked".into())
+        })
+    });
+    let r = match r {
+        Ok(r) => r,
+        Err(msg) => {
+            let d = solver_error_dict(py, &msg, t0)?;
+            d.set_item("chosen", py.None())?;
+            d.set_item("worlds", PyList::empty(py))?;
+            return Ok(d);
+        }
+    };
+    let joint_py = |j: &Vec<core::Choice>| -> Vec<LegalChoice> { j.iter().map(choice_to_tuple).collect() };
+    let pairs = |v: &[(Vec<core::Choice>, f64)]| -> PyResult<Bound<'py, PyList>> {
+        let out = PyList::empty(py);
+        for (j, x) in v {
+            out.append((joint_py(j), *x))?;
+        }
+        Ok(out)
+    };
+    let sign = if side_ref == core::SideRef::P1 { 1.0 } else { -1.0 };
+    let worlds = PyList::empty(py);
+    for wr in &r.worlds {
+        let d = PyDict::new(py);
+        let node = &wr.solve.node;
+        d.set_item("weight", wr.weight)?;
+        d.set_item("value", node.value)?;
+        d.set_item("provenance", if wr.solve.depth_completed == 0 && wr.solve.truncated.is_some() { "timeout" } else { provenance_slug(node.provenance) })?;
+        d.set_item("depth_completed", wr.solve.depth_completed)?;
+        d.set_item("truncated", wr.solve.truncated.is_some())?;
+        d.set_item("truncation_reason", wr.solve.truncated.map(|t| t.as_str()))?;
+        d.set_item("elapsed_ms", wr.elapsed.as_secs_f64() * 1000.0)?;
+        d.set_item("budget_ms", wr.budget.map(|b| b.as_secs_f64() * 1000.0))?;
+        d.set_item("row_joint_policy", joint_policy_to_py(py, &node.row_joint_policy)?)?;
+        d.set_item("col_joint_policy", joint_policy_to_py(py, &node.col_joint_policy)?)?;
+        match &wr.solve.root_values {
+            Some(rv) => {
+                let own = if side_ref == core::SideRef::P1 { &rv.row } else { &rv.col };
+                let v: Vec<(Vec<core::Choice>, f64)> = own.iter().map(|(j, x)| (j.clone(), sign * x)).collect();
+                d.set_item("own_values", pairs(&v)?)?
+            }
+            None => d.set_item("own_values", py.None())?,
+        }
+        d.set_item("chance_mass_dropped_max", wr.stats.chance_mass_dropped_max)?;
+        worlds.append(d)?;
+    }
+    let d = PyDict::new(py);
+    d.set_item("chosen", r.chosen.as_ref().map(joint_py))?;
+    d.set_item("chosen_ev_own", r.chosen_ev)?;
+    d.set_item("robust", r.robust.as_ref().map(|x| joint_py(&x.0)))?;
+    d.set_item("robust_value_own", r.robust.as_ref().map(|x| x.1))?;
+    d.set_item("ev", pairs(&r.ev)?)?;
+    d.set_item("policy_mix", pairs(&r.policy_mix)?)?;
+    d.set_item("worlds_used", r.worlds_used)?;
+    d.set_item("k", r.worlds.len())?;
+    d.set_item("depth_completed_min", r.worlds.iter().map(|w| w.solve.depth_completed).min().unwrap_or(0))?;
+    d.set_item("truncated", r.truncated.is_some())?;
+    d.set_item("truncation_reason", r.truncated.map(|t| t.as_str()))?;
+    d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)?;
+    d.set_item("worlds", worlds)?;
+    Ok(d)
+}
+
 /// Bridge one batched leaf call into Python: build a `list[dict]` of
 /// observations, invoke the callable, coerce the returned `list[float]`
 /// back to a `Vec<f64>`. Errors (wrong length, non-float, exception in
@@ -1949,6 +2087,7 @@ fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solve_endgame, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame_exact, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame_anytime, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_endgame_worlds, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

@@ -123,6 +123,7 @@ The served config finished at least 1 ply in these situations:
 ## Plan for the gaps
 
 1. **Hidden info (approximate).** Solve over a few sampled belief battles drawn from the prior, not just the modal one. Aggregate the root matrices (determinized), as the depth-1 search driver already does in mimikyu. This is the largest fidelity gap and needs no engine change.
+   - **Built (2026-10-25):** `vgc_solver::endgame_solve_worlds` / `vgc_engine.solve_endgame_worlds`. Each world runs the bounded anytime solve on its share of one total budget; our action is the weighted-EV argmax of per-action root values (payoff against that world's equilibrium opponent), with max-min reported. One world reproduces `solve_endgame_anytime`. Tests: `tests/worlds.rs`, `crates/vgc-engine-py/tests/test_solve_worlds.py`. Play value: mimikyu `docs/endgame_worlds_prereg_20261025.md`.
 2. **Compression and horizon.** The time goes to chance enumeration.
    - Make the 1.5 s budget go further: cap joint actions with `max_actions` ranking at the root of 2v2, and reuse the TT across consecutive turns of one game.
    - Measure whether `mass_eps` 0.02 should vary with the board size.
