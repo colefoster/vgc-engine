@@ -247,7 +247,13 @@ pub(super) fn resolve_set(
         let maxhp = r.get("condition").and_then(Value::as_str).and_then(parse_hp).filter(|h| !h.4).map(|h| h.1);
         let g = |k: &str| r.pointer(&format!("/stats/{k}")).and_then(Value::as_u64).map(|x| x as u16);
         let want = [maxhp, g("atk"), g("def"), g("spa"), g("spd"), g("spe")];
-        match solve_spread(def, level, want, sp) {
+        // A request reports the CURRENT forme's stats under the base
+        // forme's details (Stance Change: Aegislash-Blade stats as
+        // "Aegislash"), so try the other formes of the same dex number.
+        let solved = solve_spread(def, level, want, sp).or_else(|| {
+            data::SPECIES.iter().filter(|x| x.num == def.num && !std::ptr::eq(*x, def)).find_map(|x| solve_spread(x, level, want, sp))
+        });
+        match solved {
             Some((n, v)) => {
                 nature = pk(n, Src::Exact, None);
                 spread = pk(v, if maxhp.is_some() { Src::Exact } else { Src::Inferred }, None);

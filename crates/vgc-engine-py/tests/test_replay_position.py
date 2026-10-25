@@ -159,3 +159,15 @@ def test_errors_are_value_errors():
         vgc_engine.position_from_replay("|turn|1", 9)
     with pytest.raises(ValueError, match="viewer"):
         vgc_engine.position_from_replay("|turn|1", 1, viewer="p3")
+
+
+def test_request_stats_of_a_temporary_forme():
+    """A move request reports Aegislash-Blade's stats under "Aegislash"
+    details (Stance Change); spread solving tries the other formes of the
+    dex number instead of refusing the position."""
+    import json
+    import os
+    fx = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "aegislash_blade_request.json")))
+    b = vgc_engine.position_from_replay(fx["lines"], fx["turn"], request=fx["request"], viewer=fx["side"])
+    rep = b.reconstruction_report()
+    assert "aegislash" in json.dumps(rep).lower()
