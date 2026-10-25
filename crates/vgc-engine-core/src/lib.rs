@@ -61,6 +61,7 @@ pub mod ps_board;
 pub mod protocol;
 pub mod calc;
 pub mod canonical_hash;
+mod hash_ser;
 #[cfg(feature = "chance")]
 pub mod chance;
 pub mod damage;
