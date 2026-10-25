@@ -25,7 +25,7 @@ use vgc_engine_core::{
     data, set_ko_split_disabled, Battle, BattleConfig, Choice, Format, Rng, SideRef, TeamBuilder,
 };
 use vgc_solver::{
-    enumerate_outcomes_bounded, enumerate_outcomes_with, endgame_solve_bounded, hp_ratio_leaf, joint_actions,
+    enumerate_outcomes_bounded, endgame_solve_bounded, hp_ratio_leaf, joint_actions,
     set_joint_collapse_disabled, solve_zero_sum, BoundedSolve, ChanceCompression, EnumerateOpts, Provenance,
     SolverConfig, SolverStats,
 };
@@ -173,7 +173,9 @@ fn ref_matrix(b: &Battle, depth: u32, r: &mut Ref) -> Option<Vec<Vec<f64>>> {
     let mut m = vec![vec![0.0; cols.len()]; rows.len()];
     for (i, ra) in rows.iter().enumerate() {
         for (j, ca) in cols.iter().enumerate() {
-            let f = enumerate_outcomes_with(b, ra, ca, 0xC0_DE, LOSSLESS);
+            // Refuse an oversized cell up front: one lossless cell can hold
+            // 10^5+ outcome Battles.
+            let f = enumerate_outcomes_bounded(b, ra, ca, 0xC0_DE, LOSSLESS, Some(50_000)).ok()?;
             r.replays += f.raw_combos as u64;
             r.live_outcomes += f.outcomes.len() as u64;
             if r.replays > r.cap || r.live_outcomes > MAX_LIVE_OUTCOMES || rss_mb() > RSS_CAP_MB {
@@ -318,7 +320,7 @@ fn run_cfg(b: &Battle, cfg: &SolverConfig, anytime: bool) -> Result<(BoundedSolv
     })
 }
 
-fn brute(n: usize, seed: u64, max_depth_cap: u32) {
+fn brute(n: usize, seed: u64, max_depth_cap: u32, only: Option<usize>) {
     let mut rng = Sm(seed);
     let mut i = 0;
     while i < n {
@@ -328,6 +330,11 @@ fn brute(n: usize, seed: u64, max_depth_cap: u32) {
         }
         let (desc, b) = gen_position(&mut rng);
         if b.is_terminal() { continue; }
+        if let Some(o) = only {
+            if i != o { i += 1; continue; }
+            cmp_cells(&b);
+            return;
+        }
         // Reference: lossless + no collapses + no TT. Shallower when the
         // position is too big at `max_depth`.
         let t0 = Instant::now();
@@ -363,7 +370,8 @@ fn brute(n: usize, seed: u64, max_depth_cap: u32) {
                 continue;
             }
         };
-        let base = SolverConfig { max_depth, node_budget: u64::MAX, deadline: Some(Instant::now() + Duration::from_secs(60)), ..SolverConfig::default() };
+        // replay_budget also bounds memory (TT entries / frontiers per replay).
+        let base = SolverConfig { max_depth, node_budget: u64::MAX, replay_budget: Some(3_000_000), ..SolverConfig::default() };
         let cfgs: Vec<(&str, SolverConfig, bool)> = vec![
             ("default", base.clone(), false),
             ("exact_hp", SolverConfig { exact_hp: true, ..base.clone() }, false),
@@ -373,7 +381,7 @@ fn brute(n: usize, seed: u64, max_depth_cap: u32) {
         ];
         let mut res = serde_json::Map::new();
         for (name, cfg, anytime) in cfgs {
-            let cfg = SolverConfig { deadline: Some(Instant::now() + Duration::from_secs(60)), ..cfg };
+            let cfg = SolverConfig { deadline: Some(Instant::now() + Duration::from_secs(20)), ..cfg };
             match run_cfg(&b, &cfg, anytime) {
                 Ok((r, st, ms)) => {
                     let (er, ec) = exploitability(&b, &m, v, &r.node);
@@ -471,60 +479,6 @@ fn real(path: &str, budget_ms: u64, exact_ms: u64, skip: usize, limit: usize) {
     }
 }
 
-/// Diff a real-RNG sample that fell outside the PV cell's frontier against
-/// the closest frontier outcome; then retry with KO segments off.
-fn debug_mc(path: &str, idx: usize) {
-    let text = std::fs::read_to_string(path).expect("fixtures");
-    let rec: Value = serde_json::from_str(text.lines().nth(idx).unwrap()).unwrap();
-    let mut b: Battle = serde_json::from_str(rec["battle"].as_str().unwrap()).unwrap();
-    b.rehydrate_caches();
-    let cfg = SolverConfig { max_depth: 16, node_budget: u64::MAX, deadline: Some(Instant::now() + Duration::from_millis(1500)),
-        chance_compression: Some(ChanceCompression { mass_eps: 0.02, max_combos: 64 }), ..SolverConfig::default() };
-    let r = endgame_solve_bounded(&b, &cfg, hp_ratio_leaf, &mut HashMap::new(), &mut SolverStats::default(), true);
-    let top = |pol: &[(Vec<Choice>, f64)]| pol.iter().max_by(|a, c| a.1.total_cmp(&c.1)).map(|x| x.0.clone()).unwrap();
-    let (ra, ca) = (top(&r.node.row_joint_policy), top(&r.node.col_joint_policy));
-    println!("cell: {} || {}", joint_str(&b, SideRef::P1, &ra), joint_str(&b, SideRef::P2, &ca));
-    for ko_off in [false, true] {
-        set_ko_split_disabled(ko_off);
-        let f = enumerate_outcomes_with(&b, &ra, &ca, 0xC0_DE, LOSSLESS);
-        let hs: HashSet<u64> = f.outcomes.iter().map(|o| o.hash).collect();
-        let mut shown = 0;
-        let mut miss = 0;
-        for s in 0..48u64 {
-            let mut c = b.clone();
-            c.set_rng(Rng::new(0x5EED_0000 + s));
-            let _ = c.step(&ra, &ca);
-            if hs.contains(&c.canonical_hash()) { continue; }
-            miss += 1;
-            if shown >= 1 || ko_off { continue; }
-            shown += 1;
-            let flat = |v: &Value| -> HashMap<String, String> {
-                let mut m = HashMap::new();
-                fn walk(p: String, v: &Value, m: &mut HashMap<String, String>) {
-                    match v {
-                        Value::Object(o) => for (k, x) in o { walk(format!("{p}.{k}"), x, m) },
-                        Value::Array(a) => for (i, x) in a.iter().enumerate() { walk(format!("{p}[{i}]"), x, m) },
-                        _ => { m.insert(p, v.to_string()); }
-                    }
-                }
-                walk(String::new(), v, &mut m);
-                m.retain(|k, _| !k.starts_with(".rng") && !k.contains("log"));
-                m
-            };
-            let sv = flat(&serde_json::to_value(&c).unwrap());
-            let best = f.outcomes.iter().map(|o| {
-                let ov = flat(&serde_json::to_value(&o.battle).unwrap());
-                let d: Vec<String> = sv.iter().filter(|(k, v)| ov.get(*k) != Some(v)).map(|(k, v)| format!("{k}: sample {v} vs frontier {}", ov.get(k).cloned().unwrap_or_default())).collect();
-                d
-            }).min_by_key(|d| d.len()).unwrap();
-            println!("  frontier {} outcomes; closest differs in {} fields:", f.outcomes.len(), best.len());
-            for d in best.iter().take(12) { println!("    {d}"); }
-        }
-        println!("ko_split_disabled={ko_off}: {miss}/48 samples outside frontier");
-    }
-    set_ko_split_disabled(false);
-}
-
 /// Debug one fixture: find root cells whose real-RNG samples fall outside the
 /// frontier and print the field diff to the nearest frontier state.
 fn mcdiff(path: &str, line_no: usize, max_cells: usize, lossless: bool) {
@@ -575,6 +529,53 @@ fn mcdiff(path: &str, line_no: usize, max_cells: usize, lossless: bool) {
     }
 }
 
+/// Root cells of one position: compressed vs lossless frontier, summarised
+/// by (P1 HP, P2 HP) of the first active mons, plus the default-config
+/// recursive value of each.
+fn cmp_cells(b: &Battle) {
+    println!("{}", serde_json::to_string(b).unwrap_or_default());
+    for (name, cc) in [("default", None), ("cc 0.02/64", Some(ChanceCompression { mass_eps: 0.02, max_combos: 64 })),
+                       ("cc 0/1e6 (collapse only)", Some(ChanceCompression { mass_eps: 0.0, max_combos: 1_000_000 }))] {
+        for d in 1..=3 {
+            let cfg = SolverConfig { max_depth: d, node_budget: u64::MAX, chance_compression: cc, ..SolverConfig::default() };
+            let mut st = SolverStats::default();
+            let r = endgame_solve_bounded(b, &cfg, hp_ratio_leaf, &mut HashMap::new(), &mut st, false);
+            println!("VALUE {name} d{d}: {:.4} {:?}", r.node.value, r.node.provenance);
+        }
+    }
+    let hp = |x: &Battle| (x.p1.team[0].current_hp, x.p2.team[0].current_hp);
+    for ra in joint_actions(b, SideRef::P1) {
+        for ca in joint_actions(b, SideRef::P2) {
+            let (fc, dropped) = vgc_solver::enumerate_outcomes_compressed(b, &ra, &ca, 0xC0_DE, ChanceCompression { mass_eps: 0.02, max_combos: 64 });
+            let fl = enumerate_outcomes_bounded(b, &ra, &ca, 0xC0_DE, LOSSLESS, None).unwrap();
+            let summ = |f: &vgc_solver::OutcomeFrontier| {
+                let mut m: std::collections::BTreeMap<(u16, u16), f64> = Default::default();
+                for o in &f.outcomes { *m.entry(hp(&o.battle)).or_default() += o.prob; }
+                m.into_iter().map(|(k, p)| format!("{k:?}:{p:.4}")).collect::<Vec<_>>().join(" ")
+            };
+            println!("CELL {} vs {} dropped={dropped:.4} raw c/l={}/{}", joint_str(b, SideRef::P1, &ra), joint_str(b, SideRef::P2, &ca), fc.raw_combos, fl.raw_combos);
+            println!("  compressed: {}", summ(&fc));
+            println!("  lossless:   {}", summ(&fl));
+            set_ko_split_disabled(true);
+            set_joint_collapse_disabled(true);
+            let fn_ = enumerate_outcomes_bounded(b, &ra, &ca, 0xC0_DE, LOSSLESS, None).unwrap();
+            let fl3 = enumerate_outcomes_bounded(b, &ra, &ca, 0xC0_DE, EnumerateOpts { lossy_damage_3bucket: true, auto_lossy_damage_threshold: None }, None).unwrap();
+            set_ko_split_disabled(false);
+            set_joint_collapse_disabled(false);
+            println!("  no-split:   {}", summ(&fn_));
+            let mut mc: std::collections::BTreeMap<(u16, u16), u32> = Default::default();
+            for sd in 0..200u64 {
+                let mut c = b.clone();
+                c.set_rng(Rng::new(0x5EED_0000 + sd));
+                let _ = c.step(&ra, &ca);
+                *mc.entry(hp(&c)).or_default() += 1;
+            }
+            println!("  real-rng x200: {mc:?}");
+            println!("  3bkt nosplit: {}", summ(&fl3));
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let get = |k: &str| args.iter().position(|a| a == k).map(|i| args[i + 1].clone());
@@ -583,6 +584,7 @@ fn main() {
             args[2].parse().unwrap(),
             get("--seed").map(|v| v.parse().unwrap()).unwrap_or(1),
             get("--max-depth").map(|v| v.parse().unwrap()).unwrap_or(3),
+            get("--only").map(|v| v.parse().unwrap()),
         ),
         Some("real") => real(
             &args[2],
@@ -591,7 +593,6 @@ fn main() {
             get("--skip").map(|v| v.parse().unwrap()).unwrap_or(0),
             get("--limit").map(|v| v.parse().unwrap()).unwrap_or(usize::MAX),
         ),
-        Some("debug-mc") => debug_mc(&args[2], args[3].parse().unwrap()),
         Some("mcdiff") => mcdiff(&args[2], get("--line").map(|v| v.parse().unwrap()).unwrap_or(0),
             get("--cells").map(|v| v.parse().unwrap()).unwrap_or(3), args.iter().any(|a| a == "--lossless")),
         _ => eprintln!("usage: solver_harness brute <n> [--seed S] [--max-depth D] | real <fixtures.jsonl> [--budget-ms] [--exact-ms]"),
