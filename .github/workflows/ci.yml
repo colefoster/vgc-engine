@@ -3,7 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    # Page-only and doc-only pushes don't need the ~30 min test run.
+    paths-ignore: ["product-page/**", "**.md", ".github/workflows/pages.yml"]
   pull_request:
+    paths-ignore: ["product-page/**", "**.md", ".github/workflows/pages.yml"]
 
 permissions:
   contents: read
