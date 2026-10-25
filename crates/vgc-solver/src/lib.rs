@@ -261,6 +261,28 @@ impl OutcomeFrontier {
     }
 }
 
+/// Merge one replayed combo into its `canonical_hash` bucket. The bucket's
+/// Battle stands for every combo in it (HP buckets are coarse), so it must be
+/// the combo with the largest prior mass, not the first one replayed:
+/// first-replayed made the representative depend on enumeration order, and
+/// a 4% crit roll could stand in for the 96% non-crit rolls of its bucket.
+pub(crate) fn merge_outcome(dedup: &mut HashMap<u64, Outcome>, best: &mut HashMap<u64, f64>, h: u64, battle: Battle, prob: f64) {
+    match dedup.get_mut(&h) {
+        Some(e) => {
+            e.prob += prob;
+            let b = best.get_mut(&h).expect("best tracks dedup");
+            if prob > *b {
+                *b = prob;
+                e.battle = battle;
+            }
+        }
+        None => {
+            best.insert(h, prob);
+            dedup.insert(h, Outcome { hash: h, battle, prob });
+        }
+    }
+}
+
 /// Upper bound on lazy re-record loop iterations. Each iteration discovers
 /// a fresh layer of counter-factual sites. In practice multi-hit moves
 /// converge in 2–3 iterations; this cap exists purely as a runaway-loop
@@ -638,6 +660,7 @@ fn defender_joint_enumerate(
     //    bucket prob × ∏ rest-site weight (independence is PROVEN, so the
     //    factorization is exact). Bail on any unmatched draw.
     let mut dedup: HashMap<u64, Outcome> = HashMap::new();
+    let mut best: HashMap<u64, f64> = HashMap::new();
     let mut raw_combos = 0usize;
     let n_groups = group_buckets.len();
     let n_rest = rest_sites.len();
@@ -677,10 +700,7 @@ fn defender_joint_enumerate(
         }
         let h = combo.canonical_hash();
         raw_combos += 1;
-        dedup
-            .entry(h)
-            .and_modify(|e| e.prob += prob)
-            .or_insert(Outcome { hash: h, battle: combo, prob });
+        merge_outcome(&mut dedup, &mut best, h, combo, prob);
 
         let mut k = 0;
         let done = loop {
@@ -728,6 +748,7 @@ fn enumerate_defender_group(
     let n = group.len();
     let mut idx = vec![0usize; n];
     let mut by_hash: HashMap<u64, DefenderBucket> = HashMap::new();
+    let mut best: HashMap<u64, f64> = HashMap::new();
 
     loop {
         let mut joint_events: Vec<RngEvent> = recorded_events.to_vec();
@@ -756,10 +777,21 @@ fn enumerate_defender_group(
             }
         }
         let h = combo.canonical_hash();
-        by_hash
-            .entry(h)
-            .and_modify(|b| b.prob += prob)
-            .or_insert(DefenderBucket { events: events_this, prob });
+        match by_hash.get_mut(&h) {
+            // Representative events = the bucket's modal combo (see merge_outcome).
+            Some(b) => {
+                b.prob += prob;
+                let bp = best.get_mut(&h).expect("best tracks by_hash");
+                if prob > *bp {
+                    *bp = prob;
+                    b.events = events_this;
+                }
+            }
+            None => {
+                best.insert(h, prob);
+                by_hash.insert(h, DefenderBucket { events: events_this, prob });
+            }
+        }
 
         let mut k = 0;
         let done = loop {
@@ -838,6 +870,7 @@ fn enumerate_pass(
 ) -> PassResult {
     let mut idx = vec![0usize; per_site.len()];
     let mut dedup: HashMap<u64, Outcome> = HashMap::new();
+    let mut best: HashMap<u64, f64> = HashMap::new();
     let mut raw_combos = 0usize;
     let mut unmatched_total = 0u32;
     let mut combo_miss_logs: Vec<Vec<RecordedDraw>> = Vec::new();
@@ -867,10 +900,7 @@ fn enumerate_pass(
         let h = combo.canonical_hash();
         raw_combos += 1;
 
-        dedup
-            .entry(h)
-            .and_modify(|e| e.prob += prob)
-            .or_insert(Outcome { hash: h, battle: combo, prob });
+        merge_outcome(&mut dedup, &mut best, h, combo, prob);
 
         let mut k = 0;
         loop {
@@ -1131,6 +1161,7 @@ fn tensor_enumerate(
     //    rejected, so this is empty here — pinned to recorded). step(),
     //    canonical hash, dedup, prob = product of bucket probs.
     let mut dedup: HashMap<u64, Outcome> = HashMap::new();
+    let mut best: HashMap<u64, f64> = HashMap::new();
     let mut raw_combos = 0usize;
     let mut idx = vec![0usize; actors.len()];
 
@@ -1168,10 +1199,7 @@ fn tensor_enumerate(
         }
         let h = combo.canonical_hash();
         raw_combos += 1;
-        dedup
-            .entry(h)
-            .and_modify(|e| e.prob += prob)
-            .or_insert(Outcome { hash: h, battle: combo, prob });
+        merge_outcome(&mut dedup, &mut best, h, combo, prob);
 
         // Advance multi-dim index.
         let mut k = 0;
@@ -1226,6 +1254,7 @@ fn enumerate_one_actor(
     // Group buckets by canonical hash; store the first event-tuple seen
     // plus accumulated prob.
     let mut by_hash: HashMap<u64, ActorBucket> = HashMap::new();
+    let mut best: HashMap<u64, f64> = HashMap::new();
     let mut raw = 0usize;
     let unmatched_total = 0u32;
 
@@ -1264,13 +1293,21 @@ fn enumerate_one_actor(
         }
         let h = combo.canonical_hash();
         raw += 1;
-        by_hash
-            .entry(h)
-            .and_modify(|b| b.prob += prob)
-            .or_insert(ActorBucket {
-                events: events_this_combo,
-                prob,
-            });
+        match by_hash.get_mut(&h) {
+            // Representative events = the bucket's modal combo (see merge_outcome).
+            Some(b) => {
+                b.prob += prob;
+                let bp = best.get_mut(&h).expect("best tracks by_hash");
+                if prob > *bp {
+                    *bp = prob;
+                    b.events = events_this_combo;
+                }
+            }
+            None => {
+                best.insert(h, prob);
+                by_hash.insert(h, ActorBucket { events: events_this_combo, prob });
+            }
+        }
 
         // Advance multi-dim index.
         let mut k = 0;

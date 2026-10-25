@@ -228,6 +228,7 @@ fn best_first_pass(
     let mut heap = BinaryHeap::new();
     heap.push(Cand { prob: p0, last: 0, idx: vec![0; n] });
     let mut dedup: HashMap<u64, Outcome> = HashMap::new();
+    let mut best: HashMap<u64, f64> = HashMap::new();
     let (mut raw, mut covered, mut unmatched) = (0usize, 0.0f64, 0u32);
     let mut misses = Vec::new();
     while let Some(c) = heap.pop() {
@@ -249,7 +250,7 @@ fn best_first_pass(
         let h = combo.canonical_hash();
         raw += 1;
         covered += c.prob;
-        dedup.entry(h).and_modify(|e| e.prob += c.prob).or_insert(Outcome { hash: h, battle: combo, prob: c.prob });
+        crate::merge_outcome(&mut dedup, &mut best, h, combo, c.prob);
         if covered >= 1.0 - cc.mass_eps - 1e-12
             || (raw >= cc.max_combos && covered >= MIN_MASS)
             || raw >= cc.max_combos.saturating_mul(8)
