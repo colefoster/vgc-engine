@@ -400,6 +400,8 @@ details p { color: var(--ink-2); max-width: 64ch; }
   .outcome { grid-template-columns: 1fr 1fr 3.8rem; gap: .4rem; }
   .cta-row .btn, .cta-strip .btn { width: 100%; }
   .pass-nav .btn { flex: 1 1 auto; }
+  /* keep the Copy button off the first line of code */
+  .tabpanel pre { padding-top: 3.4rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

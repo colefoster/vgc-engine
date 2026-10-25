@@ -15,3 +15,7 @@ Cargo.lock.bak
 .env.*
 !.env.example
 /dist/
+
+# Quickstart build artefacts (README / product page)
+/.dex/
+/.venv/
