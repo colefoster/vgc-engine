@@ -20,6 +20,7 @@ fn prov(p: Provenance) -> &'static str {
         Provenance::Exact => "exact",
         Provenance::Estimated(vgc_solver::EstReason::DepthLimit) => "depth_limit",
         Provenance::Estimated(vgc_solver::EstReason::NodeLimit) => "node_limit",
+        Provenance::Estimated(vgc_solver::EstReason::Aborted) => "aborted",
     }
 }
 
@@ -35,9 +36,11 @@ fn main() {
         let (e, c) = v.split_once(',').unwrap();
         vgc_solver::ChanceCompression { mass_eps: e.parse().unwrap(), max_combos: c.parse().unwrap() }
     });
+    let node_budget: u64 = get("--node-budget").map(|v| v.parse().unwrap()).unwrap_or(u64::MAX);
+    let skip: usize = get("--skip").map(|v| v.parse().unwrap()).unwrap_or(0);
     let limit: usize = get("--limit").map(|v| v.parse().unwrap()).unwrap_or(usize::MAX);
     let file = std::fs::File::open(path).expect("fixtures");
-    for (i, line) in std::io::BufReader::new(file).lines().enumerate().take(limit) {
+    for (i, line) in std::io::BufReader::new(file).lines().enumerate().skip(skip).take(limit) {
         let line = line.unwrap();
         let rec: serde_json::Value = serde_json::from_str(&line).unwrap();
         let mut b: Battle = serde_json::from_str(rec["battle"].as_str().unwrap()).unwrap();
@@ -45,8 +48,9 @@ fn main() {
         let t0 = Instant::now();
         let cfg = SolverConfig {
             max_depth,
-            node_budget: u64::MAX,
-            deadline: Some(t0 + Duration::from_millis(budget_ms)),
+            node_budget,
+            // --budget-ms 0 = no deadline (node budget only).
+            deadline: (budget_ms > 0).then(|| t0 + Duration::from_millis(budget_ms)),
             chance_compression: compress,
             ..SolverConfig::default()
         };

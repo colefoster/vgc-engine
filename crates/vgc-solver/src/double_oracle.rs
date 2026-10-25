@@ -51,6 +51,11 @@ pub trait MatrixGame {
     /// Expected payoff to the row player when row plays action `i` and
     /// column plays action `j`. Same value on repeat calls.
     fn payoff(&mut self, i: usize, j: usize) -> f64;
+    /// Polled once per DO iteration; `true` stops the solve (returns
+    /// `None`). Lets a solve budget cut the loop short.
+    fn should_abort(&mut self) -> bool {
+        false
+    }
 }
 
 /// Output of [`double_oracle`].
@@ -160,6 +165,11 @@ pub fn double_oracle<G: MatrixGame>(
     let mut last_col_mixed: Vec<f64> = Vec::new();
 
     loop {
+        if game.should_abort() {
+            #[cfg(feature = "instrumentation")]
+            let _ = instrumentation::pop_frame();
+            return None;
+        }
         // 1. Build the sub-matrix payoff over the current supports.
         let mut sub = vec![vec![0.0_f64; col_support.len()]; row_support.len()];
         for (ri, &r) in row_support.iter().enumerate() {

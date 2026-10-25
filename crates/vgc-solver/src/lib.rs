@@ -182,6 +182,7 @@ pub fn take_joint_collapse_engaged() -> bool {
 }
 
 pub mod nash;
+pub mod budget;
 pub mod compress;
 pub mod double_oracle;
 pub mod endgame;
@@ -198,9 +199,11 @@ pub use endgame::{
 pub use compress::{enumerate_outcomes_compressed, ChanceCompression};
 pub use nash::{solve_zero_sum, NashSolution};
 pub use recursive::{
-    endgame_solve, endgame_solve_anytime, endgame_solve_with_tt, endgame_solve_with_tt_stats, AnytimeSolve, EstReason, Provenance,
-    SolvedNode, SolverConfig, SolverStats,
+    endgame_solve, endgame_solve_anytime, endgame_solve_bounded, endgame_solve_with_tt, endgame_solve_with_tt_stats,
+    fallback_node, joint_actions, AnytimeSolve, BoundedSolve, EstReason, Provenance, SolvedNode, SolverConfig, SolverStats,
+    Truncation,
 };
+pub use budget::StopReason;
 
 /// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
 /// entries deterministically. The enum doesn't expose a `#[repr(u8)]`
@@ -248,6 +251,14 @@ pub struct OutcomeFrontier {
     /// record pass already covered every site step() queried. Bounded by
     /// [`MAX_LAZY_ITERATIONS`].
     pub lazy_iterations: u32,
+}
+
+impl OutcomeFrontier {
+    /// Empty frontier returned when the solve budget tripped before any
+    /// replay; the solver discards it.
+    pub(crate) fn aborted() -> Self {
+        OutcomeFrontier { outcomes: Vec::new(), raw_combos: 0, unmatched_total: 0, lazy_iterations: 0 }
+    }
 }
 
 /// Upper bound on lazy re-record loop iterations. Each iteration discovers
@@ -409,6 +420,9 @@ pub fn enumerate_outcomes_bounded(
     max_combinations: Option<u64>,
 ) -> Result<OutcomeFrontier, u64> {
     // 1. Initial record pass to seed the per-site list.
+    if budget::tick() {
+        return Ok(OutcomeFrontier::aborted());
+    }
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
     let _ = rec.step(p1_choices, p2_choices);
@@ -494,7 +508,9 @@ pub fn enumerate_outcomes_bounded(
         // Did any combo's replay discover counter-factual sites?
         let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs, effective_opts);
 
-        if new_sites.is_empty() || lazy_iterations >= MAX_LAZY_ITERATIONS {
+        // A tripped solve budget returns the partial pass; the solver
+        // discards everything computed after the trip.
+        if new_sites.is_empty() || lazy_iterations >= MAX_LAZY_ITERATIONS || budget::tripped().is_some() {
             // Convergence (or budget exhausted — bail with the current
             // pass; unmatched_total in the result surfaces the leak).
             let mut outcomes: Vec<Outcome> = pass.dedup.into_values().collect();
@@ -648,6 +664,9 @@ fn defender_joint_enumerate(
         for (slot, (key, _, _, _)) in per_site.iter().enumerate() {
             table.entry(*key).or_default().push_back(joint_events[slot]);
         }
+        if budget::tick() {
+            return None;
+        }
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));
         let _ = combo.step(p1_choices, p2_choices);
@@ -724,6 +743,9 @@ fn enumerate_defender_group(
         let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
         for (slot, (key, _, _, _)) in per_site.iter().enumerate() {
             table.entry(*key).or_default().push_back(joint_events[slot]);
+        }
+        if budget::tick() {
+            return None;
         }
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));
@@ -829,6 +851,9 @@ fn enumerate_pass(
             prob *= num as f64 / denom as f64;
         }
 
+        if budget::tick() {
+            return PassResult { dedup, raw_combos, unmatched_total, combo_miss_logs };
+        }
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));
         let _ = combo.step(p1_choices, p2_choices);
@@ -986,6 +1011,9 @@ fn tensor_enumerate(
     opts: EnumerateOpts,
 ) -> Option<OutcomeFrontier> {
     // 1. Record pass — single walk through the joint step.
+    if budget::tick() {
+        return None;
+    }
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
     let _ = rec.step(p1_choices, p2_choices);
@@ -1129,6 +1157,9 @@ fn tensor_enumerate(
             table.entry(*key).or_default().push_back(joint_events[slot]);
         }
 
+        if budget::tick() {
+            return None;
+        }
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));
         let _ = combo.step(p1_choices, p2_choices);
@@ -1216,6 +1247,9 @@ fn enumerate_one_actor(
             table.entry(*key).or_default().push_back(joint_events[slot]);
         }
 
+        if budget::tick() {
+            return None;
+        }
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));
         let _ = combo.step(p1_choices, p2_choices);

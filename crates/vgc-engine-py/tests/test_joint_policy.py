@@ -54,6 +54,7 @@ def test_chance_budget_reports_unsearched_cells_and_is_repeatable():
     args = dict(max_depth=1, node_budget=64, max_actions=4, max_chance_combinations=1)
     a = vgc_engine.solve_endgame_exact(b, **args)
     c = vgc_engine.solve_endgame_exact(b, **args)
+    a.pop('elapsed_ms'), c.pop('elapsed_ms')  # wall clock, not part of the result
     assert a == c
     assert a['chance_cutoffs'] > 0
     assert a['provenance'] == 'chance_limit'

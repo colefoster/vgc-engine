@@ -45,6 +45,7 @@ use std::time::Instant;
 
 use vgc_engine_core::{set_ko_split_disabled, Battle, Choice, SideRef};
 
+use crate::budget::{self, BudgetGuard, StopReason};
 use crate::double_oracle::{double_oracle, MatrixGame};
 use crate::{
     enumerate_outcomes_factored, enumerate_outcomes_with, set_joint_collapse_disabled,
@@ -72,6 +73,9 @@ pub enum Provenance {
 pub enum EstReason {
     DepthLimit,
     NodeLimit,
+    /// Placeholder returned when the solve was cut short by the deadline or
+    /// replay budget before anything was solved (see [`fallback_node`]).
+    Aborted,
 }
 
 /// One TT entry — the value, both sides' policy at the root of this
@@ -187,6 +191,11 @@ pub struct SolverConfig {
     /// return an aborted solve's partial value with `timed_out` set in
     /// [`SolverStats`]; that value is not a solve result. `None` = no limit.
     pub deadline: Option<Instant>,
+    /// Hard cap on total `step()` replays across the whole solve (every
+    /// chance-enumeration replay counts). Unlike `node_budget` this bounds
+    /// work, so it bounds time deterministically. Hitting it aborts like the
+    /// deadline. `None` = no limit.
+    pub replay_budget: Option<u64>,
     /// Opt-in compressed chance enumeration (see [`crate::compress`]):
     /// segmented damage stays bit-exact, unsegmented rolls collapse to 3,
     /// and each cell replays best-first up to a mass / count cap. `None`
@@ -210,6 +219,7 @@ impl Default for SolverConfig {
             max_actions: None,
             max_chance_combinations: None,
             deadline: None,
+            replay_budget: None,
             chance_compression: None,
         }
     }
@@ -229,6 +239,7 @@ pub fn endgame_solve(
     mut leaf: impl FnMut(&Battle) -> f64,
 ) -> SolvedNode {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
+    let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut tt: HashMap<u64, SolvedNode> = HashMap::new();
     let mut stats = SolverStats::default();
     let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats };
@@ -281,6 +292,7 @@ pub fn endgame_solve_with_tt(
     tt: &mut HashMap<u64, SolvedNode>,
 ) -> SolvedNode {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
+    let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut stats = SolverStats::default();
     let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats };
     solve(battle, cfg.max_depth, &mut state)
@@ -298,6 +310,7 @@ pub fn endgame_solve_with_tt_stats(
     stats: &mut SolverStats,
 ) -> SolvedNode {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
+    let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats };
     solve(battle, cfg.max_depth, &mut state)
 }
@@ -331,6 +344,12 @@ pub struct SolverStats {
     pub leaf_calls: u64,
     /// Set when [`SolverConfig::deadline`] passed during the solve.
     pub timed_out: bool,
+    /// Set when the deadline or the replay budget aborted the solve. An
+    /// aborted plain solve's value is not a result; use
+    /// [`endgame_solve_bounded`] for a well-formed best-so-far.
+    pub stop_reason: Option<StopReason>,
+    /// Nodes leaf-evaluated because `node_budget` was spent.
+    pub node_limit_hits: u64,
     /// Largest prior mass any compressed cell left unreplayed (its payoff
     /// is off by at most twice this).
     pub chance_mass_dropped_max: f64,
@@ -470,7 +489,9 @@ fn bounded_actions(battle: &Battle, side: SideRef, cfg: &SolverConfig) -> Vec<Ve
     let mut ranked: Vec<_> = actions.into_iter().enumerate().map(|(i, action)| {
         let mut copy = battle.clone();
         copy.set_rng(vgc_engine_core::Rng::new(cfg.record_seed));
-        if side == SideRef::P1 { copy.step(&action, &passes); } else { copy.step(&passes, &action); }
+        if !budget::tick() {
+            if side == SideRef::P1 { copy.step(&action, &passes); } else { copy.step(&passes, &action); }
+        }
         let score = crate::hp_ratio_leaf(&copy) * if side == SideRef::P1 {1.0} else {-1.0};
         (score, i, action)
     }).collect();
@@ -481,15 +502,16 @@ fn bounded_actions(battle: &Battle, side: SideRef, cfg: &SolverConfig) -> Vec<Ve
     out
 }
 
+/// Deadline / replay budget check (the budget is installed per solve by
+/// [`BudgetGuard`]; the enumerators trip it mid-cell).
 fn past_deadline(state: &mut SolverState) -> bool {
-    if !state.stats.timed_out {
-        if let Some(d) = state.cfg.deadline {
-            if Instant::now() >= d {
-                state.stats.timed_out = true;
-            }
+    if state.stats.stop_reason.is_none() {
+        if let Some(r) = budget::check() {
+            state.stats.stop_reason = Some(r);
+            state.stats.timed_out = r == StopReason::Deadline;
         }
     }
-    state.stats.timed_out
+    state.stats.stop_reason.is_some()
 }
 
 fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> SolvedNode {
@@ -500,7 +522,7 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     // anytime loop) discards the whole iteration; nothing aborted reaches
     // the TT (see the insert below).
     if past_deadline(state) {
-        return leaf_node(0.0, Provenance::Estimated(EstReason::NodeLimit), depth_remaining);
+        return leaf_node(0.0, Provenance::Estimated(EstReason::Aborted), depth_remaining);
     }
 
     // Terminal: always leaf-evaluate (winner-aware leaf should return
@@ -520,6 +542,7 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
 
     // Node-budget exhausted.
     if state.nodes >= state.cfg.node_budget {
+        state.stats.node_limit_hits += 1;
         return leaf_node(
             leaf_eval(state, battle),
             Provenance::Estimated(EstReason::NodeLimit),
@@ -575,6 +598,9 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     };
     let do_sol = match double_oracle(&mut game, &seed_rows, &seed_cols) {
         Some(s) => s,
+        None if past_deadline(game.state) => {
+            return leaf_node(0.0, Provenance::Estimated(EstReason::Aborted), depth_remaining);
+        }
         None => {
             // DO failed — fall back to leaf eval. Rare and surfaces as
             // Estimated::NodeLimit since it usually correlates with weird
@@ -587,8 +613,8 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         }
     };
 
-    if game.state.stats.timed_out {
-        return leaf_node(0.0, Provenance::Estimated(EstReason::NodeLimit), depth_remaining);
+    if past_deadline(game.state) {
+        return leaf_node(0.0, Provenance::Estimated(EstReason::Aborted), depth_remaining);
     }
     let any_estimated = game.any_estimated_child;
     let provenance = if any_estimated {
@@ -663,12 +689,13 @@ pub fn endgame_solve_anytime(
     stats: &mut SolverStats,
 ) -> AnytimeSolve {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
+    let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut best: Option<SolvedNode> = None;
     let mut depth_completed = 0;
     for depth in 1..=cfg.max_depth.max(1) {
         let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut *tt, nodes: 0, stats: &mut *stats };
         let node = solve(battle, depth, &mut state);
-        if stats.timed_out {
+        if stats.stop_reason.is_some() {
             return AnytimeSolve { node: best, depth_completed, timed_out: true };
         }
         let solved = matches!(node.provenance, Provenance::Exact | Provenance::Terminal);
@@ -679,6 +706,98 @@ pub fn endgame_solve_anytime(
         }
     }
     AnytimeSolve { node: best, depth_completed, timed_out: false }
+}
+
+/// Why a [`BoundedSolve`] is not a full solve at the requested depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Truncation {
+    Deadline,
+    ReplayBudget,
+    /// `node_budget` ran out; some nodes were leaf-evaluated.
+    NodeBudget,
+    /// `max_chance_combinations` refused at least one cell.
+    ChanceLimit,
+}
+
+impl Truncation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Truncation::Deadline => "deadline",
+            Truncation::ReplayBudget => "replay_budget",
+            Truncation::NodeBudget => "node_budget",
+            Truncation::ChanceLimit => "chance_limit",
+        }
+    }
+}
+
+/// Result of [`endgame_solve_bounded`]: always a usable node.
+#[derive(Debug, Clone)]
+pub struct BoundedSolve {
+    /// The solved root, or [`fallback_node`] when nothing finished.
+    pub node: SolvedNode,
+    /// Plies of the solve `node` came from (0 = fallback).
+    pub depth_completed: u32,
+    /// `None` = solved at the requested depth with no budget cut.
+    pub truncated: Option<Truncation>,
+}
+
+/// Depth-0 placeholder for a solve that finished nothing: the leaf value and
+/// a uniform policy over each side's legal joint actions (every entry legal
+/// by construction). Provenance `Estimated(Aborted)`, or `Terminal`.
+pub fn fallback_node(battle: &Battle, mut leaf: impl FnMut(&Battle) -> f64) -> SolvedNode {
+    if battle.is_terminal() {
+        return leaf_node(leaf(battle), Provenance::Terminal, 0);
+    }
+    let uniform = |acts: Vec<Vec<Choice>>| -> Vec<(Vec<Choice>, f64)> {
+        let p = 1.0 / acts.len().max(1) as f64;
+        acts.into_iter().map(|a| (a, p)).collect()
+    };
+    let row_joint_policy = uniform(joint_actions(battle, SideRef::P1));
+    let col_joint_policy = uniform(joint_actions(battle, SideRef::P2));
+    SolvedNode {
+        value: leaf(battle),
+        row_policy: row_joint_policy.iter().map(|(j, p)| (j[0], *p)).collect(),
+        col_policy: col_joint_policy.iter().map(|(j, p)| (j[0], *p)).collect(),
+        row_joint_policy,
+        col_joint_policy,
+        provenance: Provenance::Estimated(EstReason::Aborted),
+        depth_remaining: 0,
+    }
+}
+
+/// Budget-safe entry point: never returns an aborted partial value.
+///
+/// `anytime = false` runs one solve at `cfg.max_depth`; `true` runs
+/// [`endgame_solve_anytime`]'s iterative deepening. When the deadline or
+/// replay budget cuts the solve, the deepest completed iteration is returned
+/// (anytime) or [`fallback_node`] (nothing completed), with `truncated` set.
+pub fn endgame_solve_bounded(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    mut leaf: impl FnMut(&Battle) -> f64,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+    anytime: bool,
+) -> BoundedSolve {
+    let (node, depth_completed) = if anytime {
+        let r = endgame_solve_anytime(battle, cfg, &mut leaf, tt, stats);
+        (r.node, r.depth_completed)
+    } else {
+        let n = endgame_solve_with_tt_stats(battle, cfg, &mut leaf, tt, stats);
+        if stats.stop_reason.is_some() { (None, 0) } else { (Some(n), cfg.max_depth) }
+    };
+    let node = node.unwrap_or_else(|| fallback_node(battle, &mut leaf));
+    let solved = matches!(node.provenance, Provenance::Exact | Provenance::Terminal);
+    let truncated = match stats.stop_reason {
+        Some(StopReason::Deadline) => Some(Truncation::Deadline),
+        Some(StopReason::ReplayBudget) => Some(Truncation::ReplayBudget),
+        None if stats.chance_cutoffs > 0 => Some(Truncation::ChanceLimit),
+        None if stats.node_limit_hits > 0 => Some(Truncation::NodeBudget),
+        // Anytime stops deepening once nodes_visited passes the budget.
+        None if anytime && !solved && depth_completed < cfg.max_depth => Some(Truncation::NodeBudget),
+        None => None,
+    };
+    BoundedSolve { node, depth_completed, truncated }
 }
 
 /// Per-node matrix game whose `payoff(i, j)` is the expected recursive
@@ -703,6 +822,9 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
     }
     fn col_count(&self) -> usize {
         self.col_choices.len()
+    }
+    fn should_abort(&mut self) -> bool {
+        past_deadline(self.state)
     }
     fn payoff(&mut self, i: usize, j: usize) -> f64 {
         // `exact_hp` forces fully-lossless enumerate opts regardless of the
@@ -856,6 +978,7 @@ mod tests {
             max_actions: None,
             max_chance_combinations: None,
             deadline: None,
+            replay_budget: None,
             chance_compression: None,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
@@ -909,6 +1032,7 @@ mod tests {
             max_actions: None,
             max_chance_combinations: None,
             deadline: None,
+            replay_budget: None,
             chance_compression: None,
         };
         let cfg_on = SolverConfig {
@@ -1009,6 +1133,7 @@ mod tests {
             max_actions: None,
             max_chance_combinations: None,
             deadline: None,
+            replay_budget: None,
             chance_compression: None,
         };
 
@@ -1110,6 +1235,7 @@ mod tests {
             max_actions: None,
             max_chance_combinations: None,
             deadline: None,
+            replay_budget: None,
             chance_compression: None,
         };
         let s1 = endgame_solve(&b, &cfg, hp_ratio_leaf);
@@ -1339,6 +1465,7 @@ mod tests {
             max_actions: None,
             max_chance_combinations: None,
             deadline: None,
+            replay_budget: None,
             chance_compression: None,
         };
         let exact = endgame_solve(&b, &cfg_exact, hp_ratio_leaf);
