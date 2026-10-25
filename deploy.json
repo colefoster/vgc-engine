@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "vgc-engine-page",
+  "target": "ash",
+  "kind": "static",
+  "source": "product-page",
+  "destination": "/var/www/vgc-engine.colefoster.ca",
+  "health_url": "https://vgc-engine.colefoster.ca/",
+  "access": "public",
+  "release_identity": true,
+  "exclude": ["README.md"]
+}
