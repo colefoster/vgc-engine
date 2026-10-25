@@ -40,12 +40,12 @@ thread_local! {
 }
 
 /// Installs a budget for the current thread; restores the previous one on drop.
-pub(crate) struct BudgetGuard {
+pub struct BudgetGuard {
     prev: (Option<Instant>, u64, Option<StopReason>),
 }
 
 impl BudgetGuard {
-    pub(crate) fn install(deadline: Option<Instant>, replay_budget: Option<u64>) -> Self {
+    pub fn install(deadline: Option<Instant>, replay_budget: Option<u64>) -> Self {
         let prev = (DEADLINE.get(), REPLAYS_LEFT.get(), TRIPPED.get());
         DEADLINE.set(deadline);
         REPLAYS_LEFT.set(replay_budget.unwrap_or(u64::MAX));
@@ -64,7 +64,7 @@ impl Drop for BudgetGuard {
 
 /// The reason the budget tripped, checking the deadline now.
 #[inline]
-pub(crate) fn check() -> Option<StopReason> {
+pub fn check() -> Option<StopReason> {
     if let Some(r) = TRIPPED.get() {
         return Some(r);
     }

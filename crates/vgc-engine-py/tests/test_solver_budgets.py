@@ -84,3 +84,11 @@ def test_exact_releases_the_gil():
     stop.set()
     t.join()
     assert len(ticks) > 20, len(ticks)
+
+
+def test_single_ply_solve_endgame_time_budget():
+    b = _battle()
+    t0 = time.perf_counter()
+    r = vgc_engine.solve_endgame(b, lambda obs: [0.0] * len(obs), time_budget_ms=50)
+    assert time.perf_counter() - t0 < 0.05 + SLACK_S
+    assert r["truncated"] and r["truncation_reason"] == "deadline" and r["value"] is None

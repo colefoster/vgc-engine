@@ -193,7 +193,7 @@ pub mod instrumentation;
 pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
 pub use factoring::{classify_factorability, Factorability};
 pub use endgame::{
-    batch_from_scalar, hp_ratio_leaf, solve_turn, BatchLeafEval, BattleMatrixGame, LeafEval,
+    batch_from_scalar, hp_ratio_leaf, solve_turn, solve_turn_budgeted, BatchLeafEval, BattleMatrixGame, LeafEval,
     TurnSolution,
 };
 pub use compress::{enumerate_outcomes_compressed, ChanceCompression};

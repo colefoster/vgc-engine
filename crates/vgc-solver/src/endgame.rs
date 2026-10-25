@@ -110,6 +110,9 @@ impl<'a> MatrixGame for BattleMatrixGame<'a> {
     fn col_count(&self) -> usize {
         self.col_choices.len()
     }
+    fn should_abort(&mut self) -> bool {
+        crate::budget::check().is_some()
+    }
     fn payoff(&mut self, i: usize, j: usize) -> f64 {
         let frontier = enumerate_outcomes(
             self.base,
@@ -176,6 +179,27 @@ pub fn solve_turn(
     leaf: BatchLeafEval,
     record_seed: u64,
 ) -> Option<TurnSolution> {
+    solve_turn_budgeted(battle, leaf, record_seed, None, None).ok().flatten()
+}
+
+/// [`solve_turn`] under a hard deadline / `step()` replay budget (see
+/// [`crate::budget`]). `Err(reason)` when the budget cut the solve short.
+pub fn solve_turn_budgeted(
+    battle: &Battle,
+    leaf: BatchLeafEval,
+    record_seed: u64,
+    deadline: Option<std::time::Instant>,
+    replay_budget: Option<u64>,
+) -> Result<Option<TurnSolution>, crate::budget::StopReason> {
+    let _budget = crate::budget::BudgetGuard::install(deadline, replay_budget);
+    let sol = solve_turn_inner(battle, leaf, record_seed);
+    match crate::budget::check() {
+        Some(r) => Err(r),
+        None => Ok(sol),
+    }
+}
+
+fn solve_turn_inner(battle: &Battle, leaf: BatchLeafEval, record_seed: u64) -> Option<TurnSolution> {
     let mut game = BattleMatrixGame::new(battle, leaf, record_seed);
     if game.row_count() == 0 || game.col_count() == 0 {
         return None;
