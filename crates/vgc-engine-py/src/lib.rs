@@ -1872,6 +1872,88 @@ fn solve_endgame_worlds<'py>(
     Ok(d)
 }
 
+/// Shallow "safe KO" search (vgc_solver::solve_safe_ko): our joint action
+/// that, against EVERY opponent joint reply (pure, worst case) with chance
+/// weighted, knocks out at least one opposing mon within `horizon` turns
+/// while none of `side`'s mons faints. An action passes at
+/// P >= `threshold`. Horizons deepen 1..=horizon inside `time_budget_ms` /
+/// `replay_budget`; a cut-short horizon is discarded. Compressed chance
+/// mass that was dropped counts as failure (a lower bound).
+///
+/// ```text
+/// {"chosen": [choice_tuple, ...] | None, "chosen_p": float | None,
+///  "horizon_completed": int (0 = no result), "truncated": bool,
+///  "truncation_reason": str | None, "elapsed_ms": float, "cells": int,
+///  "chance_mass_dropped_max": float,
+///  "actions": [[joint, p, passed], ...]}   # p exact if passed, else an upper bound < threshold
+/// ```
+#[pyfunction]
+#[pyo3(signature = (battle, side = "p1", time_budget_ms = 1500, horizon = 2, threshold = 0.9, compress = true, mass_eps = 0.01, max_combos = 64, replay_budget = None))]
+#[allow(clippy::too_many_arguments)]
+fn solve_safe_ko<'py>(
+    py: Python<'py>,
+    battle: PyRef<'py, PyBattle>,
+    side: &str,
+    time_budget_ms: u64,
+    horizon: u32,
+    threshold: f64,
+    compress: bool,
+    mass_eps: f64,
+    max_combos: usize,
+    replay_budget: Option<u64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let t0 = std::time::Instant::now();
+    let side_ref = match side {
+        "p1" => core::SideRef::P1,
+        "p2" => core::SideRef::P2,
+        s => return Err(PyValueError::new_err(format!("side={s:?} (\"p1\" | \"p2\")"))),
+    };
+    let cfg = vgc_solver::SafeKoConfig {
+        horizon,
+        threshold,
+        deadline: Some(t0 + std::time::Duration::from_millis(time_budget_ms)),
+        replay_budget,
+        chance_compression: compress.then_some(vgc_solver::ChanceCompression { mass_eps, max_combos }),
+        ..vgc_solver::SafeKoConfig::default()
+    };
+    let owned = battle.inner.clone();
+    let r = py.allow_threads(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vgc_solver::solve_safe_ko(&owned, side_ref, &cfg)))
+            .map_err(|e| {
+                e.downcast_ref::<&str>().map(|s| s.to_string())
+                    .or_else(|| e.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "solver panicked".into())
+            })
+    });
+    let r = match r {
+        Ok(r) => r,
+        Err(msg) => {
+            let d = solver_error_dict(py, &msg, t0)?;
+            d.set_item("chosen", py.None())?;
+            d.set_item("chosen_p", py.None())?;
+            d.set_item("horizon_completed", 0)?;
+            d.set_item("actions", PyList::empty(py))?;
+            return Ok(d);
+        }
+    };
+    let joint_py = |j: &Vec<core::Choice>| -> Vec<LegalChoice> { j.iter().map(choice_to_tuple).collect() };
+    let acts = PyList::empty(py);
+    for a in &r.actions {
+        acts.append((joint_py(&a.joint), a.p, a.passed))?;
+    }
+    let d = PyDict::new(py);
+    d.set_item("chosen", r.chosen.as_ref().map(joint_py))?;
+    d.set_item("chosen_p", r.chosen_p)?;
+    d.set_item("horizon_completed", r.horizon_completed)?;
+    d.set_item("truncated", r.truncated.is_some())?;
+    d.set_item("truncation_reason", r.truncated.map(|t| t.as_str()))?;
+    d.set_item("elapsed_ms", t0.elapsed().as_secs_f64() * 1000.0)?;
+    d.set_item("cells", r.cells)?;
+    d.set_item("chance_mass_dropped_max", r.chance_mass_dropped_max)?;
+    d.set_item("actions", acts)?;
+    Ok(d)
+}
+
 /// Bridge one batched leaf call into Python: build a `list[dict]` of
 /// observations, invoke the callable, coerce the returned `list[float]`
 /// back to a `Vec<f64>`. Errors (wrong length, non-float, exception in
@@ -2088,6 +2170,7 @@ fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solve_endgame_exact, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame_anytime, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame_worlds, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_safe_ko, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

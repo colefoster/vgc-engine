@@ -189,6 +189,7 @@ pub mod endgame;
 pub mod factoring;
 pub mod recursive;
 pub mod worlds;
+pub mod safe_ko;
 #[cfg(feature = "instrumentation")]
 pub mod instrumentation;
 pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
@@ -205,6 +206,7 @@ pub use recursive::{
     SolverStats, Truncation,
 };
 pub use worlds::{endgame_solve_worlds, WorldResult, WorldsSolve};
+pub use safe_ko::{solve_safe_ko, SafeKoAction, SafeKoConfig, SafeKoResult};
 pub use budget::StopReason;
 
 /// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
