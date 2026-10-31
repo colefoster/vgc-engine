@@ -1,0 +1,134 @@
+name: Release wheels
+
+# Push a v* tag (e.g. v0.5.0) to build wheels for every platform and attach
+# them to a GitHub Release. PyPI publishing is off: it only runs from a manual
+# dispatch with publish_pypi=true, after trusted publishing is set up
+# (see docs/releases.md).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish the built wheels to PyPI (needs the trusted publisher)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # vgc-engine-data's build.rs reads the @pkmn/dex JSON dump from here (see ci.yml).
+  # Under the workspace so the manylinux container, which mounts it, sees it too.
+  VGC_DEX_DIR: ${{ github.workspace }}/.dex/package/data
+  # ps-rng: without it, ps_seed and Showdown sessions raise (README).
+  # Explicit interpreters: pyo3 0.23 does not support 3.14, which --find-interpreter would pick up.
+  MATURIN_ARGS: --release --out dist --features ps-rng -i python3.9 python3.10 python3.11 python3.12 python3.13 --manifest-path crates/vgc-engine-py/Cargo.toml
+
+jobs:
+  wheels:
+    name: wheels ${{ matrix.os }}-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, runner: ubuntu-24.04, target: x86_64 }
+          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64 }
+          - { os: macos, runner: macos-15-intel, target: x86_64 }
+          - { os: macos, runner: macos-latest, target: aarch64 }
+          - { os: windows, runner: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.9
+            3.10
+            3.11
+            3.12
+            3.13
+
+      - name: Fetch @pkmn/dex JSON (localdex 0.1.1)
+        shell: bash
+        run: |
+          mkdir -p .dex
+          curl -fsSL https://registry.npmjs.org/localdex/-/localdex-0.1.1.tgz | tar xz -C .dex
+          cd .dex/package/data
+          if command -v sha256sum >/dev/null; then sum=sha256sum; else sum="shasum -a 256"; fi
+          $sum -c <<'SUMS'
+          5df2a9f82d0fa9aac45d3e10658337aaa3479a0ef36f44c88654b474f9f00279  abilities.json
+          f2d802b82db287773ae995bc13da3d5fcc0d7d6bdb7cf1126a6183421d868ceb  items.json
+          5ea968c2e1007119eff7b1b866266d8198a09b0449662992fd2f06932b06f538  learnsets.json
+          0042d1bbb34966aa9447efac380d8120df320ef33083b72f0c37ffdde6c27c9d  moves.json
+          16b38cbc1d0e0f14d13b0577b051ab4823e6e4b1b57dea4384e4ac0856cc58b1  pokedex.json
+          538c8e9dc921ec3d77d403e87a7524446d7c5e9bfaac10fdc3a03ff648aadce2  typechart.json
+          SUMS
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: ${{ env.MATURIN_ARGS }}
+          manylinux: auto
+          # maturin-action only forwards some env prefixes into the container.
+          docker-options: -e VGC_DEX_DIR=${{ env.VGC_DEX_DIR }}
+
+      - name: Import test
+        shell: bash
+        run: |
+          python -m pip install --no-index --find-links dist vgc-engine
+          python -c "import vgc_engine; print(vgc_engine.__file__)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist --manifest-path crates/vgc-engine-py/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  pypi:
+    # Off by default: tag pushes never publish; only a manual run with publish_pypi=true.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # PyPI trusted publishing (OIDC), no API token stored
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
