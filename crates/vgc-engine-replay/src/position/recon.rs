@@ -45,8 +45,14 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
     // The lines the state is read from: the viewer's channel of a raw log
     // (the omniscient one without a viewer), else the input as is.
     let (view, exact_side) = channel_view(head, kind, opts.viewer);
+    // Illusion: the stints the log shows as the disguise but the evidence
+    // (up to the stop, or the whole log with lookahead) names the holder.
+    let full_view = opts.lookahead.then(|| channel_view(lines, kind, opts.viewer));
+    let decoded = super::illusion::decode(&view, full_view.as_ref().map(|f| f.0.as_slice()).unwrap_or(&view));
+    let view = decoded.lines;
     let mut tr = Tracker::new(champions);
     tr.feed(&view, exact_side);
+    tr.apply_illusion(&decoded.stints);
     let mut requests = opts.requests.clone();
     if let InputKind::PerSide(own) = kind {
         if requests[own as usize].is_none() {
@@ -72,14 +78,12 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
             tr.illusion_swap(side, k, real);
         }
     }
-    let later = if opts.lookahead {
-        let (full_view, ex) = channel_view(lines, kind, opts.viewer);
+    let later = full_view.map(|(full_view, ex)| {
+        let d2 = super::illusion::decode(&full_view, &full_view);
         let mut t2 = Tracker::new(champions);
-        t2.feed(&full_view, ex);
-        Some(t2)
-    } else {
-        None
-    };
+        t2.feed(&d2.lines, ex);
+        t2
+    });
 
     // Mechanics the reconstruction does not carry, live at the stop.
     let mut unsupported: Vec<String> = tr.unsupported.clone();
@@ -154,6 +158,11 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
                 if m.seen {
                     brought.push(i);
                     bsrc.push((Src::Exact, None));
+                } else if m.disguise_target {
+                    // An Illusion disguise is a party member (data/abilities.ts
+                    // illusion onBeforeSwitchIn picks from side.pokemon).
+                    brought.push(i);
+                    bsrc.push((Src::Inferred, None));
                 }
             }
             let mut rest: Vec<usize> = (0..tr.mons[side].len()).filter(|i| !brought.contains(i)).collect();
@@ -192,7 +201,7 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
                 let p = (need as f64 * usage(i) / total.max(1e-9)).min(1.0);
                 bsrc.push((if prior.is_empty() { Src::Default } else { Src::Prior }, Some(p)));
             }
-            if bsrc.iter().any(|b| b.0 != Src::Exact) {
+            if bsrc.iter().any(|b| matches!(b.0, Src::Prior | Src::Default)) {
                 team_src[side] = Src::Prior;
             }
         }
@@ -682,6 +691,21 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         "n_fields": n_fields,
     });
     let mut report = report;
+    if !decoded.stints.is_empty() {
+        report["illusion"] = json!(decoded
+            .stints
+            .iter()
+            .map(|d| json!({
+                "side": side_key(side_ref(d.side)),
+                "disguise": d.disguise,
+                "holder": d.holder,
+                "turn": view[..d.start.min(view.len())].iter().filter(|l| l.starts_with("|turn|")).count(),
+                "evidence": d.evidence.as_str(),
+                "src": d.src.as_str(),
+                "active": d.end >= view.len(),
+            }))
+            .collect::<Vec<_>>());
+    }
     if let Some(seed) = opts.prior_sample_seed {
         report["prior_sample_seed"] = json!(seed);
     }
