@@ -14,7 +14,7 @@ It is not a bot. It simulates the turns your code chooses.
 
 ## Quickstart
 
-There is no PyPI package or GitHub release yet, so build from source. You need Rust (stable), Python 3.9+ and `curl`. The data build reads the `@pkmn/dex` JSON from `$VGC_DEX_DIR`; this fetches the pinned copy CI uses.
+There is no PyPI package yet. Tagged releases attach prebuilt wheels (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x64; Python 3.9-3.13) to [GitHub Releases](https://github.com/colefoster/vgc-engine/releases): `pip install <wheel URL>`. Until the first tag, or for other platforms, build from source. You need Rust (stable), Python 3.9+ and `curl`. The data build reads the `@pkmn/dex` JSON from `$VGC_DEX_DIR`; this fetches the pinned copy CI uses.
 
 ```sh
 git clone https://github.com/colefoster/vgc-engine.git
