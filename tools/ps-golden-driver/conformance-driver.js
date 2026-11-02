@@ -760,6 +760,7 @@ function parseArgs(argv) {
 
 module.exports = {
   runJob,
+  PS_PATH,
   // Shared with tools/accuracy/ps-battle.js (full-battle + raw-trace driver).
   patchRng, captureSite, classifyDraw, snapshotState, snapshotField, snapshotSides,
   makeRandomPicker, mulberry32,
