@@ -364,7 +364,13 @@ impl Battle {
                 out.push(',');
             }
             first = false;
-            json_str(out, data::MOVES.get(mv as usize).map(|d| d.slug).unwrap_or(""));
+            // Return and Frustration list their power (sim/side.ts getRequestData);
+            // the engine doesn't model happiness, so it's PS's default of 255.
+            match mv {
+                data::move_id::RETURN => json_str(out, "return102"),
+                data::move_id::FRUSTRATION => json_str(out, "frustration1"),
+                _ => json_str(out, data::MOVES.get(mv as usize).map(|d| d.slug).unwrap_or("")),
+            }
         }
         out.push(']');
         let base_ability = m.transform_base.as_ref().map(|t| t.ability_id).unwrap_or(m.ability_id);
