@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(mc.picked_team_size, 4);
         let i = lookup("gen9vgc2025regi").unwrap();
         assert_eq!(i.name, "[Gen 9] VGC 2025 Reg I");
-        assert_eq!(i.rules, &["Species Clause: Limit one of each Pokémon", "Item Clause: Limit 1 of each item"]);
+        assert_eq!(i.rules, &["Species Clause: Limit one of each Pokemon", "Item Clause: Limit 1 of each item"]);
         assert!(!i.champions() && i.doubles && i.picked_team_size == 4);
         // PS toID()s the format name, so a name finds its id.
         assert_eq!(lookup("[Gen 9] Doubles Custom Game").unwrap().id, "gen9doublescustomgame");

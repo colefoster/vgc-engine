@@ -6628,6 +6628,15 @@ self.trigger_emergency_exits();
                 if self.plog() && !std::mem::replace(&mut self.p_mid_turn_resumed, true) {
                     self.p_turn_loop_start();
                 }
+                // Before the switch request, a living flagged mon runs
+                // runPursuitActivation: BeforeSwitchOut and eachEvent('Update')
+                // (sim/battle.ts runAction, sim/battle-actions.ts, PS 437926906).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() && !revives
+                    && self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive())
+                {
+                    self.ps_active_ties(false, "shuffle");
+                }
                 // Find the first unconsumed deferred switch matching this
                 // slot and pop it. If none is queued, a self-switch silently
                 // fails; a forced one (Eject Button) takes the first bench mon.
@@ -25011,11 +25020,11 @@ mod tests {
     #[cfg(feature = "ps-rng")]
     #[test]
     fn ps_rng_a_u_turn_switch_runs_the_switch_sorts() {
-        // U-turn's runAction ends with its Update before the switch request
-        // (sim/battle.ts:2861, :2900); the switch action then ends with an
-        // Update and the queued runSwitch speed-sorts every active and ends
-        // with its own Update. Tied Snorlax, U-turn into another Snorlax vs
-        // Calm Mind: PS draws 14 shuffles on turn 1.
+        // U-turn's runAction ends with its Update and runPursuitActivation's
+        // Update before the switch request (PS 437926906); the switch action
+        // then ends with an Update and the queued runSwitch speed-sorts every
+        // active and ends with its own Update. Tied Snorlax, U-turn into
+        // another Snorlax vs Calm Mind: PS draws 15 shuffles on turn 1.
         let mut rng = Rng::ps("sodium,00000000000000000000000000000012").unwrap();
         rng.ps_mut().unwrap().enable_trace();
         let mut b = Battle::with_rng(
@@ -25034,7 +25043,7 @@ mod tests {
         assert_eq!(b.p1.active[0], 1);
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
-        assert_eq!(shuffles, 14, "{trace:#?}");
+        assert_eq!(shuffles, 15, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
