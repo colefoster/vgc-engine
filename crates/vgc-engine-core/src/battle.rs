@@ -331,9 +331,11 @@ pub struct Battle {
     #[serde(default)]
     pub champions: bool,
     /// Struggle landed on a target for 0 damage (Sturdy on a 1 HP mon).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) struggle_zero_hit: bool,
     /// The format doesn't enforce legal abilities, so requests don't hint at a
     /// foe's possible trapping abilities (sim/battle.ts getRequests).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) ps_no_maybe_trap: bool,
     /// Opt-in: `legal_choices` also offers the adjacent ally as the target
     /// of a `normal` / `any` move in doubles, as PS accepts (`move N -1/-2`,

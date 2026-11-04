@@ -118,7 +118,7 @@ pub struct FormatPreamble {
 }
 
 const CHAMPIONS_RULES: &[&str] = &[
-    "Species Clause: Limit one of each Pokémon",
+    "Species Clause: Limit one of each Pokemon",
     "Item Clause: Limit 1 of each item",
 ];
 
