@@ -1110,6 +1110,7 @@ impl Battle {
     /// other format standard gen 9. See [`crate::format_rules::is_champions_format`].
     pub fn set_format_id(&mut self, id: &str) {
         self.champions = crate::format_rules::is_champions_format(id);
+        self.ps_no_maybe_trap = crate::format_rules::lacks_obtainable_abilities(id);
     }
 
     /// Effective weather as seen by damage formula and weather residuals.

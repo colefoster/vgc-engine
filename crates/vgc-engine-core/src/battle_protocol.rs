@@ -1997,6 +1997,7 @@ impl Battle {
     /// Build the log and print PS's preamble up to `|teampreview|` (or, with
     /// no preview, nothing past `|tier|` / `|rule|`). Teams are complete.
     pub(crate) fn p_init(&mut self, opts: &ProtocolOptions, format_id: &str) {
+        self.ps_no_maybe_trap = crate::format_rules::lacks_obtainable_abilities(format_id);
         let mut log = ProtocolLog::new(opts);
         log.champions_hp = crate::format_rules::is_champions_format(format_id) || self.champions;
         for side in [SideRef::P1, SideRef::P2] {
