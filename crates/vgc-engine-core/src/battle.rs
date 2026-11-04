@@ -16494,6 +16494,23 @@ self.trigger_emergency_exits();
             if holder_sync {
                 // synchronize onAfterSetStatus (data/abilities.ts:4857-4866).
                 pmon!(self, "-activate", side, slot, "|ability: Synchronize");
+                // The source's trySetStatus treats Synchronize like a status move, so a
+                // failure shows a line (sim/pokemon.ts setStatus, data/abilities.ts synchronize).
+                if let Some((current, immune)) = self
+                    .side(source_side)
+                    .active_mon(source_slot as usize)
+                    .filter(|m| m.is_alive())
+                    .map(|m| (m.status, is_type_immune_to_status(m.effective_types(), status)))
+                {
+                    if current == status {
+                        pmon!(self, "-fail", source_side, source_slot, "|{}", crate::battle_protocol::status_id(status));
+                    } else if !matches!(current, Status::None) {
+                        pmon!(self, "-fail", side, slot);
+                        self.p_attr("[still]");
+                    } else if immune {
+                        pmon!(self, "-immune", source_side, source_slot);
+                    }
+                }
                 self.try_set_status_from(source_side, source_slot, status, side);
             }
         }
