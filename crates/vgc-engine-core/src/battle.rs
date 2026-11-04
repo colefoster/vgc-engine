@@ -12001,6 +12001,53 @@ self.trigger_emergency_exits();
                     self, tside, tslot,
                 );
             }
+            self.try_pickpocket(tside, tslot, actor_side, actor_slot, move_id);
+        }
+    }
+
+    /// Pickpocket's onAfterMoveSecondary (data/abilities.ts pickpocket): an
+    /// itemless holder takes the item of the mon that made contact.
+    fn try_pickpocket(&mut self, tside: SideRef, tslot: u8, source_side: SideRef, source_slot: u8, move_id: u16) {
+        if (tside, tslot) == (source_side, source_slot) {
+            return;
+        }
+        let m = &self.moves()[move_id as usize];
+        let Some(source) = self.side(source_side).active_mon(source_slot as usize) else { return };
+        if !crate::damage::move_makes_contact(m, source) {
+            return;
+        }
+        let holder_ready = self.side(tside).active_mon(tslot as usize).is_some_and(|t| {
+            t.is_alive()
+                && t.effective_ability_id() == data::ability_id::PICKPOCKET
+                && t.item_id == u16::MAX
+                && !t.pending_self_switch()
+        });
+        if !holder_ready {
+            return;
+        }
+        // source.takeItem(target): Sticky Hold and items a mon can't lose keep it.
+        let Some(item) = self.side(source_side).active_mon(source_slot as usize).and_then(|s| {
+            (s.item_id != u16::MAX
+                && s.effective_ability_id() != data::ability_id::STICKYHOLD
+                && !s.holds_own_mega_stone()
+                && !s.pending_self_switch())
+            .then_some(s.item_id)
+        }) else {
+            return;
+        };
+        if self.plog() {
+            let of = self.p_ident(source_side, source_slot);
+            let name = crate::battle_protocol::item_name(item);
+            pmon!(self, "-enditem", source_side, source_slot, "|{name}|[silent]|[from] ability: Pickpocket|[of] {of}");
+            pmon!(self, "-item", tside, tslot, "|{name}|[from] ability: Pickpocket|[of] {of}");
+        }
+        if let Some(s) = self.side_mut(source_side).active_mon_mut(source_slot as usize) {
+            s.item_id = u16::MAX;
+            s.sync_can_mega_evolve();
+        }
+        if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+            t.item_id = item;
+            t.sync_can_mega_evolve();
         }
     }
 
