@@ -43,7 +43,7 @@ The draw changes alter what happens on a given seed. Anything comparing seeded r
 
 ## Known gaps
 
-- `tools/protocol/ps-suite/known-gaps.jsonl` lists suite scenarios that don't match yet, mostly singles and abilities that Reg M-C can't reach.
+- `tools/protocol/ps-suite/known-gaps.jsonl` lists 369 suite scenarios that don't match yet: 311 singles and 58 doubles.
 - Remaining arena differences include cosmetic line order (same-species Intimidate, Tailwind ending, spread move display targets) and a smaller group of state differences. `-immune` after Synchronize is fixed.
 - 47 random-game state differences are a group the triage labels "other" and haven't been root-caused.
 - Not implemented because Reg M-C can't reach it: Poison Puppeteer. The `Return 102` move display name in requests is also unmatched.
