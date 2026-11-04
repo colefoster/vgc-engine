@@ -10646,7 +10646,11 @@ self.trigger_emergency_exits();
             let chosen = target
                 .filter(|t| t.side == opp && matches!(m.target, 0 | 4 | 10))
                 .and_then(|t| self.side(opp).active_mon(t.slot as usize).filter(|d| d.is_alive()));
+            // Prankster never blocks a move aimed at an ally
+            // (!targets[i].isAlly(pokemon), sim/battle-actions.ts hitStepTryImmunity).
+            let aimed_at_ally = target.is_some_and(|t| t.side == actor_side);
             let blocked = match chosen {
+                _ if aimed_at_ally => false,
                 Some(d) => is_dark(d),
                 None => {
                     let all_targets_dark = (0..n)
