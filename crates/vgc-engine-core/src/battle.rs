@@ -3101,6 +3101,38 @@ self.trigger_emergency_exits();
         perm
     }
 
+    /// `ps-rng` only: `runEvent('AfterMega')` speed-sorts its `onAnyAfterMega`
+    /// handlers: White Herb, Mirror Herb, Eject Pack and Opportunist
+    /// (sim/battle-actions.ts runMegaEvo; data/items.ts, data/abilities.ts). Abilities
+    /// and items have different subOrders, so they never tie with each other.
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_mega_ties(&mut self) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 8];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
+                let item = matches!(
+                    m.item_id,
+                    data::item_id::WHITEHERB | data::item_id::MIRRORHERB | data::item_id::EJECTPACK
+                );
+                let ability = m.effective_ability_id() == data::ability_id::OPPORTUNIST;
+                let Some(speed) = self.ps_speed(side, slot) else { continue };
+                if ability {
+                    keys[n] = speed * 2 + 1;
+                    n += 1;
+                }
+                if item {
+                    keys[n] = speed * 2;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
     /// `ps-rng` only: `Battle.eachEvent` / `runSwitch` speed-sort over the
     /// living (or all, for runSwitch) active Pokemon — draws only when two
     /// of them tie on Speed. PS runs `eachEvent('Update')` after every
@@ -5392,6 +5424,10 @@ self.trigger_emergency_exits();
     fn apply_megas(&mut self, megas: ([(SideRef, u8); 4], usize)) {
         for &(side, actor_slot) in &megas.0[..megas.1] {
             self.try_mega_evolve(side, actor_slot);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_after_mega_ties();
+            }
             // PS: the megaEvo action ends with eachEvent('Update').
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
