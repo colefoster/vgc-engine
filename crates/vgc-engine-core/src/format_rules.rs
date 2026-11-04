@@ -233,6 +233,13 @@ pub fn is_champions_format(id: &str) -> bool {
     norm.contains("champions") || rules_for(&norm).is_some_and(|r| r.id == REG_M_B.id || r.id == REG_M_C.id)
 }
 
+/// A custom game or hackmons format doesn't enforce legal abilities
+/// (`!ruleTable.has('obtainableabilities')`, sim/battle.ts getRequests).
+pub fn lacks_obtainable_abilities(id: &str) -> bool {
+    let norm = id.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    norm.ends_with("customgame") || norm.contains("hackmons")
+}
+
 /// Whether a format argument selects Champions rules and data, or `None` for
 /// an unrecognised id. The bare game types `"doubles"` / `"singles"` (and an
 /// empty id) are the engine's target format, Champions; a PS id (`gen9...`)

@@ -575,7 +575,8 @@ impl Battle {
                 continue;
             }
             let species = &data::SPECIES[f.species_id as usize];
-            for ab in std::iter::once(fa).chain(species.legal_abilities.iter().copied().filter(|&a| a != u16::MAX && a != fa)) {
+            let hide_others = self.ps_no_maybe_trap;
+            for ab in std::iter::once(fa).chain(species.legal_abilities.iter().copied().filter(|&a| !hide_others && a != u16::MAX && a != fa)) {
                 let hit = match ab {
                     data::ability_id::SHADOWTAG => my_ability != data::ability_id::SHADOWTAG,
                     data::ability_id::ARENATRAP => m.is_grounded(),
