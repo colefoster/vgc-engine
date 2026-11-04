@@ -11844,7 +11844,7 @@ self.trigger_emergency_exits();
         self.p_tag(crate::protocol::step::AFTER_SECONDARY, ctx.tside, ctx.tslot);
 
         // Red Card / Eject Button (PS onAfterMoveSecondary).
-        self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg);
+        self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg, ctx.move_id);
         self.p_tag(crate::protocol::step::AFTER_FAINT, ctx.tside, ctx.tslot);
         self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
         self.p_set_hit(hit_idx as u8);
@@ -11963,7 +11963,18 @@ self.trigger_emergency_exits();
         actor_slot: u8,
         hit_sub: bool,
         effective_dmg: u16,
+        move_id: u16,
     ) {
+        // Sheer Force skips the AfterMoveSecondary event, except in Champions
+        // (sim/battle-actions.ts afterMoveSecondaryEvent; data/mods/champions/
+        // scripts.ts, PS fbafa7251).
+        let m = &self.moves()[move_id as usize];
+        if !self.champions
+            && crate::damage::move_is_sheer_force_boosted(m)
+            && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force)
+        {
+            return;
+        }
         if !hit_sub && effective_dmg > 0 {
             // Reactive-switch items — PS `onAfterDamage` slot.
             //   Red Card (forces ATTACKER out) runs BEFORE Eject
