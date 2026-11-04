@@ -20782,17 +20782,29 @@ self.trigger_emergency_exits();
                         actor_side,
                         actor_slot,
                     );
-                    if let Some(a) =
-                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
-                    {
-                        let _ = a.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::NoRetreat,
-                            turns_remaining: 0,
-                            payload: 0,
-                        });
+                    // noretreat condition onStart: addVolatile('trapped') fails on
+                    // a mon already trapped. Then Champions keeps the volatile
+                    // silently, and elsewhere the volatile doesn't stick
+                    // (data/moves.ts, data/mods/champions/moves.ts noretreat).
+                    let already_trapped = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::Trapped));
+                    if !already_trapped || self.champions {
+                        if let Some(a) =
+                            self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                        {
+                            let _ = a.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::NoRetreat,
+                                turns_remaining: 0,
+                                payload: 0,
+                            });
+                        }
                     }
-                    // noretreat condition onStart.
-                    pmon!(self, "-start", actor_side, actor_slot, "|move: No Retreat");
+                    if !already_trapped {
+                        pmon!(self, "-activate", actor_side, actor_slot, "|trapped");
+                        pmon!(self, "-start", actor_side, actor_slot, "|move: No Retreat");
+                    }
                 }
             }
             data::move_id::GASTROACID => {
