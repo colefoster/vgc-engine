@@ -20323,12 +20323,19 @@ self.trigger_emergency_exits();
                                 u.fainted = true;
                             }
                         }
-                        // curse: onHit's directDamage, then the volatile's `-start`
-                        // (data/moves.ts curse).
+                        // Curse's volatileStatus starts before its onHit's
+                        // directDamage (data/moves.ts curse, sim/battle-actions.ts
+                        // runMoveEffects). Champions' onHit pays first, then adds
+                        // the volatile (data/mods/champions/moves.ts curse).
                         if self.plog() {
                             let of = self.p_ident(actor_side, actor_slot);
-                            self.p_damage(actor_side, actor_slot, "");
-                            pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
+                            if self.champions {
+                                self.p_damage(actor_side, actor_slot, "");
+                                pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
+                            } else {
+                                pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
+                                self.p_damage(actor_side, actor_slot, "");
+                            }
                         }
                     }
                 }
