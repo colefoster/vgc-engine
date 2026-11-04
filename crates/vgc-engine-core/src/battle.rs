@@ -13274,13 +13274,15 @@ self.trigger_emergency_exits();
                 }
                 // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
                 // Electro Shot in Rain) or Power Herb consumption.
-                // Mega Sol reads as sun for the user's own moves except
-                // Electro Shot (sim/pokemon.ts:2193 effectiveWeather).
+                // Mega Sol reads as sun for all the user's own moves, so
+                // Electro Shot charges under rain (sim/pokemon.ts effectiveWeather,
+                // PS 89905975e).
                 let mega_sol = attacker.effective_ability_id() == data::ability_id::MEGASOL;
                 let weather_skip = (matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
                     && (mega_sol
                         || matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)))
                     || (move_id == data::move_id::ELECTROSHOT
+                        && !mega_sol
                         && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
                 let power_herb = attacker.item_id == data::item_id::POWERHERB;
                 if weather_skip {
