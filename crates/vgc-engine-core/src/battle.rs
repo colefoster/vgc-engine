@@ -16661,8 +16661,23 @@ self.trigger_emergency_exits();
             )
         };
         if dmg > 0 {
+            if self.plog() {
+                let attacker = self.side(src_side).team[src_idx].clone();
+                if let Some(defender) = self.side(tside).active_mon(tslot as usize).cloned() {
+                    self.p_hit_messages(src_side, 0, tside, tslot, entry.move_id, &attacker, &defender, ps_crit);
+                }
+            }
+            // A future move no longer removes Endure before it hits
+            // (data/conditions.ts futuremove, PS 0ac140354).
+            let endured = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                d.volatiles.has(crate::pokemon::VolatileKind::Endure) && d.current_hp > 0 && dmg >= d.current_hp
+            });
+            if endured {
+                pmon!(self, "-activate", tside, tslot, "|move: Endure");
+            }
             if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                d.current_hp = d.current_hp.saturating_sub(dmg);
+                let dealt = if endured { d.current_hp - 1 } else { dmg };
+                d.current_hp = d.current_hp.saturating_sub(dealt);
                 if d.current_hp == 0 {
                     d.fainted = true;
                 }
