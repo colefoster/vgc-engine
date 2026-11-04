@@ -900,9 +900,12 @@ impl Battle {
                 pmon!(self, "-end", side, slot, "|ability: Flash Fire|[silent]");
             }
             data::ability_id::SUPREMEOVERLORD => {
+                // No line without fallen allies (data/abilities.ts supremeoverlord
+                // onEnd, PS d39cea805).
                 let n = m.supreme_overlord_fallen;
-                let fallen = if n == 0 || n == u8::MAX { "undefined".to_string() } else { n.to_string() };
-                pmon!(self, "-end", side, slot, "|fallen{fallen}|[silent]");
+                if n != 0 && n != u8::MAX {
+                    pmon!(self, "-end", side, slot, "|fallen{n}|[silent]");
+                }
             }
             _ => {}
         }
