@@ -330,6 +330,11 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
+    /// Struggle landed on a target for 0 damage (Sturdy on a 1 HP mon).
+    pub(crate) struggle_zero_hit: bool,
+    /// The format doesn't enforce legal abilities, so requests don't hint at a
+    /// foe's possible trapping abilities (sim/battle.ts getRequests).
+    pub(crate) ps_no_maybe_trap: bool,
     /// Opt-in: `legal_choices` also offers the adjacent ally as the target
     /// of a `normal` / `any` move in doubles, as PS accepts (`move N -1/-2`,
     /// sim/battle.ts:2399-2429 validTargetLoc). Off by default: turning it
@@ -842,6 +847,8 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
+            struggle_zero_hit: false,
+            ps_no_maybe_trap: false,
             ally_targets: false,
             defer_white_herb: false,
             white_herb_move_defer: false,
@@ -11567,6 +11574,9 @@ self.trigger_emergency_exits();
         self.p_tag(crate::protocol::step::DAMAGE, ctx.tside, ctx.tslot);
         let sub_absorbed = dmg.min(ctx.defender.substitute_hp());
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
+        if ctx.move_id == data::move_id::STRUGGLE && !hit_sub && effective_dmg == 0 {
+            self.struggle_zero_hit = true;
+        }
         if hit_sub && self.plog() {
             // substitute onTryPrimaryHit (data/moves.ts substitute).
             if self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.substitute_hp() == 0) {
@@ -14644,7 +14654,10 @@ self.trigger_emergency_exits();
         // move id. `directDamage` bypasses the `onDamage` event, so neither
         // Magic Guard nor Rock Head reduces it.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
-        if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
+        // A hit that does 0 damage recoils too (sim/battle-actions.ts, PS 4148c1187).
+        if move_id == data::move_id::STRUGGLE
+            && (any_damage_dealt > 0 || std::mem::take(&mut self.struggle_zero_hit))
+        {
             self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
