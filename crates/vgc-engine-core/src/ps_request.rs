@@ -468,11 +468,11 @@ impl Battle {
     fn ps_move_disabled(&self, side: SideRef, m: &Pokemon, i: usize) -> Option<bool> {
         let mv = m.moves[i];
         let md = &self.moves()[mv as usize];
-        let is_choice = matches!(m.item_id, data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF);
+        let is_choice = matches!(m.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF);
         if m.pp.get(i).copied().unwrap_or(0) == 0 {
             return Some(true);
         }
-        if m.item_id == data::item_id::ASSAULTVEST && md.category == 2 {
+        if m.effective_item_id() == data::item_id::ASSAULTVEST && md.category == 2 {
             return Some(true);
         }
         // Champions Fake Out / First Impression (data/mods/champions/moves.ts:352,

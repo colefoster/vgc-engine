@@ -2683,11 +2683,12 @@ impl Battle {
             return;
         }
 
+        // choicelock onDisableMove and assaultvest's return under ignoringItem.
         let is_choice_item = matches!(
-            active.item_id,
+            active.effective_item_id(),
             data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
         );
-        let is_assault_vest = active.item_id == data::item_id::ASSAULTVEST;
+        let is_assault_vest = active.effective_item_id() == data::item_id::ASSAULTVEST;
         // Gorilla Tactics (PS data/abilities.ts:1609) locks the holder into
         // its first selected move exactly like a Choice item, but driven by
         // the ability instead of an item. Reuses the same `locked_move_slot`
@@ -14826,7 +14827,7 @@ self.trigger_emergency_exits();
                 // `choicelock` on every move use (data/items.ts choiceband
                 // / choicescarf / choicespecs).
                 let choice_item = matches!(
-                    mon.item_id,
+                    mon.effective_item_id(),
                     data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
                 ) || mon.effective_ability_id() == data::ability_id::GORILLATACTICS;
                 if choice_item && mon.locked_move_slot() == 255 {
@@ -14840,8 +14841,10 @@ self.trigger_emergency_exits();
         // used; we reuse the Choice-item `locked_move_slot` state. Struggle
         // and Z/Max moves are exempt in PS, but neither is modelled as a
         // selectable slot here, so the slot-based lock is equivalent.
+        // effective_item_id: the item's onModifyMove doesn't run under Magic Room,
+        // so nothing locks.
         let is_choice = matches!(
-            attacker.item_id,
+            attacker.effective_item_id(),
             data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
         ) || attacker.effective_ability_id() == data::ability_id::GORILLATACTICS;
         // Pressure (PS abilities.ts:3392 via battle-actions.ts:467-484):
