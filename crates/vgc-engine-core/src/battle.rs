@@ -6751,6 +6751,7 @@ self.trigger_emergency_exits();
                 m.status = Status::None;
             }
             self.healing_wish[side as usize][(actor_slot as usize).min(1)] = false;
+            self.sync_status_dot_bit(side, actor_slot);
             self.p_heal(side, actor_slot, "|[from] move: Healing Wish");
         }
         self.apply_stealth_rock_to(side, actor_slot);
