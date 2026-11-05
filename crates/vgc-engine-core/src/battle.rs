@@ -23150,7 +23150,14 @@ self.trigger_emergency_exits();
                 let Some((ts, tslot)) = opp_target else { return };
                 if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
                 let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
-                self.apply_boosts(ts, tslot, &[(4, -2)], actor_side, actor_slot);
+                // boosts: { spe: -1 } run TryBoost's Clear Body and kin (data/abilities.ts clearbody).
+                let blocked = ts != actor_side && self.side(ts).active_mon(tslot as usize)
+                    .is_some_and(|t| crate::ability::blocks_move_stat_drop(t, self.move_breaks_mold(actor_side, actor_slot), 4));
+                if blocked {
+                    self.p_drop_blocked(ts, tslot, &[4]);
+                } else {
+                    self.apply_boosts(ts, tslot, &[(4, -2)], actor_side, actor_slot);
+                }
                 if ts != actor_side {
                     self.after_foe_drop(ts, tslot, before, true);
                 }
