@@ -994,6 +994,12 @@ impl Battle {
 
     /// A status move's missed accuracy roll (`-miss`, `[miss]`).
     pub(crate) fn p_status_miss(&mut self) {
+        if self.status_spread_rolls {
+            if let Some((us, usl, ts, tsl)) = self.status_acc_pair() {
+                self.p_miss(us, usl, ts, tsl);
+            }
+            return;
+        }
         let Some((us, usl, Some((ts, tsl)))) = self.protocol.log().and_then(|l| l.status_ctx) else { return };
         let side = |s: u8| if s == 0 { SideRef::P1 } else { SideRef::P2 };
         self.p_miss(side(us), usl, side(ts), tsl);
@@ -1885,7 +1891,7 @@ impl Battle {
     #[cold]
     #[inline(never)]
     fn p_miss_cold(&mut self, side: SideRef, slot: u8, tside: SideRef, tslot: u8) {
-        let spread = self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
+        let spread = self.status_spread_rolls || self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
         if !spread {
             self.p_attr("[miss]");
         }

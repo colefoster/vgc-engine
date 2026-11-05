@@ -389,6 +389,11 @@ pub struct Battle {
     /// `accuracy::effective_accuracy` in `rolled_accuracy_passed`.
     #[serde(skip)]
     status_acc_pair: Option<(SideRef, u8, SideRef, u8)>,
+    /// A spread status move rolling accuracy: PS `move.spreadHit`, so a miss
+    /// names this roll's target and adds no `[miss]` (hitStepAccuracy,
+    /// sim/battle-actions.ts). Log only.
+    #[serde(skip)]
+    pub(crate) status_spread_rolls: bool,
     #[serde(skip)]
     status_pending_kind: [[u8; 2]; 2],
     /// The status move in progress stops at a target's Substitute: no `bypasssub`
@@ -906,6 +911,7 @@ impl Battle {
             status_sure_hit: false,
             status_acc_boost: 0,
             status_acc_pair: None,
+            status_spread_rolls: false,
             status_pending_kind: [[0; 2]; 2],
             status_sub_blocks: false,
             called_from: u16::MAX,
@@ -4453,6 +4459,7 @@ self.trigger_emergency_exits();
     /// without drawing; Dragon Darts keeps a living target; Snipe Shot and
     /// Stalwart / Propeller Tail keep an active original target.
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) -> Option<Target> {
         let n_active = self.format().active_count();
         let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
@@ -15905,6 +15912,10 @@ self.trigger_emergency_exits();
         if ok { MoveResult::Succeeded } else { MoveResult::Failed }
     }
 
+    pub(crate) fn status_acc_pair(&self) -> Option<(SideRef, u8, SideRef, u8)> {
+        self.status_acc_pair
+    }
+
     /// Whether a foe's Protect blocks every target of a status move
     /// (hitStepTryHitEvent, sim/battle-actions.ts:643).
     fn status_move_protected(&self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) -> bool {
@@ -23446,6 +23457,7 @@ self.trigger_emergency_exits();
                             .active_mon(actor_slot as usize)
                             .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
                         let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                        self.status_spread_rolls = ntgt > 1;
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                             let Some(t) = self.side(ts).active_mon(tslot as usize) else { continue };
                             // hitStepInvulnerabilityEvent, then hitStepTryHitEvent's Protect:
@@ -23478,12 +23490,14 @@ self.trigger_emergency_exits();
                             acc_hit[i] = self.rolled_accuracy_passed(m);
                             any_hit |= acc_hit[i];
                         }
+                        self.status_spread_rolls = false;
                         #[cfg(feature = "ps-rng")]
                         {
                             self.ps_status_missed = any_rolled && !any_hit;
                         }
                         let _ = (any_rolled, any_hit);
                     }
+                    let mut any_moved = false;
                     for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                         if !acc_hit[i] {
                             continue;
@@ -23525,6 +23539,7 @@ self.trigger_emergency_exits();
                         if k > 0 {
                             let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                             self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
+                            any_moved |= self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.boosts != before);
                             if ts != actor_side {
                                 self.after_foe_drop(ts, tslot, before, true);
                             } else {
@@ -23535,11 +23550,14 @@ self.trigger_emergency_exits();
                         }
                     }
                     // A spread status move's `[spread]` (sim/battle-actions.ts:617-618).
+                    // A boost that moves nothing is a false hit; if every hit is,
+                    // the loop's `damage.fill(false)` empties the list
+                    // (data/mods/champions/scripts.ts hitStepMoveHitLoop).
                     if self.plog() && ntgt > 1 {
                         let mut attr = String::from("[spread] ");
                         let mut first = true;
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
-                            if acc_hit[i] {
+                            if acc_hit[i] && any_moved {
                                 if !first {
                                     attr.push(',');
                                 }
