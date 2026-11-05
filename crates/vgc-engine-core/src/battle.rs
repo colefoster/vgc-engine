@@ -5536,6 +5536,22 @@ self.trigger_emergency_exits();
     /// the HP-threshold berries: a holder that dropped to its threshold
     /// from recoil, Life Orb, Rocky Helmet or residual damage eats it then
     /// (items.ts sitrusberry et al. `onUpdate`).
+    fn tick_magic_room(&mut self) {
+        if self.magic_room_turns > 0 {
+            self.magic_room_turns -= 1;
+            if self.magic_room_turns == 0 {
+                let n = self.format().active_count() as u8;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for s in 0..n {
+                        if let Some(mon) = self.side_mut(side).active_mon_mut(s as usize) {
+                            mon.item_suppressed = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn update_hp_berries(&mut self) {
         let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
@@ -5568,6 +5584,7 @@ self.trigger_emergency_exits();
         //    status damage / Speed Boost / etc.). Runs BEFORE timer
         //    decrement so a mon takes its last sand damage on the turn
         //    sand expires (PS behavior).
+        let mut magic_room_ticked = false;
         // No residuals once a side is out: PS ended the battle at the faint
         // (sim/battle.ts faintMessages -> checkWin).
         if !(self.p1.is_defeated() || self.p2.is_defeated()) {
@@ -5590,6 +5607,10 @@ self.trigger_emergency_exits();
             self.locked_move_residual();
             // `|upkeep|` (sim/battle.ts:2817) precedes the action's Update.
             self.p_upkeep();
+            // The room's onFieldResidual already ended it, so the action's Update
+            // sees the items back (data/moves.ts magicroom).
+            self.tick_magic_room();
+            magic_room_ticked = true;
             // PS: the residual action ends with eachEvent('Update').
             self.attract_update();
             self.update_hp_berries();
@@ -5704,18 +5725,8 @@ self.trigger_emergency_exits();
         // (PS `data/moves.ts:magicroom` condition, `onFieldResidual`).
         // On expiry, clear the per-mon item-suppression flag on every
         // active mon so held-item effects come back live next turn.
-        if self.magic_room_turns > 0 {
-            self.magic_room_turns -= 1;
-            if self.magic_room_turns == 0 {
-                let n = self.format().active_count() as u8;
-                for side in [SideRef::P1, SideRef::P2] {
-                    for s in 0..n {
-                        if let Some(mon) = self.side_mut(side).active_mon_mut(s as usize) {
-                            mon.item_suppressed = false;
-                        }
-                    }
-                }
-            }
+        if !magic_room_ticked {
+            self.tick_magic_room();
         }
         // Wonder Room field pseudo-weather ticks down each end-of-turn
         // (PS `data/moves.ts:wonderroom` condition, `onFieldResidual`). No
