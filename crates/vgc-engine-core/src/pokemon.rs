@@ -2564,6 +2564,10 @@ impl Pokemon {
         {
             return false;
         }
+        // sim/pokemon.ts isGrounded: Magnet Rise and Telekinesis, after Levitate.
+        if self.volatiles.has(VolatileKind::MagnetRise) || self.volatiles.has(VolatileKind::Telekinesis) {
+            return false;
+        }
         if self.effective_item_id() == data::item_id::AIRBALLOON {
             return false;
         }
