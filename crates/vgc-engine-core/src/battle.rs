@@ -13334,6 +13334,13 @@ self.trigger_emergency_exits();
         }
         self.p_set_hit_after_loop();
         self.p_tag(crate::protocol::step::AFTER_SECONDARY, ctx.tside, ctx.tslot);
+        if self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| !t.is_alive())
+            && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| {
+                a.is_alive() && a.effective_ability_id() == data::ability_id::MAGICIAN
+            })
+        {
+            crate::ability::magician_steal(self, ctx.tside, ctx.tslot, ctx.move_id, ctx.actor_side, ctx.actor_slot);
+        }
 
         // Red Card / Eject Button (PS onAfterMoveSecondary).
         self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg, ctx.move_id);
