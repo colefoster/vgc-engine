@@ -10287,7 +10287,11 @@ self.trigger_emergency_exits();
                     holds
                 });
                 if used {
-                    // useItem's gem message (sim/pokemon.ts:1829).
+                    // useItem's gem message (sim/pokemon.ts:1829), in TryPrimaryHit
+                    // ahead of a Substitute's (data/items.ts normalgem).
+                    if defender.substitute_hp() > 0 {
+                        self.p_tag(crate::protocol::step::SUB_HIT, tside, tslot);
+                    }
                     if self.plog() {
                         pmon!(self, "-enditem", actor_side, actor_slot, "|Normal Gem|[from] gem|[move] {}", m.name);
                     }
