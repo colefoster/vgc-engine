@@ -11788,6 +11788,14 @@ self.trigger_emergency_exits();
         if hit_sub {
             return;
         }
+        // Clear Smog onHit (data/moves.ts clearsmog): also on a target the hit KO'd.
+        if ctx.move_id == data::move_id::CLEARSMOG {
+            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                t.boosts = [0; 7];
+            }
+            self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+            pmon!(self, "-clearboost", ctx.tside, ctx.tslot);
+        }
         // Jaw Lock — PS data/moves.ts:9789 jawlock onHit:
         // `source.addVolatile('trapped', target, move, 'trapper')` then
         // `target.addVolatile('trapped', source, move, 'trapper')`. Each side
