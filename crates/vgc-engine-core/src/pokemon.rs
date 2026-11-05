@@ -1208,14 +1208,19 @@ impl Pokemon {
     /// so Low Kick's BP table can't see a 0-weight target.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
     pub fn effective_weight_dg(&self) -> u32 {
-        let base = self.species().weight_dg as u32;
+        let mut base = self.species().weight_dg as u32;
+        // onModifyWeight (data/abilities.ts heavymetal, lightmetal).
+        match self.effective_ability_id() {
+            data::ability_id::HEAVYMETAL => base *= 2,
+            data::ability_id::LIGHTMETAL => base /= 2,
+            _ => {}
+        }
         // `effective_item_id()` is `u16::MAX` under Magic Room — Float Stone's
         // weight halving is an item effect, so it is suppressed (item kept).
         if self.effective_item_id() == data::item_id::FLOATSTONE {
-            (base / 2).max(1)
-        } else {
-            base
+            base /= 2;
         }
+        base.max(1)
     }
 
     pub fn is_alive(&self) -> bool {
