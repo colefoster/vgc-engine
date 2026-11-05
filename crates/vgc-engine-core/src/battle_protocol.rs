@@ -1481,6 +1481,10 @@ impl Battle {
     #[cold]
     #[inline(never)]
     fn p_item_line_cold(&mut self, tag: &str, side: SideRef, slot: u8, item: u16, suffix: &str) {
+        // ripen onTryEatItem announces itself before the berry goes (data/abilities.ts).
+        if suffix == "|[eat]" && self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN) {
+            pmon!(self, "-activate", side, slot, "|ability: Ripen");
+        }
         pmon!(self, tag, side, slot, "|{}{suffix}", item_name(item));
     }
 
