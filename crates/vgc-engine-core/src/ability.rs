@@ -452,7 +452,9 @@ pub(crate) fn recompute_neutralizing_gas(battle: &mut Battle) {
                 _ => false,
             };
             if let Some(m) = battle.side_mut(s).active_mon_mut(slot as usize) {
-                m.ability_suppressed = suppress;
+                // Gastro Acid suppresses on its own, whatever the gas does
+                // (data/moves.ts gastroacid; sim/pokemon.ts ignoringAbility).
+                m.ability_suppressed = suppress || m.volatiles.has(crate::pokemon::VolatileKind::GastroAcid);
             }
         }
     }

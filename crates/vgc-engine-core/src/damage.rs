@@ -1059,7 +1059,7 @@ pub(crate) fn calculate_damage_with_bp(
         (m.type_, bp)
     } else if move_id == data::move_id::ASSURANCE {
         // PS data/moves.ts assurance basePowerCallback: `target.hurtThisTurn`.
-        let bp = m.base_power as u32 * if defender.damaged_this_turn() { 2 } else { 1 };
+        let bp = m.base_power as u32 * if defender.hurt_this_turn { 2 } else { 1 };
         (m.type_, bp)
     } else if move_id == data::move_id::VENOSHOCK {
         // PS data/moves.ts venoshock onBasePower: doubled against psn / tox.
@@ -1151,12 +1151,10 @@ pub(crate) fn calculate_damage_with_bp(
         // item's onModifyWeight); Heavy/Light Metal still deferred. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Low_Kick_(move)>
         // <https://bulbapedia.bulbagarden.net/wiki/Grass_Knot_(move)>
-        // A Mold Breaker user ignores the target's Heavy / Light Metal.
-        let w = if matches!(attacker.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE) {
-            defender.weight_dg_ignoring_ability()
-        } else {
-            defender.effective_weight_dg()
-        };
+        let w = defender.weight_dg_with(matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        ));
         let bp = if w >= 2000 { 120 }
             else if w >= 1000 { 100 }
             else if w >= 500 { 80 }
@@ -1178,15 +1176,14 @@ pub(crate) fn calculate_damage_with_bp(
         // We use hectograms (kg × 10) so the multiplicative checks are
         // exact integer comparisons. Float Stone on either combatant halves
         // that mon's weight (PS getWeight runs onModifyWeight for both the
-        // user and the target). Heavy Metal (×2) / Light Metal (×0.5) are
-        // still deferred to their own PRs.
+        // user and the target), as do Heavy Metal (×2) and Light Metal (×0.5).
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heat_Crash_(move)>
         //             <https://bulbapedia.bulbagarden.net/wiki/Heavy_Slam_(move)>
         let user_w = attacker.effective_weight_dg() as u64;
-        // A Mold Breaker user ignores the target's Heavy / Light Metal (breakable,
-        // sim/battle.ts suppressingAbility).
-        let breaks = matches!(attacker.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
-        let tgt_w = (if breaks { defender.weight_dg_ignoring_ability() } else { defender.effective_weight_dg() } as u64).max(1);
+        let tgt_w = defender.weight_dg_with(matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        )) as u64;
         let bp = if user_w >= tgt_w * 5 { 120 }
             else if user_w >= tgt_w * 4 { 100 }
             else if user_w >= tgt_w * 3 { 80 }
@@ -1770,7 +1767,12 @@ pub(crate) fn calculate_damage_with_bp(
     // via `m.recoil_num > 0`; crash damage (Jump Kick / High Jump
     // Kick miss penalty) is not modelled yet, so skipped.
     // Emboar / Staraptor / Pawmot use this.
-    if m.recoil_num > 0
+    // data/abilities.ts reckless: `move.recoil || move.hasCrashDamage`.
+    if (m.recoil_num > 0
+        || matches!(
+            move_id,
+            data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK | data::move_id::AXEKICK | data::move_id::SUPERCELLSLAM
+        ))
         && attacker.effective_ability_id() != u16::MAX
         && attacker.effective_ability_id() == data::ability_id::RECKLESS
     {

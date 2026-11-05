@@ -772,6 +772,11 @@ pub struct Pokemon {
     /// (sim/pokemon.ts). `last_damage_taken` also holds an ally's spread hit.
     #[serde(default)]
     pub last_foe_damage: u16,
+    /// PS `hurtThisTurn` read as a truth value: spreadDamage set it to the HP
+    /// left after any damage, recoil and Life Orb included (sim/battle.ts
+    /// spreadDamage). Assurance reads it (data/moves.ts assurance).
+    #[serde(default)]
+    pub hurt_this_turn: bool,
     /// Encoded `(side_byte, slot_byte)` of the most recent *physical*
     /// attacker this turn, and the HP damage it dealt. Counter
     /// (`data/moves.ts:counter`) keys off these specifically — PS tracks
@@ -1151,6 +1156,7 @@ impl Pokemon {
             last_attacker_category: 255,
             last_damage_taken: 0,
             last_foe_damage: 0,
+            hurt_this_turn: false,
             last_phys_attacker: (255, 255),
             last_phys_damage: 0,
             last_spec_attacker: (255, 255),
@@ -1214,25 +1220,27 @@ impl Pokemon {
     /// so Low Kick's BP table can't see a 0-weight target.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
     pub fn effective_weight_dg(&self) -> u32 {
-        let mut base = self.species().weight_dg as u32;
-        // onModifyWeight (data/abilities.ts heavymetal, lightmetal).
-        match self.effective_ability_id() {
-            data::ability_id::HEAVYMETAL => base *= 2,
-            data::ability_id::LIGHTMETAL => base /= 2,
-            _ => {}
+        self.weight_dg_with(false)
+    }
+
+    /// `getWeight`: runEvent('ModifyWeight'), Heavy Metal and Light Metal
+    /// first (Ability before Item), then Float Stone (sim/pokemon.ts getWeight,
+    /// data/abilities.ts heavymetal, lightmetal; both breakable, hence the
+    /// flag for the target of a Mold Breaker user).
+    pub fn weight_dg_with(&self, ignore_ability: bool) -> u32 {
+        let mut w = self.species().weight_dg as u32;
+        if !ignore_ability {
+            match self.effective_ability_id() {
+                data::ability_id::HEAVYMETAL => w *= 2,
+                data::ability_id::LIGHTMETAL => w /= 2,
+                _ => {}
+            }
         }
         // `effective_item_id()` is `u16::MAX` under Magic Room — Float Stone's
         // weight halving is an item effect, so it is suppressed (item kept).
         if self.effective_item_id() == data::item_id::FLOATSTONE {
-            base /= 2;
+            w /= 2;
         }
-        base.max(1)
-    }
-
-    /// The weight with the holder's breakable weight ability ignored.
-    pub fn weight_dg_ignoring_ability(&self) -> u32 {
-        let base = self.species().weight_dg as u32;
-        let w = if self.effective_item_id() == data::item_id::FLOATSTONE { base / 2 } else { base };
         w.max(1)
     }
 

@@ -378,6 +378,10 @@ impl Battle {
     /// `faintQueue`, sim/battle.ts:2108-2142).
     #[inline(always)]
     pub(crate) fn p_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        // spreadDamage's hurtThisTurn: every damage line, whatever its source.
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.hurt_this_turn = m.current_hp > 0;
+        }
         // Focus Band's onDamage rolls on every damage event, and only then checks for a
         // lethal move hit (data/items.ts focusband). Move hits roll in item::on_before_damage.
         #[cfg(feature = "ps-rng")]

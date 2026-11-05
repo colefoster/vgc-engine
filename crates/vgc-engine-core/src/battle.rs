@@ -3665,6 +3665,11 @@ self.trigger_emergency_exits();
                     h[n] = (spe, 2);
                     n += 1;
                 }
+                // The charge volatile's onAfterMove (data/moves.ts charge).
+                if user && m.is_charged() && n < h.len() {
+                    h[n] = (spe, 2);
+                    n += 1;
+                }
                 if matches!(m.item_id, data::item_id::WHITEHERB | data::item_id::MIRRORHERB | data::item_id::EJECTPACK)
                     && n < h.len()
                 {
@@ -4158,10 +4163,27 @@ self.trigger_emergency_exits();
             if d.volatiles.has(V::Telekinesis) {
                 push(&mut h, (-1, spe, 2));
             }
+            // onModifyAccuracy: Bright Powder, Lax Incense (-2), Sand Veil,
+            // Snow Cloak, Tangled Feet (-1) (data/items.ts, data/abilities.ts).
+            if matches!(d.item_id, data::item_id::BRIGHTPOWDER | data::item_id::LAXINCENSE) {
+                push(&mut h, (-2, spe, 8));
+            }
+            if matches!(d.effective_ability_id(), data::ability_id::SANDVEIL | data::ability_id::SNOWCLOAK | data::ability_id::TANGLEDFEET) {
+                push(&mut h, (-1, spe, 7));
+            }
         }
         if let Some(a) = self.side(atk_side).active_mon(atk_slot as usize) {
+            let spe = self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0);
             if a.micle_next_move {
-                push(&mut h, (0, self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0), 2));
+                push(&mut h, (0, spe, 2));
+            }
+            // onSourceModifyAccuracy: Wide Lens, Zoom Lens (-2), Compound Eyes,
+            // Hustle (-1).
+            if matches!(a.item_id, data::item_id::WIDELENS | data::item_id::ZOOMLENS) {
+                push(&mut h, (-2, spe, 8));
+            }
+            if matches!(a.effective_ability_id(), data::ability_id::COMPOUNDEYES | data::ability_id::HUSTLE) {
+                push(&mut h, (-1, spe, 7));
             }
         }
         if n < 2 {
@@ -4997,10 +5019,11 @@ self.trigger_emergency_exits();
         #[cfg(not(feature = "ps-rng"))]
         let ps = false;
         self.quick_frac = Some([[false; 2]; 2]);
-        // PS nextTurn clears usedItemThisTurn from turn 2 on (sim/battle.ts:1676-1677).
+        // PS nextTurn clears usedItemThisTurn and hurtThisTurn from turn 2 on (sim/battle.ts:1676-1677).
         if self.turn != 0 {
             for m in self.p1.team.iter_mut().chain(self.p2.team.iter_mut()) {
                 m.used_item_this_turn = false;
+                m.hurt_this_turn = false;
             }
         }
         if ps {
@@ -5559,15 +5582,6 @@ self.trigger_emergency_exits();
         }
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
-            // Terrain's last turn: clearTerrain's eachEvent('TerrainChange')
-            // (sim/field.ts), inside the residual; the timer ticks below.
-            if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
-                self.ps_active_ties(false, "shuffle");
-                // The tick's sync below must not draw for this change again.
-                if let Some((w, _)) = self.ps_field_seen {
-                    self.ps_field_seen = Some((w, crate::terrain::Terrain::None));
-                }
-            }
             self.ps_active_ties(false, "shuffle");
             // The turn's last action ran checkFainted: every fainted active's
             // status becomes 'fnt', on a side that can still switch
@@ -6525,6 +6539,7 @@ self.trigger_emergency_exits();
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
             incoming.last_foe_damage = 0;
+            incoming.hurt_this_turn = false;
             incoming.last_phys_attacker = (255, 255);
             incoming.last_phys_damage = 0;
             incoming.last_spec_attacker = (255, 255);
@@ -8807,6 +8822,19 @@ self.trigger_emergency_exits();
         if (attacker.boosted_stat == 0 && physical_move) || (attacker.boosted_stat == 2 && special_move) {
             atk_chain = crate::damage::chain_modify(atk_chain, 5325, 4096);
         }
+        // Plus / Minus (data/abilities.ts plus, minus onModifySpA): x1.5 with
+        // an ally holding either.
+        if special_move
+            && matches!(attacker.effective_ability_id(), data::ability_id::PLUS | data::ability_id::MINUS)
+            && (0..self.format().active_count()).any(|s| {
+                s != actor_slot as usize
+                    && self.side(actor_side).active_mon(s).is_some_and(|ally| {
+                        ally.is_alive() && matches!(ally.effective_ability_id(), data::ability_id::PLUS | data::ability_id::MINUS)
+                    })
+            })
+        {
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
+        }
         // Hadron Engine: Iron Moth's signature — SpA ×5461/4096 (≈1.333)
         // on special moves while Electric Terrain is up. The ability also
         // sets Electric Terrain on switch-in (`ability::on_switch_in`).
@@ -9305,6 +9333,7 @@ self.trigger_emergency_exits();
                     // assurance; focuspunch condition onHit).
                     if capped > 0 {
                         d.set_damaged_this_turn(true);
+                        d.hurt_this_turn = d.current_hp > 0;
                     }
                     if capped > 0 && tside != actor_side {
                         let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
@@ -11048,9 +11077,14 @@ self.trigger_emergency_exits();
                 if trappable {
                     let dur = 5 + self.rng.range(2) as u32; // timer 5 or 6
                     let src_team = self.side(actor_side).active[actor_slot as usize] as u32;
+                    // partiallytrapped onStart: boundDivisor is fixed here, from
+                    // the source's Binding Band (data/conditions.ts).
+                    let band = self.side(actor_side).active_mon(actor_slot as usize)
+                        .is_some_and(|a| a.effective_item_id() == data::item_id::BINDINGBAND);
                     let payload = dur
                         | ((actor_side as u8 as u32) << 8)
                         | ((actor_slot as u32) << 16)
+                        | ((band as u32) << 23)
                         | (src_team << 24);
                     if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                         let _ = t.volatiles.add(crate::pokemon::Volatile {
@@ -13044,12 +13078,14 @@ self.trigger_emergency_exits();
         if !hit_sub && effective_dmg > 0 && alive_post {
             self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, m, 1, Some((ctx.tside, ctx.tslot)));
         }
-        let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
-        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops precede secondaries, on any
-        // hit (data/moves.ts outrage, data/conditions.ts lockedmove onStart / onRestart).
+        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
+        // hit and before the secondaries, whose roll a King's Rock adds to
+        // these moves (data/moves.ts outrage, data/conditions.ts lockedmove
+        // onStart / onRestart; data/mods/champions/scripts.ts spreadMoveHit).
         if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH | data::move_id::RAGINGFURY) {
             self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
         }
+        let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
         self.p_tag(crate::protocol::step::SECONDARY, ctx.tside, ctx.tslot);
         if decision != crate::secondary::SecondaryProcDecision::Skip {
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
@@ -13576,6 +13612,7 @@ self.trigger_emergency_exits();
             // hurtThisTurn): an ally's hit counts too.
             if app.effective_dmg > 0 {
                 t.set_damaged_this_turn(true);
+                t.hurt_this_turn = t.current_hp > 0;
             }
             if app.effective_dmg > 0 && cross_side {
                 // Record attacker for Counter / Mirror Coat /
@@ -14545,6 +14582,10 @@ self.trigger_emergency_exits();
                 inp.parental_bond_hit = hit_idx == 1 && data::MOVES[inv.move_id as usize].multihit_min == 0;
                 let bp_ov = if ramped {
                     Some(inv.base_power * (hit_idx + 1))
+                } else if inv.move_id == data::move_id::ASSURANCE && !defender.hurt_this_turn {
+                    // The first hit of Parental Bond set hurtThisTurn; `defender`
+                    // is the snapshot from before it (data/moves.ts assurance).
+                    Some(inv.base_power * 2)
                 } else {
                     None
                 };
@@ -18470,6 +18511,17 @@ self.trigger_emergency_exits();
             _ if ps_immune => 0,
             _ => self.rng.damage_roll(),
         };
+        // modifyDamage's runEvent('ModifyDamage') follows the roll. An
+        // off-field source brings no handlers of its own.
+        #[cfg(feature = "ps-rng")]
+        if !ps_immune {
+            let src_slot = if src_active {
+                self.side(src_side).active.iter().position(|&a| a as usize == src_idx).unwrap_or(255) as u8
+            } else {
+                255
+            };
+            self.ps_modify_damage_ties(src_side, src_slot, tside, tslot);
+        }
 
         let wonder_room = self.wonder_room_turns > 0;
         let dmg = {
@@ -19554,7 +19606,7 @@ self.trigger_emergency_exits();
                         .get(crate::pokemon::VolatileKind::PartialTrap)
                     {
                         Some(v) => {
-                            let chip = (m.stats.hp / 8).max(1);
+                            let chip = (m.stats.hp / if v.payload & (1 << 23) != 0 { 6 } else { 8 }).max(1);
                             let remaining = (v.payload & 0xFF) as u8;
                             let expires = remaining <= 1;
                             (chip, crate::ability::has_magic_guard(m), expires, v.payload >> 8)
@@ -19578,7 +19630,7 @@ self.trigger_emergency_exits();
                 // PS data/conditions.ts:238: the trap ends silently, with no
                 // chip, once its source has left the field or fainted.
                 let src_side = if src & 0xFF == 0 { SideRef::P1 } else { SideRef::P2 };
-                let src_slot = ((src >> 8) & 0xFF) as usize;
+                let src_slot = ((src >> 8) & 0x7F) as usize;
                 let src_team = ((src >> 16) & 0xFF) as u8;
                 let src_present = src_slot < n as usize
                     && self.side(src_side).active[src_slot] == src_team
