@@ -6124,6 +6124,7 @@ self.trigger_emergency_exits();
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
             incoming.move_actions = 0;
+            incoming.added_type = 255;
             incoming.set_flinched(false);
             incoming.set_helping_handed(false);
             incoming.set_redirecting(false, false);
@@ -7650,8 +7651,8 @@ self.trigger_emergency_exits();
         //    `last_used_move_slot`, and fires Leppa Berry on PP depletion.
         //    See `deduct_pp_main`.
         // sim/battle-actions.ts runMove: a locked move pays no PP.
-        let uproar_locked = move_id == data::move_id::UPROAR && attacker.volatiles.has(crate::pokemon::VolatileKind::Uproar);
-        if !called && !uproar_locked {
+        let move_locked = attacker.lockin_turns > 0 && attacker.lockin_move_slot == move_slot;
+        if !called && !move_locked {
             self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, skip_pp_deduct);
         }
 
@@ -12664,24 +12665,6 @@ self.trigger_emergency_exits();
         if fired_electric {
             self.end_charge(actor_side, actor_slot);
         }
-        // Uproar — PS data/moves.ts `self.volatileStatus`, duration 3, on hit;
-        // `onLockMove` locks the user while it lasts.
-        if move_id == data::move_id::UPROAR && any_damage_dealt > 0 {
-            use crate::pokemon::VolatileKind as V;
-            let mut started = false;
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if a.is_alive() && !a.volatiles.has(V::Uproar) {
-                    let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::Uproar, turns_remaining: 0, payload: 3 });
-                    a.lockin_turns = 1;
-                    a.lockin_move_slot = a.moves.iter().position(|&x| x == data::move_id::UPROAR).unwrap_or(255) as u8;
-                    started = true;
-                }
-            }
-            if started {
-                self.p_tag_step(crate::protocol::step::SELF_DROP);
-                pmon!(self, "-start", actor_side, actor_slot, "|Uproar");
-            }
-        }
         // Spit Up — PS data/moves.ts spitup onAfterMove: removes Stockpile.
         if move_id == data::move_id::SPITUP {
             self.end_stockpile(actor_side, actor_slot);
@@ -14689,6 +14672,27 @@ self.trigger_emergency_exits();
         // Self effects run in spreadMoveHit's selfDrops step (before the
         // secondaries); the window sorts them there.
         self.p_tag_step(crate::protocol::step::SELF_DROP);
+        // Uproar — PS data/moves.ts `self.volatileStatus`, duration 3, on hit;
+        // `onLockMove` locks the user while it lasts.
+        if move_id == data::move_id::UPROAR && any_damage_dealt > 0 {
+            use crate::pokemon::VolatileKind as V;
+            let mut started = false;
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if a.is_alive() && !a.volatiles.has(V::Uproar) {
+                    let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::Uproar, turns_remaining: 0, payload: 3 });
+                    a.lockin_turns = 1;
+                    a.lockin_move_slot = a.moves.iter().position(|&x| x == data::move_id::UPROAR).unwrap_or(255) as u8;
+                    started = true;
+                }
+            }
+            if started {
+                self.p_set_hit(0);
+                self.p_tag_step(crate::protocol::step::SELF_DROP);
+                pmon!(self, "-start", actor_side, actor_slot, "|Uproar");
+                self.p_set_hit(255);
+                self.p_tag_step(crate::protocol::step::SELF_DROP);
+            }
+        }
         // Final Gambit — the user faints after dealing damage equal to
         // its HP. PS data/moves.ts:5305 calls `pokemon.faint()` inside the
         // damageCallback (and `selfdestruct: 'ifHit'`). We faint the user
@@ -14958,6 +14962,8 @@ self.trigger_emergency_exits();
             // user holds Persim and is now confused.
             // lockedmove onEnd: confusion's `-start|[fatigue]` (data/conditions.ts:166-167).
             if fatigue {
+                // lockedmove onAfterMove, after the hit loop's faintMessages.
+                self.p_tag_step(crate::protocol::step::AFTER_FAINT);
                 pmon!(self, "-start", actor_side, actor_slot, "|confusion|[fatigue]");
             }
             crate::item::try_consume_persim_berry(self, actor_side, actor_slot);
@@ -14979,7 +14985,12 @@ self.trigger_emergency_exits();
                 }
             }
             if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.must_recharge) {
+                // `self` runs in the first hit's selfDrops (sim/battle-actions.ts).
+                self.p_set_hit(0);
+                self.p_tag_step(crate::protocol::step::SELF_DROP);
                 pmon!(self, "-mustrecharge", actor_side, actor_slot);
+                self.p_set_hit(255);
+                self.p_tag_step(crate::protocol::step::SELF_DROP);
             }
         }
 
@@ -17648,6 +17659,20 @@ self.trigger_emergency_exits();
     fn eot_uproar(&mut self) {
         use crate::pokemon::VolatileKind as V;
         let n = self.format().active_count() as u8;
+        // Silent durations: data/moves.ts lockon (2), electrify (1).
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) else { continue };
+                for k in [V::LockOn, V::Electrify] {
+                    if let Some(v) = m.volatiles.get(k).copied() {
+                        m.volatiles.remove(k);
+                        if v.turns_remaining > 1 {
+                            let _ = m.volatiles.add(crate::pokemon::Volatile { turns_remaining: v.turns_remaining - 1, ..v });
+                        }
+                    }
+                }
+            }
+        }
         if !self.eot_any_active_has_volatile(n, V::Uproar) {
             return;
         }
@@ -21556,10 +21581,14 @@ self.trigger_emergency_exits();
                 let ok = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
                     let (types, n) = t.effective_types();
                     t.is_alive() && t.substitute_hp() == 0 && !t.terastallized && !types[..n as usize].contains(&add)
+                        && t.added_type != add
                 });
                 if !ok {
                     self.ps_status_failed();
                 } else {
+                    if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                        t.added_type = add;
+                    }
                     // addType's `-start ... typeadd` (data/moves.ts
                     // trickortreat / forestscurse onHit). The third type
                     // itself is not modelled (see above).
@@ -22357,9 +22386,22 @@ self.trigger_emergency_exits();
                 // uproar condition onAnySetStatus.
                 if grounded && matches!(self.terrain, crate::terrain::Terrain::Electric) {
                     pmon!(self, "-activate", actor_side, actor_slot, "|move: Electric Terrain");
+                    self.p_try_fail(actor_side, actor_slot);
                     return;
                 }
                 if grounded && matches!(self.terrain, crate::terrain::Terrain::Misty) {
+                    return;
+                }
+                // data/abilities.ts sweetveil onAllySetStatus.
+                let veil = (0..self.format().active_count() as u8).find(|&sl| {
+                    self.side(actor_side).active_mon(sl as usize).is_some_and(|t| t.is_alive() && t.effective_ability_id() == data::ability_id::SWEETVEIL)
+                });
+                if let Some(h) = veil {
+                    if self.plog() {
+                        let of = self.p_ident(actor_side, h);
+                        pmon!(self, "-block", actor_side, actor_slot, "|ability: Sweet Veil|[of] {of}");
+                    }
+                    self.ps_status_failed();
                     return;
                 }
                 let n_uproar = self.format().active_count() as u8;
@@ -22505,7 +22547,15 @@ self.trigger_emergency_exits();
                         }
                     } else if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.current_hp >= a.stats.hp) {
                         pmon!(self, "-fail", actor_side, actor_slot, "|heal");
-                        self.p_attr("[still]");
+                        // Synthesis, Morning Sun, Moonlight and Shore Up fail in
+                        // their onHit, with NOT_FAIL (data/moves.ts); the `heal:`
+                        // moves go through moveHit's `[still]`.
+                        if !matches!(
+                            move_id,
+                            data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT | data::move_id::SHOREUP
+                        ) {
+                            self.p_attr("[still]");
+                        }
                     }
                 }
             }

@@ -571,7 +571,42 @@ const TYPE_NORMAL: u8 = 0;
 const TYPE_FIGHTING: u8 = 6;
 const TYPE_GHOST: usize = 13;
 
+/// `effectiveness_base` plus the type Trick-or-Treat / Forest's Curse added
+/// (sim/pokemon.ts getTypes includes addedType).
 fn effectiveness_inner(
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+    ignore_ghost: bool,
+) -> TypeEff {
+    let base = effectiveness_base(move_id, move_type, defender, ignore_ghost);
+    if defender.added_type == 255 || move_id == data::move_id::STRUGGLE || base == TypeEff::Immune {
+        return base;
+    }
+    let mut net = match base {
+        TypeEff::Immune => 0,
+        TypeEff::QuarterX => -2,
+        TypeEff::HalfX => -1,
+        TypeEff::Neutral => 0,
+        TypeEff::DoubleX => 1,
+        TypeEff::QuadrupleX => 2,
+    };
+    match data::TYPE_CHART[defender.added_type as usize][move_type as usize] {
+        1 => net += 1,
+        2 => net -= 1,
+        3 if !defender.negates_type_immunity() && !ignore_ghost => return TypeEff::Immune,
+        _ => {}
+    }
+    match net.clamp(-2, 2) {
+        -2 => TypeEff::QuarterX,
+        -1 => TypeEff::HalfX,
+        0 => TypeEff::Neutral,
+        1 => TypeEff::DoubleX,
+        _ => TypeEff::QuadrupleX,
+    }
+}
+
+fn effectiveness_base(
     move_id: u16,
     move_type: u8,
     defender: &Pokemon,
@@ -728,6 +763,10 @@ pub fn move_type_in_ctx(
     ctx: &DamageContext,
 ) -> u8 {
     let t = base_move_type_in_ctx(attacker, move_id, ctx);
+    // data/moves.ts electrify condition onModifyType (priority -2, after -ate).
+    if attacker.volatiles.has(crate::pokemon::VolatileKind::Electrify) && move_id != data::move_id::STRUGGLE {
+        return 3;
+    }
     // -ate abilities rebind a Normal move (same gate as `calculate_damage`):
     // PS data/abilities.ts aerilate / pixilate / refrigerate / galvanize,
     // and Champions' dragonize, `onModifyType`.

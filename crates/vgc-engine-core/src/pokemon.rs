@@ -447,9 +447,15 @@ pub enum VolatileKind {
     /// Lock-On (data/moves.ts lockon), duration 2. Payload: `side << 1 | slot`
     /// of the locked target.
     LockOn,
+    /// Electrify (data/moves.ts electrify), duration 1: the holder's move turns Electric.
+    Electrify,
     /// Uproar (data/moves.ts uproar condition), duration 3. Payload: remaining
     /// residuals. The move itself is locked through `lockin_turns`.
     Uproar,
+}
+
+fn no_added_type() -> u8 {
+    255
 }
 
 /// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
@@ -997,6 +1003,10 @@ pub struct Pokemon {
     /// PS `pokemon.ateBerry` (sim/pokemon.ts eatItem), for Belch. Survives switching.
     #[serde(skip)]
     pub ate_berry: bool,
+    /// PS `pokemon.addedType` (Trick-or-Treat, Forest's Curse); 255 = none. setType
+    /// and switching out clear it.
+    #[serde(skip, default = "no_added_type")]
+    pub added_type: u8,
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
     /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
@@ -1133,6 +1143,7 @@ impl Pokemon {
             supreme_overlord_fallen: u8::MAX,
             used_item_this_turn: false,
             ate_berry: false,
+            added_type: 255,
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
             moves_used: 0,
@@ -1252,6 +1263,7 @@ impl Pokemon {
     #[inline]
     pub fn set_type_override(&mut self, primary: u8, secondary: Option<u8>) {
         self.type_override = [primary, secondary.unwrap_or(255)];
+        self.added_type = 255;
     }
 
     /// Burn Up's self effect (PS data/moves.ts:2092 burnup `self.onHit`):
