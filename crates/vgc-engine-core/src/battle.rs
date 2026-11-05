@@ -11965,9 +11965,41 @@ self.trigger_emergency_exits();
             if self.ps_inline_hit_updates {
                 self.ps_hit_update();
             }
+            self.status_emergency_exit(actor_side, actor_slot, m, target);
         }
         // Throat Spray on user — sound-flag status moves only.
         self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
+    }
+
+    /// The hit loop's EmergencyExit for a status move's target: its damage is 0,
+    /// so the HP compared is `hurtThisTurn` (data/mods/champions/scripts.ts:578-589).
+    /// Substitute's HP cost or Belly Drum after a hit this turn crosses it.
+    #[cfg(feature = "ps-rng")]
+    fn status_emergency_exit(&mut self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) {
+        let (ts, tsl) = match (m.target, target) {
+            (1, _) => (side, slot),
+            (0 | 4 | 10, Some(t)) => (t.side, t.slot),
+            (2, _) => (side, slot ^ 1),
+            _ => return,
+        };
+        let fires = self.side(ts).active_mon(tsl as usize).is_some_and(|t| {
+            let half = t.stats.hp / 2;
+            t.is_alive()
+                && t.effective_ability_id() == data::ability_id::EMERGENCYEXIT
+                && t.current_hp <= half
+                && t.volatiles.get(crate::pokemon::VolatileKind::DamagedThisTurn).is_some_and(|v| v.payload as u16 > half)
+                && !t.pending_self_switch()
+        }) && self.first_bench_index(ts).is_some();
+        if fires {
+            self.p_emergency_exit(ts, tsl);
+            if self.decision_phases {
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tsl as usize) {
+                    t.set_pending_forced_switch();
+                }
+            } else {
+                self.force_switch_auto(ts, tsl);
+            }
+        }
     }
 
     /// One iteration of the per-target multi-hit loop. Lifted verbatim

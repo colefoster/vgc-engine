@@ -1725,10 +1725,12 @@ impl Pokemon {
     #[inline]
     pub fn set_damaged_this_turn(&mut self, on: bool) {
         if on {
+            // The payload is PS `hurtThisTurn`, the HP left by the last hit
+            // (sim/battle.ts spreadDamage), for Emergency Exit.
             self.volatiles.add(Volatile {
                 kind: VolatileKind::DamagedThisTurn,
                 turns_remaining: 0,
-                payload: 0,
+                payload: self.current_hp as u32,
             });
         } else {
             self.volatiles.remove(VolatileKind::DamagedThisTurn);
