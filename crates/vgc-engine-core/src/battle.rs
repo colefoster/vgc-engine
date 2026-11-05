@@ -8086,6 +8086,11 @@ self.trigger_emergency_exits();
             ),
             PreMoveOutcome::Abort
         ) {
+            // destinybond onMoveAborted (data/moves.ts:3517): asleep, flinched or fully
+            // paralysed, the bond ends.
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.volatiles.remove(crate::pokemon::VolatileKind::DestinyBond);
+            }
             // runMove's `MoveAborted` event (sim/battle-actions.ts runMove):
             // twoturnmove `onMoveAborted` removes the charge volatile, and
             // its onEnd the move's own (Fly / Dig semi-invulnerability)
