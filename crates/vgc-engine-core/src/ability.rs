@@ -2467,6 +2467,8 @@ pub fn on_damaging_hit(
         let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
         if attacker_eligible
             && move_id != data::move_id::STRUGGLE
+            // data/abilities.ts cursedbody: !move.flags['futuremove'].
+            && !matches!(move_id, data::move_id::FUTURESIGHT | data::move_id::DOOMDESIRE)
             && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10)
             && !aroma_veil_protects
         {
