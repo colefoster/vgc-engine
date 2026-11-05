@@ -11346,7 +11346,10 @@ self.trigger_emergency_exits();
     fn thief_steal_item(&mut self, ctx: &PerTargetContext) {
         let user_ok = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize)
             .is_some_and(|a| a.is_alive() && a.item_id == u16::MAX);
-        if !user_ok {
+        // thief onAfterHit: `source.item || source.volatiles['gem']` keeps its hands
+        // empty for the move that spent a Gem.
+        let gem = ctx.attacker_item_id != u16::MAX && data::ITEMS[ctx.attacker_item_id as usize].slug.ends_with("gem");
+        if !user_ok || gem {
             return;
         }
         let item = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
