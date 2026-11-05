@@ -16716,6 +16716,8 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // The action's Update sees the source gone (data/moves.ts attract onUpdate).
+        self.attract_update();
     }
 
     /// Encore's `onOverrideAction` (PS data/moves.ts encore;
