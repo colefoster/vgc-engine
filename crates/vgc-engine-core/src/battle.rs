@@ -14495,6 +14495,13 @@ self.trigger_emergency_exits();
                 let ctx = crate::damage::ctx_from_inputs(inputs);
                 (ctx, self.rng.damage_roll())
             }
+            // PS's PRNG draws without the hint or the segments, which took up
+            // to 18 damage calculations per hit.
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(_) => {
+                let ctx = crate::damage::ctx_from_inputs(inputs);
+                (ctx, self.rng.damage_roll())
+            }
             _ => {
                 let (ctx, lo, hi) = crate::damage::damage_range_for(
                     attacker, defender, move_id, inputs, bp_override,
