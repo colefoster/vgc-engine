@@ -13441,9 +13441,17 @@ self.trigger_emergency_exits();
             if self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive())
             {
-                let _ = crate::item::try_consume_red_card(
-                    self, tside, tslot, actor_side, actor_slot,
-                );
+                // forceSwitch runs ahead of AfterMoveSecondary, so Circle Throw has
+                // already flagged the holder (data/items.ts redcard
+                // target.forceSwitchFlag, sim/battle-actions.ts spreadMoveHit).
+                let dragged = matches!(move_id, data::move_id::DRAGONTAIL | data::move_id::CIRCLETHROW)
+                    && self.has_eligible_bench(tside)
+                    && self.can_be_dragged_out(tside, tslot, false);
+                if !dragged {
+                    let _ = crate::item::try_consume_red_card(
+                        self, tside, tslot, actor_side, actor_slot,
+                    );
+                }
             }
             if self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive())

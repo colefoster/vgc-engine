@@ -1701,6 +1701,8 @@ pub(crate) fn try_consume_red_card(
         let of = battle.p_ident(attacker_side, attacker_slot);
         battle.p_item_line("-enditem", target_side, target_slot, item_id, &format!("|[of] {of}"));
     }
+    // useItem's AfterUseItem: Symbiosis (data/abilities.ts symbiosis).
+    crate::ability::on_item_consumed(battle, target_side, target_slot);
     if !battle.can_be_dragged_out(attacker_side, attacker_slot, false) {
         return false;
     }
