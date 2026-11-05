@@ -2514,7 +2514,10 @@ pub(crate) fn calculate_damage_with_bp(
     let eff_has_move_type = (0..eff_atk_num as usize)
         .any(|i| eff_atk_types[i] == move_type);
     // Struggle is typeless (data/moves.ts struggle onModifyMove: '???').
-    let is_stab = (base_has_move_type || eff_has_move_type) && move_id != data::move_id::STRUGGLE;
+    // getTypes includes Forest's Curse's or Trick-or-Treat's added type
+    // (sim/pokemon.ts getTypes; hasType in getDamage's STAB check).
+    let added_has_move_type = !attacker.terastallized && attacker.added_type == move_type;
+    let is_stab = (base_has_move_type || eff_has_move_type || added_has_move_type) && move_id != data::move_id::STRUGGLE;
     // Stellar STAB. PS sim/battle-actions.ts:1781:
     //   if (pokemon.terastallized === 'Stellar') {
     //     stab = isSTAB ? 2 : [4915, 4096];   // ×2 or ×1.2
