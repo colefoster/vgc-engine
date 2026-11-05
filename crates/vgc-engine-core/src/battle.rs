@@ -477,6 +477,9 @@ pub struct Battle {
     /// The user whose runMove reached its AfterMove event this action.
     #[serde(skip)]
     pub(crate) after_move_user: Option<(SideRef, u8)>,
+    /// Trick-or-Treat / Forest's Curse did not add its type this action.
+    #[serde(skip)]
+    pub(crate) status_hit_failed: bool,
     /// A status move stopped at the target's Substitute this action.
     #[serde(skip)]
     pub(crate) ps_status_sub_null: bool,
@@ -932,6 +935,7 @@ impl Battle {
             pending_queue_reorder: None,
             after_move_user: None,
             ps_status_sub_null: false,
+            status_hit_failed: false,
             round_on_try: false,
             round_chain: [[false; 2]; 2],
             encore_requeue: None,
@@ -15941,15 +15945,8 @@ self.trigger_emergency_exits();
             "teatime" => true,
             // A consecutive Destiny Bond removes the volatile and fails.
             "destinybond" => user.volatiles.has(crate::pokemon::VolatileKind::DestinyBond),
-            // addType (not modelled) succeeds on a target without the type
-            // (accuracy 100: a miss is not told apart here).
-            "trickortreat" | "forestscurse" => {
-                let add = if m.slug == "trickortreat" { 13 } else { 4 };
-                target.and_then(|t| self.side(t.side).active_mon(t.slot as usize)).is_some_and(|t| {
-                    let (types, n) = t.effective_types();
-                    t.is_alive() && t.substitute_hp() == 0 && !t.terastallized && !types[..n as usize].contains(&add)
-                })
-            }
+            // onHit fails on a target that has the type (or missed).
+            "trickortreat" | "forestscurse" => !self.status_hit_failed,
             "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
             | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
@@ -22175,6 +22172,7 @@ self.trigger_emergency_exits();
                 // engine's typing holds two types); this arm only keeps the
                 // accuracy roll and the hit-loop result PS has.
                 let Some((ts, tslot)) = opp_target else { return };
+                self.status_hit_failed = true;
                 if !self.rolled_accuracy_passed(m) { return; }
                 let add = if move_id == data::move_id::TRICKORTREAT { 13 } else { 4 };
                 let ok = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
@@ -22185,6 +22183,7 @@ self.trigger_emergency_exits();
                 if !ok {
                     self.ps_status_failed();
                 } else {
+                    self.status_hit_failed = false;
                     if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                         t.added_type = add;
                     }
