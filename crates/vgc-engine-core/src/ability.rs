@@ -1934,14 +1934,6 @@ pub fn on_damaging_hit(
     // Substitute-absorbed hits don't reach the holder (caller gates on
     // `!hit_sub`). Status moves can't crit. Primeape / Mankey / Tauros.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Point_(Ability)>.
-    if ability_id == data::ability_id::ANGERPOINT && target_alive && crit {
-        // angerpoint: boost({atk: 12}) prints `-setboost` (sim/battle.ts:2051-2052).
-        battle.p_boost_fx(crate::protocol::BoostFx::Silent);
-        pmon!(battle, "-setboost", target_side, target_slot, "|atk|6|[from] ability: Anger Point");
-        // PS `boost({atk: 12})` — adding 12 to any in-range stage clamps to
-        // +6, identical to the old absolute `= 6`. Self-boost.
-        battle.apply_boosts(target_side, target_slot, &[(0, 12)], target_side, target_slot);
-    }
     // Berserk — PS `data/abilities.ts:berserk`:
     //   onDamage(damage, target, source, effect) {
     //     if (effect.effectType !== 'Move') return;

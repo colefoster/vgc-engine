@@ -12390,6 +12390,17 @@ self.trigger_emergency_exits();
         // item hooks above so the target's faint state is settled.
         self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
 
+        // Anger Point onHit, runEvent('Hit') before the secondaries
+        // (data/abilities.ts angerpoint; sim/battle-actions.ts runMoveEffects).
+        if !hit_sub && ctx.crit && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
+            t.is_alive() && t.effective_ability_id() == data::ability_id::ANGERPOINT
+        }) {
+            self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+            self.p_boost_fx(crate::protocol::BoostFx::Silent);
+            pmon!(self, "-setboost", ctx.tside, ctx.tslot, "|atk|6|[from] ability: Anger Point");
+            self.apply_boosts(ctx.tside, ctx.tslot, &[(0, 12)], ctx.tside, ctx.tslot);
+        }
+
         // Secondary if target still alive — and the sub didn't take
         // the hit. PS: Substitute blocks all secondaries that target
         // the user-of-the-sub (flinch, stat drops, status). Sound
