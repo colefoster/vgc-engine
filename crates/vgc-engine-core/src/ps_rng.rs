@@ -344,6 +344,7 @@ impl PsRng {
                     // target's getSpreadDamage.
                     "crit" | "damage" if self.ctx_sub => phase::ACCURACY * 8 + 4 + rank,
                     "crit" | "damage" => phase::DAMAGE * 8 + rank,
+                    "focusband" => phase::DAMAGE * 8 + 4 + rank,
                     "selfdrop" => phase::SELF_DROP * 8,
                     "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY * 8 + rank,
                     // Before any hit step, a `secondary`-keyed roll is a

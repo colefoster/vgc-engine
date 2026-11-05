@@ -261,6 +261,12 @@ pub fn on_before_damage(
         // Only meaningful on a damaging hit (PS `onDamage` runs when
         // damage > 0). `incoming == 0` hits don't reach the draw.
         if incoming > 0 && current > 0 {
+            // spreadDamage applies damage after getSpreadDamage has rolled every
+            // target (sim/battle-actions.ts spreadMoveHit), so this draw sorts
+            // after all of the move's damage rolls.
+            #[cfg(feature = "ps-rng")]
+            let proc = if rng.is_ps() { rng.ps_random_range("focusband", 0, 10) == 0 } else { rng.range(10) == 0 };
+            #[cfg(not(feature = "ps-rng"))]
             let proc = rng.range(10) == 0;
             if proc && incoming >= current {
                 pmon!(battle, "-activate", side, slot, "|item: Focus Band");
