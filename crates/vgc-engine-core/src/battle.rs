@@ -4772,6 +4772,7 @@ self.trigger_emergency_exits();
                 m.set_helping_handed(false);
                 m.set_redirecting(false, false);
                 m.set_damaged_this_turn(false);
+                m.lost_focus = false;
                 m.last_attacker = (255, 255);
                 m.last_attacker_category = 255;
                 m.last_damage_taken = 0;
@@ -6194,6 +6195,7 @@ self.trigger_emergency_exits();
             incoming.set_helping_handed(false);
             incoming.set_redirecting(false, false);
             incoming.set_damaged_this_turn(false);
+            incoming.lost_focus = false;
             incoming.last_attacker = (255, 255);
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
@@ -8882,6 +8884,7 @@ self.trigger_emergency_exits();
                     if d.current_hp == 0 {
                         d.fainted = true;
                     }
+                    d.lost_focus |= capped > 0;
                     if capped > 0 && tside != actor_side {
                         d.set_damaged_this_turn(true);
                         let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
@@ -12876,6 +12879,7 @@ self.trigger_emergency_exits();
             // a true source. Cross-side gate: opp-vs-self
             // damage is the only case; self-targeted damaging
             // moves never go through this branch (status path).
+            t.lost_focus |= app.effective_dmg > 0;
             if app.effective_dmg > 0 && cross_side {
                 t.set_damaged_this_turn(true);
                 // Record attacker for Counter / Mirror Coat /
@@ -14437,7 +14441,7 @@ self.trigger_emergency_exits();
         //      `damage > 0`). Our engine collapses this to: fail if
         //      `damaged_this_turn` is set when resolution starts.
         //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
-        if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
+        if move_id == data::move_id::FOCUSPUNCH && (attacker.damaged_this_turn() || attacker.lost_focus) {
             // focuspunch beforeMoveCallback: `cant` instead of `|move|`.
             self.p_move_cancel();
             pmon!(self, "cant", actor_side, actor_slot, "|Focus Punch|Focus Punch");
