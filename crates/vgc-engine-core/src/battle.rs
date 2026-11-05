@@ -6220,6 +6220,12 @@ self.trigger_emergency_exits();
                 // storedStats (sim/pokemon.ts clearVolatile, setSpecies), so
                 // Speed Swap / Guard Split's stat exchange ends on switch-out.
                 outgoing.change_forme(outgoing.species_id, true);
+                // clearVolatile's setSpecies(baseSpecies): Castform's weather forme goes.
+                if outgoing.species().slug.starts_with("castform") {
+                    if let Some(id) = data::SPECIES.iter().position(|sp| sp.slug == "castform") {
+                        outgoing.change_forme(id as u16, true);
+                    }
+                }
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);
@@ -17855,6 +17861,9 @@ self.trigger_emergency_exits();
         if self.weather_turns == 1 {
             self.weather_turns = 0;
             self.end_weather();
+            // clearWeather's WeatherChange event (sim/field.ts): Forecast.
+            self.sync_weather_terrain_cache();
+            self.refresh_forecast_formes();
         }
         // A lasting weather's onFieldResidual runs eachEvent('Weather') —
         // for sand and snow only while not suppressed (isWeather) — which
