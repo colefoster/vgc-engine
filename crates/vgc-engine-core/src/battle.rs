@@ -9344,6 +9344,13 @@ self.trigger_emergency_exits();
                     self.p_push("|-ohko".to_string());
                     pmon!(self, "-end", tside, tslot, "|Substitute");
                     any_damage_dealt = any_damage_dealt.saturating_add(1);
+                    #[cfg(feature = "ps-rng")]
+                    if self.rng.is_ps() {
+                        self.ps_loop_hits = self.ps_loop_hits.max(1);
+                        if self.ps_inline_hit_updates {
+                            self.ps_hit_update();
+                        }
+                    }
                     continue;
                 }
                 // Hit. Set damage to target's current HP; Sturdy / Focus
@@ -9396,6 +9403,14 @@ self.trigger_emergency_exits();
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(capped);
+                // An OHKO runs the same hit loop (data/mods/champions/scripts.ts).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_loop_hits = self.ps_loop_hits.max(1);
+                    if self.ps_inline_hit_updates {
+                        self.ps_hit_update();
+                    }
+                }
                 // The OHKO hit's `-damage`, then (after the loop's faints)
                 // `-ohko` (data/mods/champions/scripts.ts:570).
                 if self.plog() {
