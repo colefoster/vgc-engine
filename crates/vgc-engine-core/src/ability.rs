@@ -1856,6 +1856,13 @@ pub fn on_damaging_hit(
         Some(m) => (m.effective_ability_id(), m.is_alive()),
         None => return,
     };
+    // runEvent collects the handlers first: Mummy overwriting the attacker's ability
+    // doesn't stop its Poison Touch from running (sim/battle.ts runEvent).
+    let attacker_ability_id = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| a.effective_ability_id())
+        .unwrap_or(u16::MAX);
     // Cotton Down — PS `data/abilities.ts:715` `onDamagingHit`:
     //   this.boost({spe: -1}, source, target, null, false, true);
     //   for (const pokemon of this.getAllActive()) {
@@ -2683,11 +2690,6 @@ pub fn on_damaging_hit(
     // 30% chance. Mirror of Static's shape. Toxicroak signature.
     // Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Poison_Touch_(Ability)>.
-    let attacker_ability_id = battle
-        .side(attacker_side)
-        .active_mon(attacker_slot as usize)
-        .map(|a| a.effective_ability_id())
-        .unwrap_or(u16::MAX);
     // PS (a5df8274) returns before the roll when the target has Shield Dust
     // or Covert Cloak, and rolls even when the hit knocked the target out
     // (trySetStatus then fails).
