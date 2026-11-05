@@ -1005,9 +1005,11 @@ impl Battle {
             let s = self.p_side_ident(side);
             self.p_push(format!("|-sidestart|{s}|{label}"));
         } else {
-            let user = self.protocol.log().map(|_| ()).map(|_| side);
-            let _ = user;
-            let us = self.p_user_side();
+            // The running move's user: a bounced move's is the Magic Bounce holder.
+            let us = match self.protocol.log().and_then(|l| l.status_ctx) {
+                Some((s, _, _)) => if s == 0 { SideRef::P1 } else { SideRef::P2 },
+                None => self.p_user_side(),
+            };
             self.p_try_fail(us, user_slot);
         }
     }
