@@ -12404,7 +12404,8 @@ self.trigger_emergency_exits();
 
         // Anger Point onHit, runEvent('Hit') before the secondaries
         // (data/abilities.ts angerpoint; sim/battle-actions.ts runMoveEffects).
-        if !hit_sub && ctx.crit && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
+        let hit_crit = if hit_idx == 0 { ctx.crit } else { self.protocol.log().is_some_and(|l| l.hit_crit) };
+        if !hit_sub && hit_crit && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
             t.is_alive() && t.effective_ability_id() == data::ability_id::ANGERPOINT
         }) {
             self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
