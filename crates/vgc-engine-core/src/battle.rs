@@ -562,6 +562,10 @@ pub struct Battle {
     /// `order::action_order` rolls them itself.
     #[serde(skip)]
     pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
+    /// Targets of the current move's afterMoveSecondaryEvent: (side, slot, last hit was a
+    /// Substitute's, its damage, its hit index).
+    #[serde(skip)]
+    pub(crate) after_secondary_pending: [Option<(SideRef, u8, bool, u16, u8)>; 3],
     /// Count of boost() calls that moved a stage, for the status-move snapshot.
     #[serde(skip)]
     pub(crate) boost_changes: u32,
@@ -1018,6 +1022,7 @@ impl Battle {
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
+            after_secondary_pending: [None; 3],
             boost_changes: 0,
             wonder_room_ran: false,
             status_bounced: false,
@@ -13620,8 +13625,13 @@ self.trigger_emergency_exits();
             crate::ability::magician_steal(self, ctx.tside, ctx.tslot, ctx.move_id, ctx.actor_side, ctx.actor_slot);
         }
 
-        // Red Card / Eject Button (PS onAfterMoveSecondary).
-        self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg, ctx.move_id);
+        // Red Card, Eject Button, Pickpocket: afterMoveSecondaryEvent comes once, after all
+        // the hits and the recoil, for the targets the last hit reached (scripts.ts:551, :575).
+        let ti = self.after_secondary_pending.iter().position(|p| p.is_some_and(|(s, sl, ..)| (s, sl) == (ctx.tside, ctx.tslot)))
+            .or_else(|| self.after_secondary_pending.iter().position(|p| p.is_none()));
+        if let Some(ti) = ti {
+            self.after_secondary_pending[ti] = Some((ctx.tside, ctx.tslot, hit_sub, effective_dmg, hit_idx as u8));
+        }
         self.p_set_hit(hit_idx as u8);
 
         // PS stops a multi-hit move the moment the target faints
@@ -16650,6 +16660,14 @@ self.trigger_emergency_exits();
             self.p_direct_damage(actor_side, actor_slot, "|[from] recoil");
         }
 
+        for i in 0..self.after_secondary_pending.len() {
+            if let Some((ts, tsl, hit_sub, dmg, hit)) = self.after_secondary_pending[i].take() {
+                self.p_set_hit(hit);
+                self.p_tag(crate::protocol::step::AFTER_SECONDARY, ts, tsl);
+                self.apply_reactive_switch_items(ts, tsl, actor_side, actor_slot, hit_sub, dmg, move_id);
+            }
+        }
+        self.p_set_hit(255);
         // Attacker item recoil — Life Orb takes 1/10 max HP if the move
         // dealt damage to at least one target (PS: per-move, not per-hit).
         // Magic Guard blocks Life Orb recoil: PS's `onDamage` returns false
