@@ -6530,7 +6530,7 @@ self.trigger_emergency_exits();
                 incoming.crit_stage_volatile = crit;
                 incoming.ability_suppressed = suppressed;
                 for v in &vols.items[..vols.len as usize] {
-                    if matches!(v.kind, V::Substitute | V::Confusion | V::Taunt | V::HealBlock | V::Embargo
+                    if matches!(v.kind, V::ThroatChop | V::PartialTrap | V::Octolock | V::Substitute | V::Confusion | V::Taunt | V::HealBlock | V::Embargo
                         | V::LeechSeed | V::Curse | V::PerishSong | V::Ingrain | V::AquaRing | V::MagnetRise
                         | V::Telekinesis | V::GastroAcid | V::FocusEnergy | V::LaserFocus | V::Charge
                         | V::Tarshot | V::DragonCheer)
