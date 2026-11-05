@@ -3454,7 +3454,7 @@ self.trigger_emergency_exits();
                 } else {
                     continue;
                 };
-                if user && m.lockin_turns > 0 && n < h.len() {
+                if user && m.lockin_turns > 0 && !m.volatiles.has(crate::pokemon::VolatileKind::Uproar) && n < h.len() {
                     h[n] = (spe, 2);
                     n += 1;
                 }
@@ -3681,7 +3681,8 @@ self.trigger_emergency_exits();
                     if m.charging_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
-                    if m.lockin_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    if m.lockin_turns > 0 && !m.volatiles.has(V::Uproar) { push(&mut h, (NONE, 0, spe, 2)); }
+                    if m.volatiles.has(V::Uproar) { push(&mut h, (28, 0, spe, 1)); }
                     // A used Gem's `gem` volatile (duration 1, data/conditions.ts gem).
                     if m.used_item_this_turn && m.consumed_item == data::item_id::NORMALGEM { push(&mut h, (NONE, 0, spe, 2)); }
                     // The released two-turn move's `twoturnmove` volatile
@@ -17635,7 +17636,6 @@ self.trigger_emergency_exits();
         self.eot_item_residual();
         self.eot_aqua_ring();
         self.eot_ingrain(self.format().active_count() as u8);
-        self.eot_uproar();
         self.eot_leech_seed();
         self.eot_status_dot();
         self.eot_curse();
@@ -17644,6 +17644,8 @@ self.trigger_emergency_exits();
         self.eot_octolock();
         self.eot_yawn();
         self.eot_perish_song();
+        // After Yawn (order 23): data/moves.ts uproar condition, order 28.
+        self.eot_uproar();
         self.eot_late_item_residual();
         self.eot_ability_residual();
         // 29. Shields Down (data/abilities.ts:4253-4265) and Hunger Switch
