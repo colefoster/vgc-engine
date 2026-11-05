@@ -7131,7 +7131,24 @@ self.trigger_emergency_exits();
         self.p_mid_turn_sync();
         #[cfg(feature = "ps-rng")]
         let mut ps_committed = false;
-        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+        // Both sides switching: the switch actions sort by Speed (sim/battle-queue.ts
+        // comparePriority), the leaving mon's.
+        let n_sw = self.format().active_count();
+        let fastest = |b: &Self, side: SideRef| {
+            (0..n_sw)
+                .filter_map(|s| b.side(side).active_mon(s).filter(|m| m.pending_self_switch()).map(|m| {
+                    let spe = crate::order::effective_speed(m, b.side(side).conditions.tailwind_turns > 0, b.effective_weather(), b.terrain) as i32;
+                    if b.trick_room_turns > 0 { -spe } else { spe }
+                }))
+                .max()
+        };
+        let p2_first = matches!((fastest(self, SideRef::P1), fastest(self, SideRef::P2)), (Some(a), Some(b)) if b > a);
+        let order = if p2_first {
+            [(SideRef::P2, p2_choices), (SideRef::P1, p1_choices)]
+        } else {
+            [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)]
+        };
+        for (side, choices) in order {
             // Build "deferred" set: Switches that came AFTER a Move for
             // the same slot. Identical predicate as apply_switches above.
             let mut moved_slot: [bool; 2] = [false; 2];
