@@ -15480,7 +15480,11 @@ self.trigger_emergency_exits();
         // onTryHeal, not onDamage.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Bell>.
         let real_damage = any_damage_dealt.saturating_sub(self.move_sub_absorbed);
-        if attacker_item_id == data::item_id::SHELLBELL && real_damage > 0 && damaging
+        // AfterMoveSecondarySelf is skipped for a Sheer Force boosted move
+        // (sim/battle-actions.ts useMoveInner).
+        let sheer = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force)
+            && crate::damage::move_is_sheer_force_boosted(m);
+        if attacker_item_id == data::item_id::SHELLBELL && real_damage > 0 && damaging && !sheer
             && !self.force_switch_flags[actor_side as usize][(actor_slot as usize).min(1)]
         {
             let hp_before = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.current_hp);
