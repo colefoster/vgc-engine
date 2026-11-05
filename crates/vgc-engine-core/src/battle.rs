@@ -6361,6 +6361,11 @@ self.trigger_emergency_exits();
                     s.team[team_index as usize].volatiles.add(v);
                 }
             }
+            // clearVolatile zeroes the leaver's boosts (sim/pokemon.ts): a delayed
+            // Future Sight from the bench reads them at the hit.
+            if outgoing_idx != team_index as usize {
+                s.team[outgoing_idx].boosts = [0; 7];
+            }
         } else {
             return false;
         }
