@@ -1105,7 +1105,7 @@ impl Battle {
         let Some(m) = self.side(side).active_mon(slot as usize) else { return };
         let grass = {
             let (t, n) = m.effective_types();
-            t[..n as usize].contains(&4)
+            t[..n as usize].contains(&4) || m.added_type == 4
         };
         if grass {
             pmon!(self, "-immune", side, slot);
