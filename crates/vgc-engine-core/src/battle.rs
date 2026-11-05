@@ -8774,6 +8774,10 @@ self.trigger_emergency_exits();
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
+        // getSpreadDamage rolls every target before any DamagingHit runs
+        // (data/mods/champions/scripts.ts spreadMoveHit), so an earlier target's
+        // Seed Sower or Sand Spit does not reach a later target's damage.
+        let spread_field = (self.effective_weather(), self.terrain);
         for (ti, &(tside, tslot)) in targets.iter().enumerate() {
             if darts_phase[ti] == 2 && !darts_pass[ti - 2] {
                 continue;
@@ -10015,7 +10019,7 @@ self.trigger_emergency_exits();
                 || self.calc_mods.doubles;
             // Raw field terrain; `damage.rs` checks attacker / defender
             // grounding per terrain rule.
-            let active_terrain = self.terrain;
+            let active_terrain = spread_field.1;
             // Aura abilities — scan every alive active for fairyaura /
             // darkaura / aurabreak. PS `onAnyBasePower` fires from
             // each holder; here we precompute presence (PS de-dupes via
@@ -10129,7 +10133,7 @@ self.trigger_emergency_exits();
                     guarded || (tside == SideRef::P2 && self.calc_mods.friend_guard)
                 };
             let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                weather: self.effective_weather(),
+                weather: spread_field.0,
                 terrain: active_terrain,
                 champions: self.champions,
                 ..DamageContext::default()
@@ -10165,7 +10169,7 @@ self.trigger_emergency_exits();
             }
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
-                weather: self.effective_weather(),
+                weather: spread_field.0,
                 terrain: active_terrain,
                 defender_has_reflect, defender_has_light_screen,
                 defender_has_aurora_veil,
