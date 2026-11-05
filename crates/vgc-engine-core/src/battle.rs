@@ -21463,10 +21463,14 @@ self.trigger_emergency_exits();
                     pmon!(self, "-start", actor_side, actor_slot, "|typechange|[from] move: Reflect Type|[of] {of}");
                 }
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let (old, n_old) = a.effective_types();
+                    let was_unseen = a.type_unseen;
                     a.set_type_override(first, second);
-                    // `source.knownType` stays false off a foe: sim/battle.ts nextTurn
-                    // shows the new types at the next turn.
-                    a.type_unseen = ts != actor_side;
+                    // `source.knownType` stays false off a foe, restoring the old
+                    // apparentType: sim/battle.ts nextTurn shows a real change at
+                    // the next turn (data/moves.ts reflecttype).
+                    let (new, n_new) = a.effective_types();
+                    a.type_unseen = ts != actor_side && (was_unseen || old[..n_old as usize] != new[..n_new as usize]);
                 }
             }
             data::move_id::LOCKON => {
