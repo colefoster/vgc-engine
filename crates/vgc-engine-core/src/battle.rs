@@ -16821,6 +16821,8 @@ self.trigger_emergency_exits();
             // (data/moves.ts partingshot; runMoveEffects' didSomething).
             #[cfg(feature = "ps-rng")]
             "partingshot" if !self.ps_status_missed => true,
+            // onHit's failed heal returns NOT_FAIL (data/moves.ts healpulse, morningsun).
+            "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis" | "shoreup" => true,
             // onHit copies the stages, even all zero, and returns nothing.
             "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit" => true,
             _ => {
