@@ -474,6 +474,9 @@ pub struct Battle {
     /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
     /// (`action.order = 201`).
     pub(crate) pending_queue_reorder: Option<(SideRef, u8, bool)>,
+    /// The user whose runMove reached its AfterMove event this action.
+    #[serde(skip)]
+    pub(crate) after_move_user: Option<(SideRef, u8)>,
     /// A Round reached its onTry this action (data/moves.ts round).
     #[serde(skip)]
     pub(crate) round_on_try: bool,
@@ -924,6 +927,7 @@ impl Battle {
             wonder_room_turns: 0,
             fairy_lock_turns: 0,
             pending_queue_reorder: None,
+            after_move_user: None,
             round_on_try: false,
             round_chain: [[false; 2]; 2],
             encore_requeue: None,
@@ -5255,6 +5259,7 @@ self.trigger_emergency_exits();
             plog!(self, "|");
             self.in_residual = true;
             self.resolve_end_of_turn();
+            self.locked_move_residual();
             // `|upkeep|` (sim/battle.ts:2817) precedes the action's Update.
             self.p_upkeep();
             // PS: the residual action ends with eachEvent('Update').
@@ -10668,6 +10673,85 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// lockedmove onStart (`trueDuration = random(2, 4)`) / onRestart.
+    fn locked_move_self_drop(&mut self, side: SideRef, slot: u8, move_id: u16) {
+        let Some(a) = self.side(side).active_mon(slot as usize) else { return };
+        if !a.is_alive() {
+            return;
+        }
+        if a.lockin_turns == 0 {
+            let roll = 2 + self.rng.range(2) as u8;
+            let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
+            a.lockin_true = roll;
+            a.lockin_turns = 2;
+            a.lockin_move_slot = a.moves.iter().position(|&x| x == move_id).unwrap_or(255) as u8;
+        } else if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            if a.lockin_true >= 2 {
+                a.lockin_turns = 2;
+            }
+        }
+    }
+
+    /// lockedmove onEnd: confusion once `trueDuration` has run out. Own Tempo's and
+    /// Misty Terrain's onTryAddVolatile refuse it before confusion's onStart draws.
+    fn end_locked_move(&mut self, side: SideRef, slot: u8) {
+        let misty = matches!(self.terrain, crate::terrain::Terrain::Misty);
+        let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
+        a.lockin_turns = 0;
+        a.lockin_move_slot = 255;
+        use crate::pokemon::VolatileKind as V;
+        if a.lockin_true > 1
+            || !a.is_alive()
+            || a.volatiles.has(V::Confusion)
+            || a.effective_ability_id() == data::ability_id::OWNTEMPO
+            || (misty && a.is_grounded() && a.semi_invuln == 0)
+        {
+            return;
+        }
+        pmon!(self, "-start", side, slot, "|confusion|[fatigue]");
+        let time = 2 + self.rng.range(4) as u32;
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::Confusion, turns_remaining: 0, payload: time });
+        }
+    }
+
+    /// lockedmove onAfterMove: a lock on its last turn ends.
+    fn locked_move_after_move(&mut self) {
+        let Some((side, slot)) = self.after_move_user.take() else { return };
+        let ends = self.side(side).active_mon(slot as usize).is_some_and(|a| {
+            a.lockin_turns == 1 && !a.volatiles.has(crate::pokemon::VolatileKind::Uproar)
+        });
+        if ends {
+            self.end_locked_move(side, slot);
+            // The action's Update: Persim / Lum Berry, Own Tempo (sim/battle.ts runAction).
+            crate::item::on_update_cures(self, side, slot);
+        }
+    }
+
+    /// lockedmove in the residual: `duration` runs out, else onResidual's sleep
+    /// check and `trueDuration--`. No order of its own, so after every other
+    /// handler (sim/battle.ts fieldEvent).
+    fn locked_move_residual(&mut self) {
+        let (order, k) = self.actives_by_speed();
+        for &(side, slot) in &order[..k] {
+            let Some(a) = self.side(side).active_mon(slot as usize) else { continue };
+            if a.lockin_turns == 0 || a.volatiles.has(crate::pokemon::VolatileKind::Uproar) || !a.is_alive() {
+                continue;
+            }
+            let asleep = a.status == Status::Sleep;
+            if a.lockin_turns == 1 {
+                self.end_locked_move(side, slot);
+            } else if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+                a.lockin_turns -= 1;
+                a.lockin_true = a.lockin_true.saturating_sub(1);
+                if asleep {
+                    a.lockin_turns = 0;
+                    a.lockin_move_slot = 255;
+                }
+            }
+        }
+    }
+
     /// data/moves.ts fling condition onUpdate: `-enditem` at the next Update,
     /// then AfterUseItem (Unburden, Symbiosis).
     pub(crate) fn flush_fling_item(&mut self) {
@@ -11860,6 +11944,11 @@ self.trigger_emergency_exits();
                 self.p_tag(crate::protocol::step::SELF_DROP, ctx.tside, ctx.tslot);
                 pmon!(self, "-singlemove", ctx.actor_side, ctx.actor_slot, "|Glaive Rush|[silent]");
             }
+        }
+        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
+        // hit (data/moves.ts outrage, data/conditions.ts lockedmove onStart / onRestart).
+        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH) {
+            self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
         }
         if hit_sub {
             return;
@@ -14151,6 +14240,7 @@ self.trigger_emergency_exits();
         // useMoveInner's `|move|` (sim/battle-actions.ts:457), held pending:
         // Focus Punch's beforeMoveCallback and Gravity's BeforeMove print
         // their `cant` before it, so they cancel it.
+        self.after_move_user = Some((actor_side, actor_slot));
         self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
         if matches!(
             move_id,
@@ -15111,76 +15201,6 @@ self.trigger_emergency_exits();
         // of lock, target gets confused. The PS volatile auto-decrements
         // each turn; we mirror with `lockin_turns` counting *remaining*
         // turns including the current one.
-        let mut fatigue_pending = false;
-        if any_damage_dealt > 0
-            && matches!(move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH)
-        {
-            let mut fatigue = false;
-            // First use of the lock: pick random 2 or 3 duration.
-            // Subsequent uses just decrement.
-            let first_use = attacker.lockin_turns == 0;
-            let dur_roll = if first_use { 2 + self.rng.range(2) as u8 } else { 0 };
-            // Predict whether the lock will END this turn so we know
-            // whether to consume a confusion-duration draw. PS rolls
-            // `random(2, 6)` (= 2/3/4/5 turns) at confusion.onStart,
-            // and confusion is only applied when the lock ends — so
-            // pre-rolling here matches PS's draw-order exactly. If we
-            // don't pre-roll, the engine's Range(4) site would
-            // conditionally fire mid-mutation, defeating oracle alignment.
-            let current_remaining = if first_use { dur_roll } else { attacker.lockin_turns };
-            let will_end = current_remaining.saturating_sub(1) == 0;
-            let conf_dur_roll = if will_end { 2 + self.rng.range(4) as u32 } else { 0 };
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if a.is_alive() {
-                    if first_use {
-                        a.lockin_turns = dur_roll;
-                        a.lockin_move_slot = move_slot;
-                    }
-                    a.lockin_turns = a.lockin_turns.saturating_sub(1);
-                    if a.lockin_turns == 0 {
-                        // Lock ended — confuse the user, clear slot.
-                        a.lockin_move_slot = 255;
-                        // Own Tempo — PS `data/abilities.ts:3099`:
-                        //   onTryAddVolatile(status, pokemon) {
-                        //     if (status.id === 'confusion') return null;
-                        //   }
-                        // Confusion can never be added, regardless of
-                        // source — so the self-confusion from a lock-in
-                        // move ending is also blocked. The duration roll
-                        // above was already consumed (PS rolls
-                        // `confusion.onStart` before `onTryAddVolatile`
-                        // vetoes via the volatile's own duration handler),
-                        // keeping the oracle draw count aligned. Not in
-                        // PS's breakable list for this branch — there is
-                        // no attacker on a self-confusion. Bulbapedia:
-                        // <https://bulbapedia.bulbagarden.net/wiki/Own_Tempo_(Ability)>.
-                        if a.effective_ability_id() != data::ability_id::OWNTEMPO {
-                            // payload = remaining confusion turns. PS
-                            // `data/conditions.ts:174 confusion.onStart`:
-                            //   `this.effectState.time = this.random(min, 6);`
-                            // with `min = 2` (or 3 for Axe Kick — separate
-                            // mechanic). `random(2, 6)` = 2/3/4/5 turns.
-                            // Confusion onBeforeMove decrements first and
-                            // resolves when counter hits 0, so the stored
-                            // payload corresponds 1:1 with PS's startTime.
-                            let _ = a.volatiles.add(crate::pokemon::Volatile {
-                                kind: crate::pokemon::VolatileKind::Confusion,
-                                turns_remaining: 0,
-                                payload: conf_dur_roll,
-                            });
-                            fatigue = true;
-                        }
-                    }
-                }
-            }
-            // Persim Berry — PS `onUpdate` cures confusion the same tick it
-            // is applied. The lock-in (Outrage / Petal Dance / Thrash) end
-            // is the only in-engine confusion source today; cure here if the
-            // user holds Persim and is now confused.
-            // lockedmove onEnd: confusion's `-start|[fatigue]` (data/conditions.ts:166-167).
-            fatigue_pending = fatigue;
-        }
-
         if any_damage_dealt > 0
             && matches!(
                 move_id,
@@ -15370,11 +15390,6 @@ self.trigger_emergency_exits();
                     .unwrap_or_default();
                 self.p_heal(actor_side, actor_slot, &format!("|[from] item: Shell Bell{of}"));
             }
-        }
-        // lockedmove's onAfterMove ends the lock: confusion's `-start|[fatigue]` comes
-        // after the hit loop's faints and AfterMoveSecondarySelf (data/conditions.ts).
-        if fatigue_pending && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive()) {
-            pmon!(self, "-start", actor_side, actor_slot, "|confusion|[fatigue]");
         }
     }
 
@@ -18689,6 +18704,7 @@ self.trigger_emergency_exits();
     }
 
     fn white_herb_after_move(&mut self) {
+        self.locked_move_after_move();
         if !self.white_herb_move_defer {
             return;
         }
