@@ -20406,6 +20406,17 @@ self.trigger_emergency_exits();
                     pmon!(self, "-activate", actor_side, actor_slot, "|move: Lock-On|[of] {of}");
                 }
             }
+            data::move_id::MAGNETICFLUX => {
+                // data/moves.ts magneticflux onHitSide: +1 Def/SpD for Plus and Minus allies.
+                for sl in 0..self.format().active_count() as u8 {
+                    let eligible = self.side(actor_side).active_mon(sl as usize).is_some_and(|t| {
+                        t.is_alive() && matches!(t.effective_ability_id(), data::ability_id::PLUS | data::ability_id::MINUS)
+                    });
+                    if eligible {
+                        self.apply_boosts(actor_side, sl, &[(1, 1), (3, 1)], actor_side, actor_slot);
+                    }
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
