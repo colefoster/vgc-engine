@@ -10737,6 +10737,7 @@ self.trigger_emergency_exits();
         let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
         a.lockin_turns = 0;
         a.lockin_move_slot = 255;
+        a.release_borrowed_slot();
         use crate::pokemon::VolatileKind as V;
         if a.lockin_true > 1
             || !a.is_alive()
@@ -10785,6 +10786,7 @@ self.trigger_emergency_exits();
                 if asleep {
                     a.lockin_turns = 0;
                     a.lockin_move_slot = 255;
+                    a.release_borrowed_slot();
                 }
             }
         }
@@ -18109,6 +18111,7 @@ self.trigger_emergency_exits();
                 if left == 0 || chop {
                     m.lockin_turns = 0;
                     m.lockin_move_slot = 255;
+                    m.release_borrowed_slot();
                     self.p_res(28, 1, Some((side, slot)));
                     pmon!(self, "-end", side, slot, "|Uproar");
                 } else {
