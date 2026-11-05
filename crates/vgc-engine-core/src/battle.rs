@@ -7927,6 +7927,19 @@ self.trigger_emergency_exits();
                 && m.target != 14
                 && matches!(attacker.effective_ability_id(), data::ability_id::STALWART | data::ability_id::PROPELLERTAIL)
                 && self.side(actor_side.opposing()).active_mon(original as usize).is_some_and(|d| d.is_alive());
+            // useMoveInner's getRandomTarget reads the dex's `normal` for a called
+            // Curse: only resolveAction turns a non-Ghost's into 'self'.
+            if called && move_id == data::move_id::CURSE && {
+                let (types, n) = attacker.effective_types();
+                !types[..n as usize].contains(&13)
+            } {
+                let foe = actor_side.opposing();
+                let n_active = self.format().active_count();
+                let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|d| d.is_alive())).count();
+                if n > 0 && n_active > 1 {
+                    let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+                }
+            }
             let pick = if tracked {
                 Some(Target { side: actor_side.opposing(), slot: original })
             } else {
