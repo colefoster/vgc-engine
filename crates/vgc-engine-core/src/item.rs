@@ -995,6 +995,7 @@ pub fn on_damaging_hit(
             t.consume_item();
         }
         battle.p_item_line("-enditem", target_side, target_slot, raw_item_id, "");
+        crate::ability::on_item_consumed(battle, target_side, target_slot);
     }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
