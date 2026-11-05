@@ -21928,6 +21928,13 @@ self.trigger_emergency_exits();
                     }
                     _ => (actor_side, actor_slot),
                 };
+                // An ally behind a Substitute: getDamage has nothing to give it, so
+                // `-fail` (data/moves.ts substitute onTryPrimaryHit).
+                if self.status_blocked_by_substitute(tside, tslot, actor_side, actor_slot) {
+                    self.ps_status_sub_null = true;
+                    self.p_try_fail(actor_side, actor_slot);
+                    return;
+                }
                 let Some(boosts) = self
                     .side(tside)
                     .active_mon(tslot as usize)
