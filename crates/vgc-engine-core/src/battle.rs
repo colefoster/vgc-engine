@@ -17823,7 +17823,9 @@ self.trigger_emergency_exits();
         // user the same way (PS data/moves.ts:noretreat condition
         // `onTrapPokemon`). Both sit after the Shed Shell / Ghost free-returns
         // above, so those still release the user.
-        if mon.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
+        // partiallytrapped onTrapPokemon traps only while its source is active
+        // (data/conditions.ts:248-251).
+        if mon.volatiles.get(crate::pokemon::VolatileKind::PartialTrap).is_some_and(|v| self.partial_trap_source_active(v.payload))
             || mon.volatiles.has(crate::pokemon::VolatileKind::NoRetreat)
             || mon.volatiles.has(crate::pokemon::VolatileKind::Ingrain)
         {
@@ -20143,13 +20145,7 @@ self.trigger_emergency_exits();
                 }
                 // PS data/conditions.ts:238: the trap ends silently, with no
                 // chip, once its source has left the field or fainted.
-                let src_side = if src & 0xFF == 0 { SideRef::P1 } else { SideRef::P2 };
-                let src_slot = ((src >> 8) & 0x7F) as usize;
-                let src_team = ((src >> 16) & 0xFF) as u8;
-                let src_present = src_slot < n as usize
-                    && self.side(src_side).active[src_slot] == src_team
-                    && self.side(src_side).active_mon(src_slot).is_some_and(|s| s.is_alive());
-                if !src_present {
+                if !self.partial_trap_source_active(src << 8) {
                     self.p_res(13, 0, Some((side, slot)));
                     self.p_trap_end(side, slot, "|[silent]");
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -20247,6 +20243,16 @@ self.trigger_emergency_exits();
 
     /// Whether the Pokemon an Octolock payload names is still on the field
     /// and able to act (PS: `source.isActive && source.hp`).
+    /// Whether the source a `PartialTrap` payload names (side in bits 8-15, team index
+    /// in bits 24-31) is active: `effectState.source.isActive` (sim/pokemon.ts), wherever
+    /// Ally Switch has put it.
+    pub(crate) fn partial_trap_source_active(&self, payload: u32) -> bool {
+        let side = if (payload >> 8) & 0xFF == 0 { SideRef::P1 } else { SideRef::P2 };
+        let team = (payload >> 24) as u8;
+        let s = self.side(side);
+        (0..self.format().active_count()).any(|slot| s.active[slot] == team && s.active_mon(slot).is_some_and(|m| m.is_alive()))
+    }
+
     /// Whether the source a `Trapped` payload (`side << 16 | team index`)
     /// names is on the field and not fainted. A fainted source's link is
     /// gone in PS (faintMessages' clearVolatile removes linked volatiles);
