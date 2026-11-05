@@ -555,6 +555,8 @@ fn after_berry_eaten(battle: &mut Battle, side: SideRef, slot: u8, item_id: u16)
 /// data/abilities.ts immunity et al. `onUpdate`).
 pub fn on_update_cures(battle: &mut Battle, side: SideRef, slot: u8) {
     use crate::pokemon::{Status, VolatileKind as VK};
+    // leppaberry onUpdate (data/items.ts).
+    on_pp_depleted(battle, side, slot);
     let Some(m) = battle.side(side).active_mon(slot as usize) else { return };
     if !m.is_alive() {
         return;

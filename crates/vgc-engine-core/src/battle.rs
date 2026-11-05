@@ -14118,7 +14118,6 @@ self.trigger_emergency_exits();
                         a.charging_turns = 1;
                         a.charging_move_slot = move_slot;
                     }
-                    crate::item::on_pp_depleted(self, actor_side, actor_slot);
                     // twoturnmove onStart's attrLastMove('[still]') (data/conditions.ts:310),
                     // then its PrepareHit event: Protean.
                     self.p_attr("[still]");
@@ -14158,7 +14157,6 @@ self.trigger_emergency_exits();
                     a.charging_move_slot = move_slot;
                     a.semi_invuln = semi_code;
                 }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 self.p_attr("[still]");
                 self.protean_after_stall(actor_side, actor_slot, move_id);
                 return ChargeOutcome::Abort;
@@ -14244,7 +14242,6 @@ self.trigger_emergency_exits();
                 mon.last_used_move_target = enc_target(target);
             }
             // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
         }
     }
 
@@ -14472,7 +14469,6 @@ self.trigger_emergency_exits();
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
                 }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
             }
         }
@@ -14496,7 +14492,6 @@ self.trigger_emergency_exits();
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
             }
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
         }
 
@@ -14546,7 +14541,6 @@ self.trigger_emergency_exits();
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
                 }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
             }
         }
@@ -14574,7 +14568,6 @@ self.trigger_emergency_exits();
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
                 }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
             }
         }
@@ -14620,7 +14613,6 @@ self.trigger_emergency_exits();
                 mon.last_used_move_slot = 255;
                 mon.last_used_move_target = 255;
             }
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
         }
 
@@ -14685,7 +14677,6 @@ self.trigger_emergency_exits();
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
             }
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
         }
 
