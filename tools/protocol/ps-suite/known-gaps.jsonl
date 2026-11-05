@@ -93,7 +93,6 @@
 {"game":"Trace should not activate twice","format":"gen9customgame"}
 {"game":"Truant should allow the user to act after a recharge turn","format":"gen9customgame"}
 {"game":"Truant should prevent a newly-Mega Evolved Pokemon from acting if given the ability","format":"gen9customgame"}
-{"game":"Champions abilities Berserk should not be suppressed by Sheer Force","format":"gen9championscustomgame"}
 {"game":"Champions items Eject Button should only activate one Eject Button when multiple holders are hit","format":"gen9championsdoublescustomgame"}
 {"game":"Champions moves Curse should be able to hit a semi-invulnerable target if a non-Ghost user has Protean","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse shouldn't fail if the target is already afflicted with Curse, but only became a Ghost-type mid-turn","format":"gen9championscustomgame"}
@@ -128,7 +127,6 @@
 {"game":"Belch should still count berries as consumed after switch out","format":"gen9customgame"}
 {"game":"Burning Jealousy should burn a target whose stats were boosted at the start of the match","format":"gen9customgame"}
 {"game":"Burning Jealousy should not burn a target whose stats were boosted at a switch after a KO","format":"gen9customgame"}
-{"game":"Ceaseless Edge should not set Spikes when the user faints from Rocky Helmet","format":"gen9customgame"}
 {"game":"Clear Smog should trigger before Anger Point activates during critical hits","format":"gen9customgame"}
 {"game":"Court Change should swap certain side conditions to the opponent's side and vice versa","format":"gen9customgame"}
 {"game":"Curse should curse a non-Ghost user with Protean","format":"gen9customgame"}
@@ -142,7 +140,6 @@
 {"game":"Pollen Puff should not heal a Pokemon if they have natural type immunity to Pollen Puff","format":"gen9doublescustomgame"}
 {"game":"Rapid Spin should remove entry hazards past a Substitute","format":"gen9customgame"}
 {"game":"Revival Blessing should send the Pokemon back in immediately if in an active slot in Doubles","format":"gen9doublescustomgame"}
-{"game":"Stone Axe should not set Stealth Rock when the user faints from Rocky Helmet","format":"gen9customgame"}
 {"game":"Teatime should force Pokemon with Substitute to eat Berries","format":"gen9customgame"}
 {"game":"Transform should copy the target's focus energy status","format":"gen9customgame"}
 {"game":"Transform should fail if either the user or target have Illusion active","format":"gen9customgame"}
@@ -155,5 +152,3 @@
 {"game":"Trick should not remove correctly held mega stones","format":"gen9customgame"}
 {"game":"Wonder Room should cause Body Press to use Sp. Def stat stage changes","format":"gen9customgame"}
 {"game":"Wonder Room should be ignored by Download when determining raw stats, but not stat stage changes","format":"gen9customgame"}
-{"game":"X Sheer Force does not suppress Eject Button in Champions","format":"gen9championscustomgame"}
-{"game":"X Sheer Force does not suppress Berserk in Champions","format":"gen9championscustomgame"}
