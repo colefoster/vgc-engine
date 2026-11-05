@@ -8839,9 +8839,14 @@ self.trigger_emergency_exits();
                         defender.is_grounded()
                     };
                     if !g {
-                        // Ground into an airborne target: runImmunity's `-immune`.
+                        // Ground into an airborne target: runImmunity's `-immune`, or
+                        // Levitate's onTryHit line (data/abilities.ts levitate).
                         self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
-                        pmon!(self, "-immune", tside, tslot);
+                        if defender.effective_ability_id() == data::ability_id::LEVITATE {
+                            pmon!(self, "-immune", tside, tslot, "|[from] ability: Levitate");
+                        } else {
+                            pmon!(self, "-immune", tside, tslot);
+                        }
                         continue;
                     }
                 }
