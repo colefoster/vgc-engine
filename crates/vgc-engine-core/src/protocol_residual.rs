@@ -500,7 +500,8 @@ impl Battle {
                 break;
             };
             let mut j = i;
-            let key = ((q as u32 + 1) << 16) | 0xFFFF;
+            // Below a line between this handler and the next (`p_res_pos`).
+            let key = ((q as u32 + 1) << 16) | 0x7FFF;
             self.p_res_set_key(key);
             if let Some(l) = self.protocol.log_mut() {
                 while j < groups.len() && groups[j].0 == Some(q) {
