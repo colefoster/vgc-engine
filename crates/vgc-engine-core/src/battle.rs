@@ -16170,6 +16170,11 @@ self.trigger_emergency_exits();
         if !t.is_alive() || ps_cantsuppress(ability) || ps_cantsuppress(old) || crate::ability::has_ability_shield(t) {
             return false;
         }
+        // setAbility runs the old ability's End: Illusion ends (data/abilities.ts
+        // illusion onEnd).
+        if old == data::ability_id::ILLUSION {
+            self.p_illusion_break(side, slot);
+        }
         // setAbility runs the old ability's End: Flash Fire's boost goes silently
         // (data/abilities.ts flashfire onEnd, its condition's onEnd).
         if old == data::ability_id::FLASHFIRE
