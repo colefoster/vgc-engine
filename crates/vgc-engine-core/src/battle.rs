@@ -20195,6 +20195,13 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
+                // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
+                if !self.rolled_accuracy_passed(m) { return; }
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                self.confuse_from_move(ts, tslot, actor_side, actor_slot);
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
