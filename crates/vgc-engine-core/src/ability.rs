@@ -1774,6 +1774,59 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Magician's steal (data/abilities.ts magician onAfterMoveSecondarySelf). It runs
+/// after the move's faints, and takeItem works on a KO'd target.
+pub(crate) fn magician_steal(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_id: u16,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+) {
+    if move_id != data::move_id::FLING {
+        let attacker_itemless = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.item_id == u16::MAX);
+        let held = attacker_itemless && !battle.sticky_hold_blocks(target_side, target_slot, attacker_side, attacker_slot);
+        let stealable = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .and_then(|t| {
+                if held
+                    && t.item_id != u16::MAX
+                    && !t.holds_own_mega_stone()
+                {
+                    Some(t.item_id)
+                } else {
+                    None
+                }
+            });
+        if attacker_itemless {
+            if let Some(item) = stealable {
+                if let Some(tm) =
+                    battle.side_mut(target_side).active_mon_mut(target_slot as usize)
+                {
+                    tm.item_id = u16::MAX;
+                    tm.sync_can_mega_evolve();
+                }
+                if let Some(am) =
+                    battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize)
+                {
+                    am.item_id = item;
+                    am.sync_can_mega_evolve();
+                }
+                // magician onAfterMoveSecondarySelf's line (data/abilities.ts).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    battle.p_item_line("-item", attacker_side, attacker_slot, item, &format!("|[from] ability: Magician|[of] {of}"));
+                }
+            }
+        }
+    }
+}
+
 /// Defender ability `onDamagingHit` — runs after a damaging move has
 /// connected with the target and dealt > 0 HP of damage. PS
 /// `sim/battle-actions.ts:1142` fires `runEvent('DamagingHit', ...)`
@@ -2694,49 +2747,8 @@ pub fn on_damaging_hit(
     // fires once: after the first steal the holder is no longer item-less.
     // Hoopa / Delphox / Klefki signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Magician_(Ability)>.
-    if attacker_ability_id == data::ability_id::MAGICIAN
-        && target_alive
-        && move_id != data::move_id::FLING
-    {
-        let attacker_itemless = battle
-            .side(attacker_side)
-            .active_mon(attacker_slot as usize)
-            .is_some_and(|a| a.item_id == u16::MAX);
-        let held = attacker_itemless && !battle.sticky_hold_blocks(target_side, target_slot, attacker_side, attacker_slot);
-        let stealable = battle
-            .side(target_side)
-            .active_mon(target_slot as usize)
-            .and_then(|t| {
-                if held
-                    && t.item_id != u16::MAX
-                    && !t.holds_own_mega_stone()
-                {
-                    Some(t.item_id)
-                } else {
-                    None
-                }
-            });
-        if attacker_itemless {
-            if let Some(item) = stealable {
-                if let Some(tm) =
-                    battle.side_mut(target_side).active_mon_mut(target_slot as usize)
-                {
-                    tm.item_id = u16::MAX;
-                    tm.sync_can_mega_evolve();
-                }
-                if let Some(am) =
-                    battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize)
-                {
-                    am.item_id = item;
-                    am.sync_can_mega_evolve();
-                }
-                // magician onAfterMoveSecondarySelf's line (data/abilities.ts).
-                if battle.plog() {
-                    let of = battle.p_ident(target_side, target_slot);
-                    battle.p_item_line("-item", attacker_side, attacker_slot, item, &format!("|[from] ability: Magician|[of] {of}"));
-                }
-            }
-        }
+    if attacker_ability_id == data::ability_id::MAGICIAN && target_alive {
+        magician_steal(battle, target_side, target_slot, move_id, attacker_side, attacker_slot);
     }
 
     // Wandering Spirit — PS data/abilities.ts:wanderingspirit. On a
