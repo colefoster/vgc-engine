@@ -10668,6 +10668,8 @@ self.trigger_emergency_exits();
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
         crate::item::cud_chew_reeat(self, side, slot, berry, &mut rng);
         self.rng = rng;
+        // eatItem's AfterUseItem (sim/pokemon.ts): Unburden, Symbiosis.
+        crate::ability::on_item_consumed(self, side, slot);
     }
 
     /// sim/battle-actions.ts useMove from a calling move: the called move runs in
