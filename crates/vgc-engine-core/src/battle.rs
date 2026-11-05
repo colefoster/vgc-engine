@@ -12324,11 +12324,6 @@ self.trigger_emergency_exits();
                 pmon!(self, "-singlemove", ctx.actor_side, ctx.actor_slot, "|Glaive Rush|[silent]");
             }
         }
-        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
-        // hit (data/moves.ts outrage, data/conditions.ts lockedmove onStart / onRestart).
-        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH | data::move_id::RAGINGFURY) {
-            self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
-        }
         if hit_sub {
             return;
         }
@@ -12735,6 +12730,13 @@ self.trigger_emergency_exits();
         // precedes them, the DamagingHit rolls and the hit's Update.
         if !hit_sub && effective_dmg > 0 && alive_post {
             self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, m, 1, Some((ctx.tside, ctx.tslot)));
+        }
+        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
+        // hit and before the secondaries, whose roll a King's Rock adds to
+        // these moves (data/moves.ts outrage, data/conditions.ts lockedmove
+        // onStart / onRestart; data/mods/champions/scripts.ts spreadMoveHit).
+        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH | data::move_id::RAGINGFURY) {
+            self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
         }
         let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
         self.p_tag(crate::protocol::step::SECONDARY, ctx.tside, ctx.tslot);
