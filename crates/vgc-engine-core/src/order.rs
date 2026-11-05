@@ -360,6 +360,7 @@ pub(crate) fn fractional_key(battle: &Battle, side: SideRef, actor_slot: u8, mid
     } else if m.item_id == data::item_id::LAGGINGTAIL
         || m.item_id == data::item_id::FULLINCENSE
         || m.effective_ability_id() == data::ability_id::STALL
+        || battle.mega_keeps_stall[side as usize][(actor_slot as usize).min(1)]
     {
         1
     } else {
