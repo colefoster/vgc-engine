@@ -4179,7 +4179,10 @@ self.trigger_emergency_exits();
         }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n_active {
-                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.current_hp > 0) else { continue };
+                // A holder the same spread hit KO'd still counts: getSpreadDamage runs for
+                // every target before any damage lands (scripts.ts spreadMoveHit).
+                let live = self.ps_action_live & (1 << (side as usize * 2 + slot)) != 0;
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.current_hp > 0 || live) else { continue };
                 if current_ability(m) == A::FRIENDGUARD {
                     push(&mut h, (0, self.ps_speed(side, slot).unwrap_or(0), 7));
                 }
