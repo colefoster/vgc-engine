@@ -315,7 +315,8 @@ pub(crate) fn quick_fractional_source(battle: &Battle, side: SideRef, actor_slot
             return 1;
         }
     }
-    if m.item_id == data::item_id::QUICKCLAW
+    // An ignored item has no handler (sim/battle.ts findPokemonEventHandlers).
+    if m.effective_item_id() == data::item_id::QUICKCLAW
         && !(status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
     {
         let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
