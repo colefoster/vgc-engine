@@ -3604,6 +3604,11 @@ self.trigger_emergency_exits();
                     h[n] = (spe, 2);
                     n += 1;
                 }
+                // The charge volatile's onAfterMove (data/moves.ts charge).
+                if user && m.is_charged() && n < h.len() {
+                    h[n] = (spe, 2);
+                    n += 1;
+                }
                 if matches!(m.item_id, data::item_id::WHITEHERB | data::item_id::MIRRORHERB | data::item_id::EJECTPACK)
                     && n < h.len()
                 {
@@ -4037,10 +4042,27 @@ self.trigger_emergency_exits();
             if d.volatiles.has(V::Telekinesis) {
                 push(&mut h, (-1, spe, 2));
             }
+            // onModifyAccuracy: Bright Powder, Lax Incense (-2), Sand Veil,
+            // Snow Cloak, Tangled Feet (-1) (data/items.ts, data/abilities.ts).
+            if matches!(d.item_id, data::item_id::BRIGHTPOWDER | data::item_id::LAXINCENSE) {
+                push(&mut h, (-2, spe, 8));
+            }
+            if matches!(d.effective_ability_id(), data::ability_id::SANDVEIL | data::ability_id::SNOWCLOAK | data::ability_id::TANGLEDFEET) {
+                push(&mut h, (-1, spe, 7));
+            }
         }
         if let Some(a) = self.side(atk_side).active_mon(atk_slot as usize) {
+            let spe = self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0);
             if a.micle_next_move {
-                push(&mut h, (0, self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0), 2));
+                push(&mut h, (0, spe, 2));
+            }
+            // onSourceModifyAccuracy: Wide Lens, Zoom Lens (-2), Compound Eyes,
+            // Hustle (-1).
+            if matches!(a.item_id, data::item_id::WIDELENS | data::item_id::ZOOMLENS) {
+                push(&mut h, (-2, spe, 8));
+            }
+            if matches!(a.effective_ability_id(), data::ability_id::COMPOUNDEYES | data::ability_id::HUSTLE) {
+                push(&mut h, (-1, spe, 7));
             }
         }
         if n < 2 {
@@ -7914,6 +7936,12 @@ self.trigger_emergency_exits();
                 let cat = if m_owned.category == 0 { "Physical" } else { "Special" };
                 self.p_attr(&format!("[anim] Shell Side Arm {cat}"));
             }
+        }
+        // useMoveInner's runEvent('ModifyMove'): Gravity's and Wonder Room's
+        // field handlers tie (data/moves.ts gravity, wonderroom).
+        #[cfg(feature = "ps-rng")]
+        if self.gravity_turns > 0 && self.wonder_room_turns > 0 && self.rng.is_ps() {
+            let _ = self.rng.ps_random_range("shuffle", 0, 2);
         }
         let m = &m_owned;
 
@@ -17903,6 +17931,17 @@ self.trigger_emergency_exits();
             _ if ps_immune => 0,
             _ => self.rng.damage_roll(),
         };
+        // modifyDamage's runEvent('ModifyDamage') follows the roll. An
+        // off-field source brings no handlers of its own.
+        #[cfg(feature = "ps-rng")]
+        if !ps_immune {
+            let src_slot = if src_active {
+                self.side(src_side).active.iter().position(|&a| a as usize == src_idx).unwrap_or(255) as u8
+            } else {
+                255
+            };
+            self.ps_modify_damage_ties(src_side, src_slot, tside, tslot);
+        }
 
         let wonder_room = self.wonder_room_turns > 0;
         let dmg = {
