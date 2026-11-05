@@ -11073,7 +11073,12 @@ self.trigger_emergency_exits();
             for hit_idx in 0..ctx.hits {
                 // data/mods/champions/scripts.ts hitStepMoveHitLoop: a user put to
                 // sleep mid-move stops (Effect Spore).
-                if hit_idx > 0 && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.status == Status::Sleep) {
+                // Snore and a move Sleep Talk called go on (isSleepUsable, scripts.ts:455).
+                if hit_idx > 0
+                    && move_id != data::move_id::SNORE
+                    && self.called_from != data::move_id::SLEEPTALK
+                    && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.status == Status::Sleep)
+                {
                     break;
                 }
                 // Dragon Darts over two targets: hit n strikes targets[n-1]
