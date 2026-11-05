@@ -11811,6 +11811,9 @@ self.trigger_emergency_exits();
             .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
             .unwrap_or("");
         match attacker_ability {
+            // faintMessages' checkWin ends the battle before runEvent('AfterFaint')
+            // (sim/battle.ts faintMessages).
+            _ if self.p1.is_defeated() || self.p2.is_defeated() => {}
             "moxie" => {
                 self.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::MOXIE));
                 self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
