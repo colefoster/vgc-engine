@@ -6772,7 +6772,10 @@ self.trigger_emergency_exits();
                 // (sim/battle.ts runAction, sim/battle-actions.ts, PS 437926906).
                 #[cfg(feature = "ps-rng")]
                 if self.rng.is_ps() && !revives
-                    && self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive())
+                    && self.side(side).active_mon(slot as usize).is_some_and(|m| {
+                        // Baton Pass sets skipPursuit (data/moves.ts batonpass self.onHit).
+                        m.is_alive() && m.moves.get(m.last_used_move_slot as usize) != Some(&data::move_id::BATONPASS)
+                    })
                 {
                     self.ps_active_ties(false, "shuffle");
                 }
@@ -12094,6 +12097,9 @@ self.trigger_emergency_exits();
                 apply_self_boost_secondary(self, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
                 // PS still rolls the target's secondaries (they then fail on
                 // the KO'd target or the Substitute's `null`). Draws only.
+                // King's Rock's appended flinch rolls the same way.
+                #[cfg(feature = "ps-rng")]
+                let flinch_roll = rng.is_ps() && adds_flinch_secondary(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug);
                 #[cfg(feature = "ps-rng")]
                 if rng.is_ps() {
                     for _ in 0..self.ps_target_secondary_rolls(m, ctx.tside, ctx.tslot, hit_sub, &ctx.attacker) {
@@ -12112,6 +12118,10 @@ self.trigger_emergency_exits();
                             let _ = rng.ps_random_range("sample", 0, 3);
                         }
                     }
+                }
+                #[cfg(feature = "ps-rng")]
+                if flinch_roll {
+                    let _ = rng.percent_1_100();
                 }
             }
             self.rng = rng;
@@ -24434,6 +24444,35 @@ fn apply_secondary_effect(
     move_slug: &str,
     rng: &mut Rng,
 ) {
+    apply_move_secondary(battle, target_side, target_slot, attacker_side, attacker_slot, move_slug, rng);
+    apply_flinch_item_secondary(battle, target_side, target_slot, attacker_side, attacker_slot, move_slug, rng);
+}
+
+/// The attacker's King's Rock, Razor Fang or Stench adds a flinch secondary to
+/// this move, which isn't filtered by the target's Shield Dust or Covert Cloak.
+fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8, attacker_side: SideRef, attacker_slot: u8, move_slug: &str) -> bool {
+    let Some(a) = battle.side(attacker_side).active_mon(attacker_slot as usize) else { return false };
+    let source = a.is_alive()
+        && (a.effective_ability_id() == data::ability_id::STENCH
+            || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG));
+    let category = data::MOVES.iter().find(|mv| mv.slug == move_slug).map_or(2, |mv| mv.category);
+    let breaks_mold = matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
+    let filtered = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|d| {
+        d.effective_item_id() == data::item_id::COVERTCLOAK
+            || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
+    });
+    source && category != 2 && !filtered && flinch_chance(move_slug, battle.champions).is_none()
+}
+
+fn apply_move_secondary(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+    move_slug: &str,
+    rng: &mut Rng,
+) {
     // Serene Grace — PS `data/abilities.ts:serenegrace` (line 4083):
     //   onModifyMovePriority: -2,
     //   onModifyMove(move) {
@@ -24858,6 +24897,19 @@ fn apply_secondary_effect(
             pmon!(battle, "-start", target_side, target_slot, "|move: Heal Block");
         }
     }
+}
+
+fn apply_flinch_item_secondary(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+    move_slug: &str,
+    rng: &mut Rng,
+) {
+    let serene = battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| a.effective_ability_id() == data::ability_id::SERENEGRACE);
+    let sg = |chance: u8| if serene { (chance as u16 * 2).min(100) as u8 } else { chance };
     // King's Rock / Razor Fang — PS `data/items.ts:kingsrock` (3204) and
     // `razorfang` (5096). Both share `onModifyMovePriority: -1` +
     //   onModifyMove(move) {
@@ -24879,33 +24931,7 @@ fn apply_secondary_effect(
     // exactly like the native flinch secondary above. Bulbapedia:
     //   <https://bulbapedia.bulbagarden.net/wiki/King%27s_Rock>
     //   <https://bulbapedia.bulbagarden.net/wiki/Razor_Fang>.
-    let attacker_kings_rock = battle
-        .side(attacker_side)
-        .active_mon(attacker_slot as usize)
-        .map(|a| {
-            a.is_alive()
-                && a.item_id != u16::MAX
-                && matches!(
-                    data::ITEMS[a.item_id as usize].slug,
-                    "kingsrock" | "razorfang"
-                )
-        })
-        .unwrap_or(false);
-    // Stench — PS `data/abilities.ts:stench` shares King's Rock's recipe
-    // exactly: `onModifyMovePriority: -1` + an `onModifyMove` that appends a
-    // 10% flinch secondary to any non-Status move lacking a native flinch
-    // (same dedupe guard). So it rides the same block and the same draw, just
-    // gated on the ability instead of the held item. `effective_ability_id`
-    // honours Neutralizing Gas (which suppresses Stench). Surfaced by the
-    // conformance harness (out_7ff1a6a3ae): Garbodor's Stench should add a 10%
-    // flinch to Seed Bomb; the proc interrupted a -7 Trick Room user.
-    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stench_(Ability)>.
-    let attacker_stench = battle
-        .side(attacker_side)
-        .active_mon(attacker_slot as usize)
-        .map(|a| a.is_alive() && a.effective_ability_id() == data::ability_id::STENCH)
-        .unwrap_or(false);
-    if attacker_kings_rock || attacker_stench {
+    if adds_flinch_secondary(battle, target_side, target_slot, attacker_side, attacker_slot, move_slug) {
         let move_category = data::MOVES
             .iter()
             .find(|mv| mv.slug == move_slug)
