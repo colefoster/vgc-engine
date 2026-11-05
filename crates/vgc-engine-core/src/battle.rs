@@ -14951,6 +14951,7 @@ self.trigger_emergency_exits();
         // of lock, target gets confused. The PS volatile auto-decrements
         // each turn; we mirror with `lockin_turns` counting *remaining*
         // turns including the current one.
+        let mut fatigue_pending = false;
         if any_damage_dealt > 0
             && matches!(move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH)
         {
@@ -15017,12 +15018,7 @@ self.trigger_emergency_exits();
             // is the only in-engine confusion source today; cure here if the
             // user holds Persim and is now confused.
             // lockedmove onEnd: confusion's `-start|[fatigue]` (data/conditions.ts:166-167).
-            if fatigue {
-                // lockedmove onAfterMove, after the hit loop's faintMessages.
-                self.p_tag_step(crate::protocol::step::AFTER_FAINT);
-                pmon!(self, "-start", actor_side, actor_slot, "|confusion|[fatigue]");
-            }
-            crate::item::try_consume_persim_berry(self, actor_side, actor_slot);
+            fatigue_pending = fatigue;
         }
 
         if any_damage_dealt > 0
@@ -15214,6 +15210,11 @@ self.trigger_emergency_exits();
                     .unwrap_or_default();
                 self.p_heal(actor_side, actor_slot, &format!("|[from] item: Shell Bell{of}"));
             }
+        }
+        // lockedmove's onAfterMove ends the lock: confusion's `-start|[fatigue]` comes
+        // after the hit loop's faints and AfterMoveSecondarySelf (data/conditions.ts).
+        if fatigue_pending && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive()) {
+            pmon!(self, "-start", actor_side, actor_slot, "|confusion|[fatigue]");
         }
     }
 
