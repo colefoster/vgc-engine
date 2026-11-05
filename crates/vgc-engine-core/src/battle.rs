@@ -491,6 +491,9 @@ pub struct Battle {
     /// A status move stopped at the target's Substitute this action.
     #[serde(skip)]
     pub(crate) ps_status_sub_null: bool,
+    /// An aborted Electric move's Charge ends once the pending self-hit lands.
+    #[serde(default)]
+    pub(crate) charge_end_after_yield: bool,
     /// A Round reached its onTry this action (data/moves.ts round).
     #[serde(skip)]
     pub(crate) round_on_try: bool,
@@ -951,6 +954,7 @@ impl Battle {
             pending_queue_reorder: None,
             after_move_user: None,
             ps_status_sub_null: false,
+            charge_end_after_yield: false,
             last_hit_crit: false,
             status_hit_failed: false,
             round_on_try: false,
@@ -3163,6 +3167,9 @@ self.trigger_emergency_exits();
                 self.p_damage(actor_side, actor_slot, "|[from] confusion");
                 if disguised {
                     self.disguise_bust_at(actor_side, actor_slot);
+                }
+                if std::mem::take(&mut self.charge_end_after_yield) {
+                    self.end_charge(actor_side, actor_slot);
                 }
             }
         }
@@ -7854,8 +7861,13 @@ self.trigger_emergency_exits();
             }
             // charge onMoveAborted: an Electric move that never ran ends it too
             // (data/moves.ts charge).
+            // A confusion self-hit's damage comes first (apply_pending_yield).
             if m.type_ == 3 && move_id != data::move_id::CHARGE {
-                self.end_charge(actor_side, actor_slot);
+                if self.pending_yield.is_some() {
+                    self.charge_end_after_yield = true;
+                } else {
+                    self.end_charge(actor_side, actor_slot);
+                }
             }
             return;
         }
