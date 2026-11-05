@@ -1783,6 +1783,8 @@ pub(crate) fn try_consume_red_card(
         let of = battle.p_ident(attacker_side, attacker_slot);
         battle.p_item_line("-enditem", target_side, target_slot, item_id, &format!("|[of] {of}"));
     }
+    // useItem's AfterUseItem: Symbiosis (data/abilities.ts symbiosis).
+    crate::ability::on_item_consumed(battle, target_side, target_slot);
     if !battle.can_be_dragged_out(attacker_side, attacker_slot, false) {
         return false;
     }
@@ -1900,6 +1902,11 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
     };
     if item_id == data::item_id::LEFTOVERS {
         let before = battle.side(side).active_mon(slot as usize).map_or(0, |m| m.current_hp);
+        // ripen onTryHeal announces itself for Leftovers without doubling it
+        // (data/abilities.ts).
+        if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN) {
+            pmon!(battle, "-activate", side, slot, "|ability: Ripen");
+        }
         // Heal 1/16 max HP, capped at max. Heal Block vetoes the recovery
         // (PS Heal Block `onTryHeal`).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {

@@ -211,6 +211,14 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                         }
                     }
                 }
+                // Same for hazard_order (0 = unknown), which a board never sets.
+                for side in ["p1", "p2"] {
+                    if let Some(c) = battle[side]["conditions"].as_object_mut() {
+                        if c.get("hazard_order") == Some(&serde_json::json!([0, 0, 0, 0])) {
+                            c.remove("hazard_order");
+                        }
+                    }
+                }
                 // Same for the turn-scoped ps-rng field, absent without the feature.
                 if battle["ps_recharge_changed"] == serde_json::json!([0, 0]) {
                     battle.as_object_mut().unwrap().remove("ps_recharge_changed");

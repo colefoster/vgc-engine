@@ -122,6 +122,21 @@ pub(crate) fn blocks_opposing_stat_drop(mon: &crate::pokemon::Pokemon) -> bool {
 /// 3=SpD, 4=Spe, 5=Acc, 6=Eva. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Big_Pecks_(Ability)>,
 /// <https://bulbapedia.bulbagarden.net/wiki/Keen_Eye_(Ability)>.
+/// A move's stat drop: Clear Body, White Smoke, Hyper Cutter, Big Pecks, Keen
+/// Eye and Illuminate are breakable (`flags: {breakable: 1}`, data/abilities.ts),
+/// Full Metal Body and Clear Amulet aren't.
+pub(crate) fn blocks_move_stat_drop(
+    mon: &crate::pokemon::Pokemon,
+    breaks_mold: bool,
+    stat_idx: u8,
+) -> bool {
+    if breaks_mold {
+        return mon.effective_ability_id() == data::ability_id::FULLMETALBODY
+            || mon.item_id == data::item_id::CLEARAMULET;
+    }
+    blocks_opposing_stat_drop_for(mon, stat_idx)
+}
+
 pub(crate) fn blocks_opposing_stat_drop_for(
     mon: &crate::pokemon::Pokemon,
     stat_idx: u8,
@@ -189,6 +204,18 @@ pub(crate) fn react_to_opposing_stat_drop(
     // Defiant / Competitive rebound is a self-boost (PS source = target).
     battle.p_boost_fx(crate::protocol::BoostFx::AbilitySelf(ability_id));
     battle.apply_boosts(target_side, target_slot, &[(stat_index as u8, 2)], target_side, target_slot);
+}
+
+pub(crate) fn best_unboosted_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
+    // getBestStat(true, true): stages don't count (data/abilities.ts beastboost, eelevate).
+    let s = &mon.stats;
+    let mut best = (0u8, s.atk);
+    for (i, v) in [(1u8, s.def), (2, s.spa), (3, s.spd), (4, s.spe)] {
+        if v > best.1 {
+            best = (i, v);
+        }
+    }
+    best.0
 }
 
 /// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest stage-
@@ -1046,6 +1073,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(new_id) = found {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.ability_override = new_id;
+                    m.protean_used = false;
                 }
                 // trace onUpdate (data/abilities.ts:5135-5160).
                 if battle.plog() {
@@ -1746,6 +1774,61 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Magician's steal (data/abilities.ts magician onAfterMoveSecondarySelf). It runs
+/// after the move's faints, and takeItem works on a KO'd target.
+pub(crate) fn magician_steal(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_id: u16,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+) {
+    if move_id != data::move_id::FLING {
+        let attacker_itemless = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.item_id == u16::MAX);
+        let held = attacker_itemless && !battle.sticky_hold_blocks(target_side, target_slot, attacker_side, attacker_slot);
+        let stealable = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .and_then(|t| {
+                if held
+                    && t.item_id != u16::MAX
+                    && !t.holds_own_mega_stone()
+                {
+                    Some(t.item_id)
+                } else {
+                    None
+                }
+            });
+        if attacker_itemless {
+            if let Some(item) = stealable {
+                if let Some(tm) =
+                    battle.side_mut(target_side).active_mon_mut(target_slot as usize)
+                {
+                    tm.item_id = u16::MAX;
+                    tm.sync_can_mega_evolve();
+                }
+                if let Some(am) =
+                    battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize)
+                {
+                    am.item_id = item;
+                    am.sync_can_mega_evolve();
+                }
+                // magician onAfterMoveSecondarySelf's line (data/abilities.ts).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    // A KO'd target is named without a position by then.
+                    let of = battle.p_current_ident(&of);
+                    battle.p_item_line("-item", attacker_side, attacker_slot, item, &format!("|[from] ability: Magician|[of] {of}"));
+                }
+            }
+        }
+    }
+}
+
 /// Defender ability `onDamagingHit` — runs after a damaging move has
 /// connected with the target and dealt > 0 HP of damage. PS
 /// `sim/battle-actions.ts:1142` fires `runEvent('DamagingHit', ...)`
@@ -1775,6 +1858,13 @@ pub fn on_damaging_hit(
         Some(m) => (m.effective_ability_id(), m.is_alive()),
         None => return,
     };
+    // runEvent collects the handlers first: Mummy overwriting the attacker's ability
+    // doesn't stop its Poison Touch from running (sim/battle.ts runEvent).
+    let attacker_ability_id = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| a.effective_ability_id())
+        .unwrap_or(u16::MAX);
     // Cotton Down — PS `data/abilities.ts:715` `onDamagingHit`:
     //   this.boost({spe: -1}, source, target, null, false, true);
     //   for (const pokemon of this.getAllActive()) {
@@ -1923,6 +2013,7 @@ pub fn on_damaging_hit(
             let s = battle.p_side_ident(side);
             battle.p_push(format!("|-sidestart|{s}|move: Toxic Spikes"));
         }
+        battle.side_mut(side).conditions.note_hazard(2);
         let layers = &mut battle.side_mut(side).conditions.toxic_spikes_layers;
         if *layers < 2 {
             *layers += 1;
@@ -2003,7 +2094,11 @@ pub fn on_damaging_hit(
     // PS `last_damage_taken` is the damage just applied, so pre-HP =
     // current + last_damage_taken. Drampa / Kommo-o signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Berserk_(Ability)>.
-    if ability_id == data::ability_id::BERSERK && target_alive {
+    // onAfterMoveSecondary: skipped for a move Sheer Force boosted (sim/battle-actions.ts:922),
+    // but not in Champions' copy of the loop (data/mods/champions/scripts.ts:575).
+    let sheer_force = !battle.champions && crate::damage::move_is_sheer_force_boosted(&data::MOVES[move_id as usize])
+        && battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force);
+    if ability_id == data::ability_id::BERSERK && target_alive && !sheer_force {
         if let Some(t) = battle.side(target_side).active_mon(target_slot as usize) {
             let max = t.stats.hp as u32;
             let post = t.current_hp as u32;
@@ -2151,7 +2246,7 @@ pub fn on_damaging_hit(
     // fire (sheerforce sets `move.hasSheerForce` which the damage event
     // suppresses). Tatsugiri signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Shell_(Ability)>.
-    if ability_id == data::ability_id::ANGERSHELL && target_alive {
+    if ability_id == data::ability_id::ANGERSHELL && target_alive && !sheer_force {
         let sheer_force_strip = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
@@ -2454,6 +2549,8 @@ pub fn on_damaging_hit(
         let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
         if attacker_eligible
             && move_id != data::move_id::STRUGGLE
+            // data/abilities.ts cursedbody: !move.flags['futuremove'].
+            && !matches!(move_id, data::move_id::FUTURESIGHT | data::move_id::DOOMDESIRE)
             && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10)
             && !aroma_veil_protects
         {
@@ -2578,6 +2675,7 @@ pub fn on_damaging_hit(
                     .active_mon_mut(attacker_slot as usize)
                 {
                     a.ability_override = rep;
+                    a.protean_used = false;
                 }
                 // setAbility from Mummy / Lingering Aroma (sim/pokemon.ts:1928-1931).
                 if battle.plog() {
@@ -2599,11 +2697,6 @@ pub fn on_damaging_hit(
     // 30% chance. Mirror of Static's shape. Toxicroak signature.
     // Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Poison_Touch_(Ability)>.
-    let attacker_ability_id = battle
-        .side(attacker_side)
-        .active_mon(attacker_slot as usize)
-        .map(|a| a.effective_ability_id())
-        .unwrap_or(u16::MAX);
     // PS (a5df8274) returns before the roll when the target has Shield Dust
     // or Covert Cloak, and rolls even when the hit knocked the target out
     // (trySetStatus then fails).
@@ -2641,7 +2734,7 @@ pub fn on_damaging_hit(
     // suppress the RNG draw entirely. One draw per unblocked hit keeps the
     // oracle stream aligned. Gliscor / Pecharunt signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Chain_(Ability)>.
-    if attacker_ability_id == data::ability_id::TOXICCHAIN && target_alive {
+    if attacker_ability_id == data::ability_id::TOXICCHAIN {
         let blocked = battle
             .side(target_side)
             .active_mon(target_slot as usize)
@@ -2663,49 +2756,8 @@ pub fn on_damaging_hit(
     // fires once: after the first steal the holder is no longer item-less.
     // Hoopa / Delphox / Klefki signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Magician_(Ability)>.
-    if attacker_ability_id == data::ability_id::MAGICIAN
-        && target_alive
-        && move_id != data::move_id::FLING
-    {
-        let attacker_itemless = battle
-            .side(attacker_side)
-            .active_mon(attacker_slot as usize)
-            .is_some_and(|a| a.item_id == u16::MAX);
-        let held = attacker_itemless && !battle.sticky_hold_blocks(target_side, target_slot, attacker_side, attacker_slot);
-        let stealable = battle
-            .side(target_side)
-            .active_mon(target_slot as usize)
-            .and_then(|t| {
-                if held
-                    && t.item_id != u16::MAX
-                    && !t.holds_own_mega_stone()
-                {
-                    Some(t.item_id)
-                } else {
-                    None
-                }
-            });
-        if attacker_itemless {
-            if let Some(item) = stealable {
-                if let Some(tm) =
-                    battle.side_mut(target_side).active_mon_mut(target_slot as usize)
-                {
-                    tm.item_id = u16::MAX;
-                    tm.sync_can_mega_evolve();
-                }
-                if let Some(am) =
-                    battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize)
-                {
-                    am.item_id = item;
-                    am.sync_can_mega_evolve();
-                }
-                // magician onAfterMoveSecondarySelf's line (data/abilities.ts).
-                if battle.plog() {
-                    let of = battle.p_ident(target_side, target_slot);
-                    battle.p_item_line("-item", attacker_side, attacker_slot, item, &format!("|[from] ability: Magician|[of] {of}"));
-                }
-            }
-        }
+    if attacker_ability_id == data::ability_id::MAGICIAN && target_alive {
+        magician_steal(battle, target_side, target_slot, move_id, attacker_side, attacker_slot);
     }
 
     // Wandering Spirit — PS data/abilities.ts:wanderingspirit. On a
@@ -2754,12 +2806,14 @@ pub fn on_damaging_hit(
                 .active_mon_mut(attacker_slot as usize)
             {
                 a.ability_override = target_id;
+                a.protean_used = false;
             }
             if let Some(t) = battle
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
                 t.ability_override = attacker_id;
+                t.protean_used = false;
             }
             // battle.skillSwap(source = attacker, target = holder)
             // (sim/battle.ts:1325-1332).
