@@ -12287,7 +12287,6 @@ self.trigger_emergency_exits();
             return;
         }
         // The attacker's HP at the hit's start, for the hit's Update below.
-        let attacker_hp_at_hit = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).map_or(0, |a| a.current_hp);
         // Per-hit damage — Beat Up per-ally arm + normal-move
         // per-hit re-roll arm, both threading through the
         // DamagePipeline (attacker item + Friend Guard). Lifted

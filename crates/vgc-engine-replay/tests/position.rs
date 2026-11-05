@@ -136,6 +136,31 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                 if battle["fairy_lock_turns"] == 0 {
                     battle.as_object_mut().unwrap().remove("fairy_lock_turns");
                 }
+                // Same for state added since that now survives save/load, at its
+                // resting value.
+                if battle["round_chain"] == serde_json::json!([[false, false], [false, false]]) {
+                    battle.as_object_mut().unwrap().remove("round_chain");
+                }
+                for side in ["p1", "p2"] {
+                    let Some(team) = battle[side]["team"].as_array_mut() else { continue };
+                    for mon in team {
+                        let m = mon.as_object_mut().unwrap();
+                        for (key, rest) in [
+                            ("lockin_true", serde_json::json!(0)),
+                            ("lost_focus", serde_json::json!(false)),
+                            ("metronome_count", serde_json::json!(0)),
+                            ("metronome_move", serde_json::json!(65535)),
+                            ("ate_berry", serde_json::json!(false)),
+                            ("added_type", serde_json::json!(255)),
+                            ("type_unseen", serde_json::json!(false)),
+                            ("borrowed_slot", serde_json::json!([65535, 0])),
+                        ] {
+                            if m.get(key) == Some(&rest) {
+                                m.remove(key);
+                            }
+                        }
+                    }
+                }
                 for v in [battle, rec.prefix_json(), rec.report.clone(), rec.board.clone(), rec.sets.clone()] {
                     all.push_str(&serde_json::to_string(&v).unwrap());
                     all.push('\n');
