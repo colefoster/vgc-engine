@@ -10231,6 +10231,11 @@ self.trigger_emergency_exits();
                 // this turn (queue.willMove; `pending_kind` clears as each
                 // action starts).
                 Some((self.moves()[move_id as usize].base_power as u32) * 2)
+            } else if move_id == data::move_id::ROUND && m.base_power != self.moves()[move_id as usize].base_power {
+                // A Round moved up by another Round (data/moves.ts round
+                // basePowerCallback: `move.sourceEffect === 'round'`). The
+                // damage formula reads the move table, not `m_owned`.
+                Some(m.base_power as u32)
             } else {
                 None
             };
@@ -52522,6 +52527,10 @@ mod r9_tests;
 #[cfg(test)]
 #[path = "battle_r10_tests.rs"]
 mod r10_tests;
+
+#[cfg(test)]
+#[path = "battle_ps_damage_tests.rs"]
+mod battle_ps_damage_tests;
 
 #[cfg(test)]
 #[path = "battle_r11_tests.rs"]
