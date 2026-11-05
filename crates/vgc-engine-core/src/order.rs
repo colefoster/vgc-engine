@@ -352,7 +352,10 @@ pub(crate) fn fractional_key(battle: &Battle, side: SideRef, actor_slot: u8, mid
         && crate::item::can_eat_berry(battle, side, m.item_id)
     {
         -1
-    } else if m.item_id == data::item_id::LAGGINGTAIL || m.item_id == data::item_id::FULLINCENSE {
+    } else if m.item_id == data::item_id::LAGGINGTAIL
+        || m.item_id == data::item_id::FULLINCENSE
+        || m.effective_ability_id() == data::ability_id::STALL
+    {
         1
     } else {
         0

@@ -4309,6 +4309,7 @@ self.trigger_emergency_exits();
                             1
                         } else if m.item_id == data::item_id::LAGGINGTAIL
                             || m.item_id == data::item_id::FULLINCENSE
+                            || m.effective_ability_id() == data::ability_id::STALL
                             || (status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
                         {
                             -1
@@ -4549,6 +4550,7 @@ self.trigger_emergency_exits();
                             1
                         } else if m.item_id == data::item_id::LAGGINGTAIL
                             || m.item_id == data::item_id::FULLINCENSE
+                            || m.effective_ability_id() == data::ability_id::STALL
                             || (status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
                         {
                             -1
