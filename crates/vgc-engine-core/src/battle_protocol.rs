@@ -1173,6 +1173,21 @@ impl Battle {
                 return;
             }
         }
+        // flowerveil onAllySetStatus: a move's own status prints it, a secondary's doesn't
+        // (data/abilities.ts flowerveil).
+        if user.is_some_and(|(us, usl)| !self.move_breaks_mold(us, usl)) {
+            let (t, n) = m.effective_types();
+            if t[..n as usize].contains(&4) {
+                let holder = (0..self.format().active_count() as u8).find(|&sl| {
+                    self.side(side).active_mon(sl as usize).is_some_and(|h| h.is_alive() && h.effective_ability_id() == data::ability_id::FLOWERVEIL)
+                });
+                if let Some(h) = holder {
+                    let of = self.p_ident(side, h);
+                    pmon!(self, "-block", side, slot, "|ability: Flower Veil|[of] {of}");
+                    return;
+                }
+            }
+        }
         let ab = m.effective_ability_id();
         use data::ability_id as a;
         let blocks = match status {
