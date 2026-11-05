@@ -89,7 +89,7 @@ impl Battle {
 
     /// PS `pokemon.speed` at the residual's updateSpeed: getActionSpeed,
     /// `10000 - speed` under Trick Room (sim/pokemon.ts getActionSpeed).
-    fn p_res_speed(&self, side: SideRef, slot: u8) -> i64 {
+    pub(crate) fn p_res_speed(&self, side: SideRef, slot: u8) -> i64 {
         let Some(m) = self.side(side).active_mon(slot as usize) else { return 0 };
         let tw = self.side(side).conditions.tailwind_turns > 0;
         let spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
