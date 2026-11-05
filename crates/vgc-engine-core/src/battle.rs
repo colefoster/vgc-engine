@@ -16445,10 +16445,17 @@ self.trigger_emergency_exits();
     /// no `-fail`; an already confused target returns false, so the caller's
     /// `-fail` fallback runs.
     fn confuse_from_move(&mut self, ts: SideRef, tslot: u8, us: SideRef, uslot: u8) {
+        if self.confuse_no_update(ts, tslot, us, uslot) == SpreadHit::True {
+            crate::item::try_consume_persim_berry(self, ts, tslot);
+        }
+    }
+
+    /// addVolatile('confusion') alone: Persim Berry waits for the next Update.
+    fn confuse_no_update(&mut self, ts: SideRef, tslot: u8, us: SideRef, uslot: u8) -> SpreadHit {
         use crate::pokemon::VolatileKind as V;
-        let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
+        let Some(t) = self.side(ts).active_mon(tslot as usize) else { return SpreadHit::Null };
         if !t.is_alive() {
-            return;
+            return SpreadHit::Null;
         }
         let breaks = self.side(us).active_mon(uslot as usize)
             .is_some_and(|a| matches!(a.effective_ability_slug(), "moldbreaker" | "teravolt" | "turboblaze"));
@@ -16458,19 +16465,19 @@ self.trigger_emergency_exits();
             && (ts, tslot) != (us, uslot)
             && self.side(us).active_mon(uslot as usize).is_none_or(|u| ts == us || u.effective_ability_id() != data::ability_id::INFILTRATOR);
         if t.volatiles.has(V::Confusion) {
-            return;
+            return SpreadHit::False;
         }
         if tempo {
             pmon!(self, "-immune", ts, tslot, "|confusion|[from] ability: Own Tempo");
-            return;
+            return SpreadHit::Null;
         }
         if misty {
             pmon!(self, "-activate", ts, tslot, "|move: Misty Terrain");
-            return;
+            return SpreadHit::Null;
         }
         if guarded {
             pmon!(self, "-activate", ts, tslot, "|move: Safeguard");
-            return;
+            return SpreadHit::Null;
         }
         let dur = 2 + self.rng.range(4);
         if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
@@ -21974,50 +21981,23 @@ self.trigger_emergency_exits();
                 self.confuse_from_move(ts, tslot, actor_side, actor_slot);
             }
             data::move_id::TEETERDANCE => {
-                // data/moves.ts teeterdance: `target: allAdjacent`. Accuracy is
-                // rolled per target, then each hit target is confused
-                // (sim/battle-actions.ts trySpreadMoveHit).
-                let mut tgts = [(SideRef::P1, 0u8); 3];
-                let mut k = 0;
-                let n = self.format().active_count() as u8;
-                for ts in [actor_side, actor_side.opposing()] {
-                    for sl in 0..n {
-                        if (ts, sl) != (actor_side, actor_slot)
-                            && self.side(ts).active_mon(sl as usize).is_some_and(|t| t.is_alive() && !t.commanding)
-                        {
-                            tgts[k] = (ts, sl);
-                            k += 1;
-                        }
-                    }
-                }
+                // data/moves.ts teeterdance: `target: allAdjacent`,
+                // `volatileStatus: 'confusion'`. Every target is confused before
+                // the hit's Update runs Persim Berry.
+                let (tgts, k) = self.all_adjacent_targets(actor_side, actor_slot);
                 let mut hit = [false; 3];
-                let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..k], &mut hit);
+                let mut res = [SpreadHit::Null; 3];
+                self.spread_status_sub_pass(actor_side, actor_slot, m, &tgts[..k], &hit[..k], &mut res[..k]);
                 for i in 0..k {
-                    let (ts, sl) = tgts[i];
-                    let Some(t) = self.side(ts).active_mon(sl as usize) else { continue };
-                    if t.is_protected_this_turn() {
-                        pmon!(self, "-activate", ts, sl, "|move: Protect");
-                        continue;
+                    if hit[i] && res[i] != SpreadHit::Sub {
+                        res[i] = self.confuse_no_update(tgts[i].0, tgts[i].1, actor_side, actor_slot);
                     }
-                    self.status_acc_boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
-                    self.status_acc_pair = Some((actor_side, actor_slot, ts, sl));
-                    hit[i] = self.rolled_accuracy_passed(m);
                 }
-                if self.plog() && k > 1 {
-                    let mut attr = String::from("[spread] ");
-                    let mut first = true;
-                    for i in 0..k {
-                        if hit[i] {
-                            if !first { attr.push(','); }
-                            first = false;
-                            attr.push_str(std::str::from_utf8(&crate::battle_protocol::slot_tag(tgts[i].0, tgts[i].1)).unwrap_or(""));
-                        }
-                    }
-                    self.p_attr(&attr);
-                }
+                self.spread_status_finish(actor_side, actor_slot, &tgts[..k], &hit, &res);
                 for i in 0..k {
-                    if hit[i] && !self.status_blocked_by_substitute(tgts[i].0, tgts[i].1, actor_side, actor_slot) {
-                        self.confuse_from_move(tgts[i].0, tgts[i].1, actor_side, actor_slot);
+                    if res[i] == SpreadHit::True {
+                        crate::item::try_consume_persim_berry(self, tgts[i].0, tgts[i].1);
                     }
                 }
             }
@@ -22095,49 +22075,19 @@ self.trigger_emergency_exits();
             }
             data::move_id::CORROSIVEGAS => {
                 // data/moves.ts corrosivegas: `target: allAdjacent`, onHit takeItem;
-                // `-fail|target|move: Corrosive Gas` when nothing was taken.
-                let mut tgts = [(SideRef::P1, 0u8); 3];
-                let mut k = 0;
-                let n = self.format().active_count() as u8;
-                for ts in [actor_side, actor_side.opposing()] {
-                    for sl in 0..n {
-                        if (ts, sl) != (actor_side, actor_slot)
-                            && self.side(ts).active_mon(sl as usize).is_some_and(|t| t.is_alive() && !t.commanding)
-                        {
-                            tgts[k] = (ts, sl);
-                            k += 1;
-                        }
-                    }
-                }
+                // `-fail|target|move: Corrosive Gas` when nothing was taken, and
+                // the handler's undefined relays true either way.
+                let (tgts, k) = self.all_adjacent_targets(actor_side, actor_slot);
                 let mut hit = [false; 3];
-                let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
-                for i in 0..k {
-                    let (ts, sl) = tgts[i];
-                    let Some(t) = self.side(ts).active_mon(sl as usize) else { continue };
-                    if t.is_protected_this_turn() {
-                        pmon!(self, "-activate", ts, sl, "|move: Protect");
-                        continue;
-                    }
-                    self.status_acc_boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
-                    self.status_acc_pair = Some((actor_side, actor_slot, ts, sl));
-                    hit[i] = self.rolled_accuracy_passed(m);
-                }
-                if self.plog() && k > 1 {
-                    let mut attr = String::from("[spread] ");
-                    let mut first = true;
-                    for i in 0..k {
-                        if hit[i] {
-                            if !first { attr.push(','); }
-                            first = false;
-                            attr.push_str(std::str::from_utf8(&crate::battle_protocol::slot_tag(tgts[i].0, tgts[i].1)).unwrap_or(""));
-                        }
-                    }
-                    self.p_attr(&attr);
-                }
+                self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..k], &mut hit);
+                let mut res = [SpreadHit::True; 3];
+                self.spread_status_sub_pass(actor_side, actor_slot, m, &tgts[..k], &hit[..k], &mut res[..k]);
                 for i in 0..k {
                     if !hit[i] { continue; }
                     let (ts, sl) = tgts[i];
-                    if self.status_blocked_by_substitute(ts, sl, actor_side, actor_slot) { continue; }
+                    if res[i] == SpreadHit::Sub {
+                        continue;
+                    }
                     let taken = self.side(ts).active_mon(sl as usize).and_then(|t| {
                         let sticky = t.effective_ability_id() == data::ability_id::STICKYHOLD;
                         (t.item_id != u16::MAX && !sticky && !t.holds_own_mega_stone()).then_some(t.item_id)
@@ -22160,6 +22110,7 @@ self.trigger_emergency_exits();
                         None => pmon!(self, "-fail", ts, sl, "|move: Corrosive Gas"),
                     }
                 }
+                self.spread_status_finish(actor_side, actor_slot, &tgts[..k], &hit, &res);
             }
             data::move_id::INGRAIN => {
                 // data/moves.ts ingrain: fails if present; heal in eot_ingrain,
@@ -23677,15 +23628,6 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                     return;
                 }
-                let n_uproar = self.format().active_count() as u8;
-                let uproar = |b: &Self, sd: SideRef, sl: u8| {
-                    b.side(sd).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.volatiles.has(crate::pokemon::VolatileKind::Uproar))
-                };
-                if (0..n_uproar).any(|sl| uproar(self, SideRef::P1, sl) || uproar(self, SideRef::P2, sl)) {
-                    let msg = if uproar(self, actor_side, actor_slot) { "|[msg]" } else { "" };
-                    pmon!(self, "-fail", actor_side, actor_slot, "|slp|[from] Uproar{msg}");
-                    return;
-                }
                 // conditions.ts slp onStart draws its duration even for Rest,
                 // which then overwrites it (data/moves.ts rest onHit).
                 let _ = self.rng.range(3);
@@ -24161,10 +24103,9 @@ self.trigger_emergency_exits();
                         }
                     }
                     let mut acc_hit = [true; 2];
-                    // hitStepTryImmunity (before accuracy): a powder-immune
-                    // target gets `-immune` and leaves the move's targets
-                    // (sim/battle-actions.ts:669-672), so `[spread]` omits it.
-                    if m.is_powder {
+                    if per_target_acc {
+                        self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..ntgt], &mut acc_hit[..ntgt]);
+                    } else if m.is_powder {
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                             if self.target_is_powder_immune(ts, tslot) {
                                 acc_hit[i] = false;
@@ -24172,52 +24113,9 @@ self.trigger_emergency_exits();
                             }
                         }
                     }
-                    if per_target_acc {
-                        let (mut any_rolled, mut any_hit) = (false, false);
-                        let user_noguard = self
-                            .side(actor_side)
-                            .active_mon(actor_slot as usize)
-                            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
-                        let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
-                        self.status_spread_rolls = ntgt > 1;
-                        for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
-                            let Some(t) = self.side(ts).active_mon(tslot as usize) else { continue };
-                            // hitStepInvulnerabilityEvent, then hitStepTryHitEvent's Protect:
-                            // the target leaves the move before accuracy and `[spread]`
-                            // (sim/battle-actions.ts).
-                            if t.semi_invuln != 0 && !user_noguard && t.effective_ability_id() != data::ability_id::NOGUARD {
-                                acc_hit[i] = false;
-                                self.p_miss(actor_side, actor_slot, ts, tslot);
-                                continue;
-                            }
-                            if fd.respects_protect && t.is_protected_this_turn() {
-                                acc_hit[i] = false;
-                                pmon!(self, "-activate", ts, tslot, "|move: Protect");
-                                continue;
-                            }
-                            if m.is_powder && self.target_is_powder_immune(ts, tslot) {
-                                continue;
-                            }
-                            let sure = user_noguard
-                                || t.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush)
-                                || t.effective_ability_id() == data::ability_id::NOGUARD;
-                            let boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
-                            self.status_sure_hit = sure;
-                            self.status_acc_boost = boost;
-                            self.status_acc_pair = Some((actor_side, actor_slot, ts, tslot));
-                            let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
-                            self.rng.set_move_context(self.turn + 1, sref(actor_side) + actor_slot, move_id, sref(ts) + tslot);
-                            self.rng.set_decision(RngDecision::Accuracy);
-                            any_rolled = true;
-                            acc_hit[i] = self.rolled_accuracy_passed(m);
-                            any_hit |= acc_hit[i];
-                        }
-                        self.status_spread_rolls = false;
-                        #[cfg(feature = "ps-rng")]
-                        {
-                            self.ps_status_missed = any_rolled && !any_hit;
-                        }
-                        let _ = (any_rolled, any_hit);
+                    let mut res = [SpreadHit::Null; 2];
+                    if !fd.bypasses_sub {
+                        self.spread_status_sub_pass(actor_side, actor_slot, m, &tgts[..ntgt], &acc_hit[..ntgt], &mut res[..ntgt]);
                     }
                     let mut any_moved = false;
                     for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
@@ -24236,9 +24134,7 @@ self.trigger_emergency_exits();
                             continue;
                         }
                         // Substitute absorbs it unless the move bypasses subs.
-                        if !fd.bypasses_sub
-                            && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0)
-                        {
+                        if res[i] == SpreadHit::Sub {
                             continue;
                         }
                         // Keep only the stats not vetoed per-stat (Clear Body
@@ -24261,7 +24157,10 @@ self.trigger_emergency_exits();
                         if k > 0 {
                             let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                             self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
-                            any_moved |= self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.boosts != before);
+                            if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.boosts != before) {
+                                any_moved = true;
+                                res[i] = SpreadHit::True;
+                            }
                             if ts != actor_side {
                                 self.after_foe_drop(ts, tslot, before, true);
                             } else {
@@ -24271,24 +24170,8 @@ self.trigger_emergency_exits();
                             }
                         }
                     }
-                    // A spread status move's `[spread]` (sim/battle-actions.ts:617-618).
-                    // A boost that moves nothing is a false hit; if every hit is,
-                    // the loop's `damage.fill(false)` empties the list
-                    // (data/mods/champions/scripts.ts hitStepMoveHitLoop).
-                    if self.plog() && ntgt > 1 {
-                        let mut attr = String::from("[spread] ");
-                        let mut first = true;
-                        for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
-                            if acc_hit[i] && any_moved {
-                                if !first {
-                                    attr.push(',');
-                                }
-                                first = false;
-                                attr.push_str(std::str::from_utf8(&crate::battle_protocol::slot_tag(ts, tslot)).unwrap_or(""));
-                            }
-                        }
-                        self.p_attr(&attr);
-                    }
+                    let _ = any_moved;
+                    self.spread_status_finish(actor_side, actor_slot, &tgts[..ntgt], &acc_hit[..ntgt], &res[..ntgt]);
                     return;
                 }
                 // Stockpile — PS data/moves.ts:stockpile. Each use adds a
@@ -24580,6 +24463,17 @@ struct MonEffectSnapshot {
     ability: (u16, bool),
     types: [u8; 2],
     species: u16,
+}
+
+/// One target's result in runMoveEffects' combineResults for a spread status
+/// move (sim/battle-actions.ts): the effect worked, returned false, returned
+/// null, or Substitute's onTryPrimaryHit returned null.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpreadHit {
+    True,
+    False,
+    Null,
+    Sub,
 }
 
 /// PS status moves with `flags.bypasssub` (data/moves.ts).
