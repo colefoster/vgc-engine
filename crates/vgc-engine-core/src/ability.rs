@@ -674,6 +674,11 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     #[cfg(feature = "ps-rng")]
     battle.ps_weather_suppressor_ties(ability_id);
+    // cloudnine onStart's eachEvent('WeatherChange') reaches Forecast (data/abilities.ts).
+    if matches!(ability_id, data::ability_id::CLOUDNINE | data::ability_id::AIRLOCK) {
+        battle.sync_weather_terrain_cache();
+        battle.refresh_forecast_formes();
+    }
     if ability_id == data::ability_id::MIMICRY && battle.terrain != crate::terrain::Terrain::None {
         battle.apply_mimicry(side, slot);
     }
