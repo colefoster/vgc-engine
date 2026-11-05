@@ -173,6 +173,19 @@ impl Battle {
 
     /// PS `Pokemon.toString()` for the mon in active `slot`: `p1a: Name`
     /// (`p1: Name` once its `|faint|` printed: no longer `isActive`).
+    /// An ident captured earlier, as it reads now: a mon no longer in that slot
+    /// prints without its position (sim/pokemon.ts toString).
+    pub(crate) fn p_current_ident(&self, ident: &str) -> String {
+        let (Some(pos), Some(name)) = (ident.get(..3), ident.get(5..)) else { return ident.to_string() };
+        let side = if pos.starts_with("p1") { SideRef::P1 } else { SideRef::P2 };
+        let slot = pos.as_bytes()[2].wrapping_sub(b'a');
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive()) && self.p_ident(side, slot).ends_with(name) {
+            ident.to_string()
+        } else {
+            format!("{}: {name}", &pos[..2])
+        }
+    }
+
     pub(crate) fn p_ident(&self, side: SideRef, slot: u8) -> String {
         let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
         if self.p_faint_logged(side, idx) {
@@ -1231,6 +1244,7 @@ impl Battle {
         if self.magic_room_turns == 1 {
             self.p_res(27, 6, None);
             let src = self.protocol.log().map(|l| l.magic_room_source.clone()).unwrap_or_default();
+            let src = self.p_current_ident(&src);
             self.p_push(format!("|-fieldend|move: Magic Room|[of] {src}"));
         }
         if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
