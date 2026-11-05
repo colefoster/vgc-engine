@@ -562,6 +562,10 @@ pub struct Battle {
     /// `order::action_order` rolls them itself.
     #[serde(skip)]
     pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
+    /// A Magic Bounce copy of a spread move is running: it can't bounce again
+    /// (move.hasBounced, data/abilities.ts:2441).
+    #[serde(skip)]
+    pub(crate) status_bounced: bool,
     /// A Stall holder that Mega Evolves this turn: FractionalPriority ran in
     /// resolveAction, before the megaEvo action (sim/battle-queue.ts:249), and sticks.
     #[serde(skip)]
@@ -1008,6 +1012,7 @@ impl Battle {
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
+            status_bounced: false,
             mega_keeps_stall: [[false; 2]; 2],
             queued_move_slot: [[255; 2]; 2],
             pursuit_intercepting: false,
@@ -17331,7 +17336,8 @@ self.trigger_emergency_exits();
     /// Protect, the absorbing abilities), powder and Prankster immunity, then
     /// accuracy (sim/battle-actions.ts:612-680). `hit[i]` says which targets
     /// remain.
-    fn spread_status_gate(&mut self, us: SideRef, usl: u8, m: &data::MoveDef, move_id: u16, tgts: &[(SideRef, u8)], hit: &mut [bool]) {
+    #[allow(clippy::too_many_arguments)]
+    fn spread_status_gate(&mut self, us: SideRef, usl: u8, m: &data::MoveDef, move_id: u16, tgts: &[(SideRef, u8)], hit: &mut [bool], pending_kind: &[[u8; 2]; 2], will_act: bool) {
         let (user_noguard, user_acc, breaks, prankster) = self.side(us).active_mon(usl as usize).map_or((false, 0, false, false), |a| {
             (
                 a.effective_ability_id() == data::ability_id::NOGUARD,
@@ -17362,6 +17368,24 @@ self.trigger_emergency_exits();
                 hit[i] = false;
                 pmon!(self, "-activate", ts, tsl, "|move: Protect");
             } else if breaks {
+            } else if ab == data::ability_id::MAGICBOUNCE && m.is_reflectable && !self.status_bounced && t.semi_invuln == 0 {
+                // magicbounce onTryHit (data/abilities.ts:2440-2448): useMove against the
+                // source, which for a spread move means all the holder's foes. This
+                // target drops out; the source's other targets carry on.
+                hit[i] = false;
+                if self.plog() {
+                    let holder = self.p_ident(ts, tsl);
+                    let at = self.p_ident(us, usl);
+                    let line = format!("|move|{holder}|{}|{at}|[from] ability: Magic Bounce", m.name);
+                    if let Some(l) = self.protocol.log_mut() {
+                        l.flush_pending_move();
+                        l.pending_move = Some(line);
+                        l.since_move = 0;
+                    }
+                }
+                self.status_bounced = true;
+                self.resolve_status_move_inner(ts, tsl, m, move_id, None, None, pending_kind, will_act);
+                self.status_bounced = false;
             } else if ab == data::ability_id::GOODASGOLD {
                 hit[i] = false;
                 pmon!(self, "-immune", ts, tsl, "|[from] ability: Good as Gold");
@@ -23083,7 +23107,7 @@ self.trigger_emergency_exits();
                 // the hit's Update runs Persim Berry.
                 let (tgts, k) = self.all_adjacent_targets(actor_side, actor_slot);
                 let mut hit = [false; 3];
-                self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..k], &mut hit);
+                self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..k], &mut hit, pending_kind, will_act);
                 let mut res = [SpreadHit::Null; 3];
                 self.spread_status_sub_pass(actor_side, actor_slot, m, &tgts[..k], &hit[..k], &mut res[..k]);
                 for i in 0..k {
@@ -23180,7 +23204,7 @@ self.trigger_emergency_exits();
                 // the handler's undefined relays true either way.
                 let (tgts, k) = self.all_adjacent_targets(actor_side, actor_slot);
                 let mut hit = [false; 3];
-                self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..k], &mut hit);
+                self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..k], &mut hit, pending_kind, will_act);
                 let mut res = [SpreadHit::True; 3];
                 self.spread_status_sub_pass(actor_side, actor_slot, m, &tgts[..k], &hit[..k], &mut res[..k]);
                 for i in 0..k {
@@ -25252,7 +25276,7 @@ self.trigger_emergency_exits();
                     }
                     let mut acc_hit = [true; 2];
                     if per_target_acc {
-                        self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..ntgt], &mut acc_hit[..ntgt]);
+                        self.spread_status_gate(actor_side, actor_slot, m, move_id, &tgts[..ntgt], &mut acc_hit[..ntgt], pending_kind, will_act);
                     } else if m.is_powder {
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                             if self.target_is_powder_immune(ts, tslot) {
