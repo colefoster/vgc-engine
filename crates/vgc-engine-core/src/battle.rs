@@ -3877,6 +3877,66 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// `ps-rng` only: the speed sort of `runEvent('ModifyAccuracy')` at
+    /// hitStepAccuracy's start (sim/battle-actions.ts:661): tied handlers
+    /// (priority, speed, subOrder) shuffle. Draws only.
+    #[cfg(feature = "ps-rng")]
+    fn ps_accuracy_ties(&mut self, us: SideRef, usl: u8, ts: SideRef, tsl: u8) {
+        if !self.rng.is_ps() {
+            return;
+        }
+        use data::ability_id as A;
+        use data::item_id as I;
+        let mut h = [(0i64, 0i64, 0i64); 8];
+        let mut n = 0;
+        let mut push = |k: (i64, i64, i64)| {
+            if n < h.len() {
+                h[n] = k;
+                n += 1;
+            }
+        };
+        if let Some(a) = self.side(us).active_mon(usl as usize) {
+            let spe = self.ps_speed(us, usl as usize).unwrap_or(0);
+            if matches!(a.effective_ability_id(), A::COMPOUNDEYES | A::HUSTLE) {
+                push((-1, spe, 7));
+            }
+            if matches!(a.effective_item_id(), I::WIDELENS | I::ZOOMLENS) {
+                push((-2, spe, 8));
+            }
+        }
+        if let Some(d) = self.side(ts).active_mon(tsl as usize) {
+            let spe = self.ps_speed(ts, tsl as usize).unwrap_or(0);
+            match d.effective_ability_id() {
+                A::SANDVEIL | A::SNOWCLOAK | A::TANGLEDFEET => push((-1, spe, 7)),
+                A::WONDERSKIN => push((10, spe, 7)),
+                _ => {}
+            }
+            if matches!(d.effective_item_id(), I::BRIGHTPOWDER | I::LAXINCENSE) {
+                push((-2, spe, 8));
+            }
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if self.side(side).active_mon(slot).is_some_and(|m| m.is_alive() && m.effective_ability_id() == A::VICTORYSTAR) {
+                    push((-1, self.ps_speed(side, slot).unwrap_or(0), 7));
+                }
+            }
+        }
+        let list = &mut h[..n];
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end.saturating_sub(1) {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
     /// `ps-rng` only: the speed sort of `runEvent('ModifyDamage')`, which
     /// PS's modifyDamage runs right after the damage roll
     /// (data/mods/champions/scripts.ts:299). findEventHandlers(attacker,
@@ -13780,6 +13840,10 @@ self.trigger_emergency_exits();
         damaging: bool,
         pending_kind: &[[u8; 2]; 2],
     ) -> AccuracyOutcome {
+        #[cfg(feature = "ps-rng")]
+        if !(m.blocked_by_protect && defender.is_protected_this_turn()) {
+            self.ps_accuracy_ties(actor_side, actor_slot, tside, tslot);
+        }
         let acc_comp = crate::accuracy::effective_accuracy(
             self,
             attacker,
@@ -16317,6 +16381,10 @@ self.trigger_emergency_exits();
     }
 
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
+        #[cfg(feature = "ps-rng")]
+        if let Some((us, usl, ts, tsl)) = self.status_acc_pair {
+            self.ps_accuracy_ties(us, usl, ts, tsl);
+        }
         if m.accuracy == 255 || self.status_sure_hit {
             return true;
         }
