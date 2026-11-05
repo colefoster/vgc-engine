@@ -21533,12 +21533,17 @@ self.trigger_emergency_exits();
                     let name = m.name;
                     let of = self.p_ident(ts, tslot);
                     pmon!(self, "-activate", actor_side, actor_slot, "|move: Trick|[of] {of}");
+                    // setItem runs the item's onStart ahead of the `-item` line:
+                    // White Herb goes at once (data/moves.ts trick, data/items.ts
+                    // whiteherb onStart).
                     if my_item != u16::MAX {
+                        crate::item::white_herb_on_start(self, ts, tslot);
                         self.p_item_line("-item", ts, tslot, my_item, &format!("|[from] move: {name}"));
                     } else {
                         self.p_item_line("-enditem", ts, tslot, your_item, &format!("|[silent]|[from] move: {name}"));
                     }
                     if your_item != u16::MAX {
+                        crate::item::white_herb_on_start(self, actor_side, actor_slot);
                         self.p_item_line("-item", actor_side, actor_slot, your_item, &format!("|[from] move: {name}"));
                     } else {
                         self.p_item_line("-enditem", actor_side, actor_slot, my_item, &format!("|[silent]|[from] move: {name}"));
