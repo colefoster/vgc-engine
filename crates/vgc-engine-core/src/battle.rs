@@ -24406,7 +24406,7 @@ self.trigger_emergency_exits();
                                 // order, as a spread (sim/battle-actions.ts:618).
                                 if self.plog() {
                                     if actor_slot == 1 {
-                                        if let Some(mut two) = self.protocol.log_mut().and_then(|l| l.pop_tail_lines(2, "|-boost|")) {
+                                        if let Some(mut two) = self.protocol.log_mut().and_then(|l| l.pop_tail_lines(2, "|-")) {
                                             two.swap(0, 1);
                                             for line in two {
                                                 self.p_push(line);
