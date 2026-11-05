@@ -4453,7 +4453,8 @@ self.trigger_emergency_exits();
                         // A recharging mon's action is 'recharge', whatever slot it names.
                         (m.is_alive()
                             && !m.must_recharge
-                            && matches!(id, data::move_id::BEAKBLAST | data::move_id::FOCUSPUNCH | data::move_id::SHELLTRAP))
+                            && matches!(id, data::move_id::BEAKBLAST | data::move_id::FOCUSPUNCH | data::move_id::SHELLTRAP
+                                | data::move_id::COUNTER | data::move_id::MIRRORCOAT))
                         .then_some(id)
                     });
                     if charge_move.is_some() && n_active > 1 {
@@ -4538,12 +4539,6 @@ self.trigger_emergency_exits();
                 // getRandomTarget: `gameType === 'singles'`).
                 if n > 0 && n_active > 1 {
                     let scripted = self.moves()[move_id as usize].target == 14;
-                    // Counter / Mirror Coat first resolve their targetless
-                    // beforeTurnMove action (sim/battle-queue.ts:106-112),
-                    // which picks a random foe too.
-                    if scripted && matches!(move_id, data::move_id::COUNTER | data::move_id::MIRRORCOAT) {
-                        let _ = self.rng.ps_random_range("random_target", 0, n as u32);
-                    }
                     let pick = self.rng.ps_random_range("random_target", 0, n as u32) as usize;
                     // Kept for every move: Mega Evolution can bring Stalwart
                     // before runMove's getTarget reads it (sim/battle.ts getTarget).
