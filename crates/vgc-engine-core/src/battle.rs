@@ -23077,7 +23077,6 @@ self.trigger_emergency_exits();
                 // which then overwrites it (data/moves.ts rest onHit).
                 let _ = self.rng.range(3);
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.current_hp = a.stats.hp;
                     a.status = Status::Sleep;
                     // Forced 3-turn sleep: PS sets time=startTime=3 after
                     // setStatus. Engine onBeforeMove decrements first +
@@ -23087,12 +23086,17 @@ self.trigger_emergency_exits();
                 }
                 // PR-EOT3: Rest overwrites any prior status (incl. DOT) with Sleep.
                 self.sync_status_dot_bit(actor_side, actor_slot);
-                // rest onHit: setStatus's `-status|slp|[from] move: Rest`, then
-                // heal(maxhp)'s `-heal|[silent]` (data/moves.ts rest).
-                if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.status == Status::Sleep && a.current_hp == a.stats.hp) {
-                    pmon!(self, "-status", actor_side, actor_slot, "|slp|[from] move: Rest");
-                    self.p_hp("-heal", actor_side, actor_slot, "|[silent]");
+                // rest onHit: setStatus's `-status|slp|[from] move: Rest`, Lum Berry's
+                // onAfterSetStatus, then heal(maxhp)'s `-heal|[silent]` (data/moves.ts rest,
+                // data/items.ts lumberry).
+                pmon!(self, "-status", actor_side, actor_slot, "|slp|[from] move: Rest");
+                if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.effective_item_id() == data::item_id::LUMBERRY) {
+                    crate::item::on_update_cures(self, actor_side, actor_slot);
                 }
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = a.stats.hp;
+                }
+                self.p_hp("-heal", actor_side, actor_slot, "|[silent]");
             }
             data::move_id::WISH => {
                 // Wish — delayed self/slot heal. PS data/moves.ts:wish
