@@ -2585,6 +2585,14 @@ pub(crate) fn calculate_damage_with_bp(
         dmg_mod = chain_modify(dmg_mod, 2, 1);
     }
 
+    // Dig — ×2 from Earthquake / Magnitude; Fly — ×2 from Gust / Twister (their
+    // conditions' onSourceModifyDamage, data/moves.ts dig, fly).
+    if (defender.semi_invuln == 1 && matches!(move_id, data::move_id::EARTHQUAKE | data::move_id::MAGNITUDE))
+        || (defender.semi_invuln == 3 && matches!(move_id, data::move_id::GUST | data::move_id::TWISTER))
+    {
+        dmg_mod = chain_modify(dmg_mod, 2, 1);
+    }
+
     // Tinted Lens — ×2 when the move was Not Very Effective. PS
     // `data/abilities.ts:tintedlens` onModifyDamage (attacker side). Venomoth /
     // Sigilyph.
