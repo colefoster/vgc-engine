@@ -374,6 +374,16 @@ impl Battle {
         }
     }
 
+    /// `-damage` from directDamage (Substitute, Belly Drum, confusion ...), which
+    /// doesn't set hurtThisTurn (sim/battle.ts directDamage, spreadDamage).
+    pub(crate) fn p_direct_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        let hurt = self.side(side).active_mon(slot as usize).is_some_and(|m| m.hurt_this_turn);
+        self.p_damage(side, slot, suffix);
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.hurt_this_turn = hurt;
+        }
+    }
+
     /// `|-damage|`, queueing a faint when the HP hit 0 (PS `damage` ->
     /// `faintQueue`, sim/battle.ts:2108-2142).
     #[inline(always)]
