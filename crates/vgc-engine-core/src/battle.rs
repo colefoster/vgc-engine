@@ -389,15 +389,15 @@ pub struct Battle {
     status_sub_blocks: bool,
     /// While a called move runs (sim/battle-actions.ts useMove from Sleep Talk,
     /// Copycat): the calling move. It skips runMove's BeforeMove and PP.
-    #[serde(skip)]
+    #[serde(skip, default = "no_move")]
     pub(crate) called_from: u16,
     /// A called move ran, for the caller's result.
     #[serde(skip)]
     called_ran: bool,
     /// PS `battle.lastMove` (sim/battle.ts clearActiveMove), for Copycat.
-    #[serde(skip)]
+    #[serde(skip, default = "no_move")]
     last_move_any: u16,
-    #[serde(skip)]
+    #[serde(skip, default = "no_move")]
     last_move_before: u16,
     /// Item thrown by Fling: its `-enditem` waits for the next Update
     /// (data/moves.ts fling condition onUpdate).
@@ -5220,6 +5220,7 @@ self.trigger_emergency_exits();
             // `|upkeep|` (sim/battle.ts:2817) precedes the action's Update.
             self.p_upkeep();
             // PS: the residual action ends with eachEvent('Update').
+            self.attract_update();
             self.update_hp_berries();
             self.in_residual = false;
             self.residual_emergency_exits(hp_before);
@@ -14133,10 +14134,7 @@ self.trigger_emergency_exits();
         //      the user took damage before its action via `onHit` on the
         //      `focuspunch` volatile (PS clears it on any move that
         //      `damage > 0`). Our engine collapses this to: fail if
-        //      `damaged_this_turn` is set when resolution starts. PP is
-        //      still ticked (PS "Lost focus!" message — move fails after
-        //      PP deduct in PS's flow, but the gen-9 outcome is the same:
-        //      the move slot pays PP, no damage is dealt).
+        //      `damaged_this_turn` is set when resolution starts.
         //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
         if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
             // focuspunch beforeMoveCallback: `cant` instead of `|move|`.
@@ -23459,6 +23457,10 @@ fn status_bypasses_sub(slug: &str) -> bool {
         | "perishsong" | "playnice" | "powder" | "powerswap" | "psychup" | "reflecttype" | "roar" | "roleplay"
         | "screech" | "sing" | "sketch" | "skillswap" | "snatch" | "speedswap" | "spite" | "supersonic"
         | "taunt" | "teatime" | "torment" | "whirlwind")
+}
+
+fn no_move() -> u16 {
+    u16::MAX
 }
 
 /// PS `flags.failcopycat` (data/moves.ts).
@@ -46438,8 +46440,9 @@ mod tests {
         assert_eq!(b.p1.team[0].lockin_move_slot, 255, "lockin slot cleared");
         // Outrage PP decremented further (lock forced re-use), slot 1 PP
         // unchanged (player choice ignored).
-        assert!(b.p1.team[0].pp[0] < outrage_pp_after_first,
-                "Outrage PP kept decreasing while locked");
+        // sim/battle-actions.ts runMove: a locked move pays no PP after its first use.
+        assert_eq!(b.p1.team[0].pp[0], outrage_pp_after_first,
+                "Outrage PP does not decrease while locked");
         assert_eq!(b.p1.team[0].pp[1], other_pp_before,
                 "slot 1 PP unchanged — locked into Outrage");
     }
@@ -49617,9 +49620,7 @@ mod tests {
                 "Iron Hands took Dragon Claw damage");
         assert_eq!(b.p2.team[0].current_hp, chomp_max,
                    "Focus Punch must fail when user was hit this turn");
-        // PP was deducted on the failed Focus Punch (PS behavior). Focus
-        // Punch base PP 20 → PP-maxed to 32, so one use leaves 31.
-        assert_eq!(b.p1.team[0].pp[0], 31, "Focus Punch PP ticked on failure");
+        assert_eq!(b.p1.team[0].pp[0], 32, "a lost Focus Punch pays no PP (beforeMoveCallback precedes deductPP)");
     }
 
     #[test]
