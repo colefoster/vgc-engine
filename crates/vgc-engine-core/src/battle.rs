@@ -19474,7 +19474,10 @@ self.trigger_emergency_exits();
                         crate::terrain::Terrain::Electric if grounded => pmon!(self, "-activate", side, slot, "|move: Electric Terrain"),
                         _ => {}
                     }
-                    self.try_set_status_from(side, slot, Status::Sleep, src_side);
+                    // safeguard onSetStatus lets `effect.id === 'yawn'` through
+                    // (data/moves.ts safeguard).
+                    let _ = src_side;
+                    self.try_set_status_from(side, slot, Status::Sleep, side);
                     // lumberry onAfterSetStatus (data/items.ts).
                     if self.side(side).active_mon(slot as usize).is_some_and(|m| m.status == Status::Sleep && m.effective_item_id() == data::item_id::LUMBERRY) {
                         crate::item::on_update_cures(self, side, slot);
