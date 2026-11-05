@@ -20882,6 +20882,15 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gastro_Acid_(move)>
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((opp, slot)) = opp_target {
+                    // gastroacid onTryHit: a cantsuppress ability fails the move.
+                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| ps_cantsuppress(current_ability(t))) {
+                        self.ps_status_failed();
+                        return;
+                    }
+                    // The volatile's onStart prints `-endability`.
+                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive()) {
+                        pmon!(self, "-endability", opp, slot, "");
+                    }
                     if let Some(target) = self.side_mut(opp).active_mon_mut(slot as usize) {
                         if target.is_alive() {
                             target.ability_suppressed = true;
