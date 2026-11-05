@@ -17539,9 +17539,12 @@ self.trigger_emergency_exits();
                     ally_power_spot: false,
                     ally_battery: false,
                     steely_spirit_holders: 0,
-                    // Delayed Future Sight / Doom Desire hit — no Friend Guard
-                    // ally check (slot-condition resolution).
-                    defender_friend_guarded: false,
+                    // Friend Guard's onAnyModifyDamage applies to any move hit
+                    // (data/abilities.ts friendguard).
+                    defender_friend_guarded: (0..self.format().active_count()).any(|s| {
+                        s != tslot as usize
+                            && self.side(tside).active_mon(s).is_some_and(|ally| ally.is_alive() && ally.effective_ability_id() == data::ability_id::FRIENDGUARD)
+                    }),
                     // The delayed hit has no live attacker in the turn queue;
                     // Analytic does not apply.
                     attacker_moves_last: false,
