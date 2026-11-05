@@ -2424,6 +2424,11 @@ impl Battle {
     /// onResidual (data/abilities.ts opportunist, data/items.ts mirrorherb). The
     /// copy writes the stages directly, so it can't chain into another copy.
     pub(crate) fn flush_foe_boost_copies(&mut self) {
+        // Nothing pending is the common case: skip the Speed sort.
+        let pending = |sd: &Side| sd.active[..self.format().active_count().min(2)].iter().any(|&i| sd.team.get(i as usize).is_some_and(|m| m.foe_boosts_pending != [0; 7]));
+        if !pending(&self.p1) && !pending(&self.p2) {
+            return;
+        }
         let (order, k) = self.residual_speed_order();
         for &(side, slot) in &order[..k] {
             let Some(m) = self.side(side).active_mon(slot as usize) else { continue };
