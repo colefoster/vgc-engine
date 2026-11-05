@@ -122,6 +122,21 @@ pub(crate) fn blocks_opposing_stat_drop(mon: &crate::pokemon::Pokemon) -> bool {
 /// 3=SpD, 4=Spe, 5=Acc, 6=Eva. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Big_Pecks_(Ability)>,
 /// <https://bulbapedia.bulbagarden.net/wiki/Keen_Eye_(Ability)>.
+/// A move's stat drop: Clear Body, White Smoke, Hyper Cutter, Big Pecks, Keen
+/// Eye and Illuminate are breakable (`flags: {breakable: 1}`, data/abilities.ts),
+/// Full Metal Body and Clear Amulet aren't.
+pub(crate) fn blocks_move_stat_drop(
+    mon: &crate::pokemon::Pokemon,
+    breaks_mold: bool,
+    stat_idx: u8,
+) -> bool {
+    if breaks_mold {
+        return mon.effective_ability_id() == data::ability_id::FULLMETALBODY
+            || mon.item_id == data::item_id::CLEARAMULET;
+    }
+    blocks_opposing_stat_drop_for(mon, stat_idx)
+}
+
 pub(crate) fn blocks_opposing_stat_drop_for(
     mon: &crate::pokemon::Pokemon,
     stat_idx: u8,
