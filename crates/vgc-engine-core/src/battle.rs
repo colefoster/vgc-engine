@@ -13468,6 +13468,9 @@ self.trigger_emergency_exits();
         // +1 PP per foe target holding active Pressure. Computed before the
         // mutable borrow; for charge / semi-invuln moves PS applies this only
         // on turn 1, so it sits inside the `!skip_pp_deduct` arm.
+        // runMove: a locked move (getLockedMove: lockedmove's onLockMove) spends no PP
+        // (sim/battle-actions.ts runMove).
+        let skip_pp_deduct = skip_pp_deduct || attacker.lockin_turns > 0;
         let pressure_extra = if skip_pp_deduct {
             0
         } else {
@@ -14619,6 +14622,7 @@ self.trigger_emergency_exits();
         // of lock, target gets confused. The PS volatile auto-decrements
         // each turn; we mirror with `lockin_turns` counting *remaining*
         // turns including the current one.
+        let mut fatigue_pending = false;
         if any_damage_dealt > 0
             && matches!(move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH)
         {
@@ -14685,10 +14689,7 @@ self.trigger_emergency_exits();
             // is the only in-engine confusion source today; cure here if the
             // user holds Persim and is now confused.
             // lockedmove onEnd: confusion's `-start|[fatigue]` (data/conditions.ts:166-167).
-            if fatigue {
-                pmon!(self, "-start", actor_side, actor_slot, "|confusion|[fatigue]");
-            }
-            crate::item::try_consume_persim_berry(self, actor_side, actor_slot);
+            fatigue_pending = fatigue;
         }
 
         if any_damage_dealt > 0
@@ -14874,6 +14875,11 @@ self.trigger_emergency_exits();
                     .unwrap_or_default();
                 self.p_heal(actor_side, actor_slot, &format!("|[from] item: Shell Bell{of}"));
             }
+        }
+        // lockedmove's onAfterMove ends the lock: confusion's `-start|[fatigue]` comes
+        // after the hit loop's faints and AfterMoveSecondarySelf (data/conditions.ts).
+        if fatigue_pending && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive()) {
+            pmon!(self, "-start", actor_side, actor_slot, "|confusion|[fatigue]");
         }
     }
 
@@ -45396,10 +45402,10 @@ mod tests {
         assert!(b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
                 "after lock ends, Confusion volatile added");
         assert_eq!(b.p1.team[0].lockin_move_slot, 255, "lockin slot cleared");
-        // Outrage PP decremented further (lock forced re-use), slot 1 PP
-        // unchanged (player choice ignored).
-        assert!(b.p1.team[0].pp[0] < outrage_pp_after_first,
-                "Outrage PP kept decreasing while locked");
+        // A locked move spends no PP (sim/battle-actions.ts runMove's getLockedMove),
+        // and slot 1 PP is unchanged (player choice ignored).
+        assert_eq!(b.p1.team[0].pp[0], outrage_pp_after_first,
+                "Outrage PP stays put while locked");
         assert_eq!(b.p1.team[0].pp[1], other_pp_before,
                 "slot 1 PP unchanged — locked into Outrage");
     }
