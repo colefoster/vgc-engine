@@ -7940,12 +7940,6 @@ self.trigger_emergency_exits();
                 self.p_attr(&format!("[anim] Shell Side Arm {cat}"));
             }
         }
-        // useMoveInner's runEvent('ModifyMove'): Gravity's and Wonder Room's
-        // field handlers tie (data/moves.ts gravity, wonderroom).
-        #[cfg(feature = "ps-rng")]
-        if self.gravity_turns > 0 && self.wonder_room_turns > 0 && self.rng.is_ps() {
-            let _ = self.rng.ps_random_range("shuffle", 0, 2);
-        }
         let m = &m_owned;
 
         // 2c. Two-turn charge / semi-invulnerable moves (Solar Beam family
