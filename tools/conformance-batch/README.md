@@ -23,7 +23,7 @@ index — so a punch-list note like "out_13 = Trevenant Curse" pointed at a
 python3 tools/conformance-batch/mkjobs.py [num_pairings] [seeds_per_pairing]
 
 # 2. Run them through the PS golden driver → out_<id>.json.
-#    Skips any out_<id>.json that already exists (CONF_FORCE=1 to re-run).
+#    Reuses an existing out_<id>.json only if its provenance matches (below).
 node tools/conformance-batch/run-batch.js
 
 # 3. Check a battle against the engine (filename carries the stable id):
@@ -41,13 +41,37 @@ incremental.
 | `CONF_TEAMS_FILE` | `$MIMIKYU_DIR/data/generated_teams/regmb_random_100.txt` (`MIMIKYU_DIR` defaults to a `mimikyu` checkout next to this repo) | team list (`=== Team N ===` separated) |
 | `CONF_JOBS_DIR` | `/tmp/conf-batch/jobs` | job inputs |
 | `CONF_OUT_DIR` | `/tmp/conf-batch` | `out_<id>.json` outputs |
-| `CONF_FORCE` | unset | `1` re-runs jobs whose output already exists |
+| `CONF_RECAPTURE` | unset | `1` re-captures stale outputs (old file kept in `stale/`) |
+| `CONF_FORCE` | unset | `1` re-runs every job (old files kept in `stale/`) |
+| `PS_DIST` | `/tmp/pokemon-showdown-research/dist/sim` | PS build the driver loads |
+
+## Provenance and stale captures
+
+A battle ID does not cover the oracle, so `run-batch.js` stamps every capture
+with `_meta.provenance`:
+
+- `ps_revision`: git HEAD of the PS checkout behind `PS_DIST`
+  (`pokemon-showdown@<version>` for an npm install; `-dirty` suffix if tracked
+  files are modified);
+- `driver_sha256`: sha256 of `ps-golden-driver/conformance-driver.js`;
+- `inputs_sha256`: sha256 of the job's format, seed, max_turns and both teams.
+
+An existing output is reused only when all three match the current run. A
+legacy capture with no provenance, a changed PS revision, driver or inputs,
+or unreadable/truncated JSON is listed under `STALE` with the reason; the batch
+exits 1 and the file is left as it is. A dirty or unknown current PS revision
+never reuses anything. Re-capture with `CONF_RECAPTURE=1`: each stale file
+moves to `stale/out_<id>.<n>.json` (outside the `out_*.json` glob) before the
+new capture is written.
+
+Tests: `node --test tools/conformance-batch/provenance.test.js` (no PS needed).
 
 ## Re-capturing a suspect golden
 
 If the engine disagrees with PS but agrees with `@smogon/calc` (the independent
-oracle), the PS capture may be stale/defective. Delete that `out_<id>.json` and
-re-run `run-batch.js` to regenerate just that battle from the current PS clone.
+oracle), the PS capture may be stale/defective. Re-run that battle with
+`CONF_FORCE=1` and a jobs dir holding only its `job_<id>.json`; the old capture
+is kept in `stale/`.
 
 The output JSON carries its own `id` field; `_meta.log` holds the PS battle log
 (see `../ps-golden-driver/conformance-driver.js` for the capture shape).

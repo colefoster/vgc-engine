@@ -330,6 +330,13 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
+    /// Struggle landed on a target for 0 damage (Sturdy on a 1 HP mon).
+    #[serde(skip)]
+    pub(crate) struggle_zero_hit: bool,
+    /// The format doesn't enforce legal abilities, so requests don't hint at a
+    /// foe's possible trapping abilities (sim/battle.ts getRequests).
+    #[serde(skip)]
+    pub(crate) ps_no_maybe_trap: bool,
     /// Opt-in: `legal_choices` also offers the adjacent ally as the target
     /// of a `normal` / `any` move in doubles, as PS accepts (`move N -1/-2`,
     /// sim/battle.ts:2399-2429 validTargetLoc). Off by default: turning it
@@ -842,6 +849,8 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
+            struggle_zero_hit: false,
+            ps_no_maybe_trap: false,
             ally_targets: false,
             defer_white_herb: false,
             white_herb_move_defer: false,
@@ -1103,6 +1112,7 @@ impl Battle {
     /// other format standard gen 9. See [`crate::format_rules::is_champions_format`].
     pub fn set_format_id(&mut self, id: &str) {
         self.champions = crate::format_rules::is_champions_format(id);
+        self.ps_no_maybe_trap = crate::format_rules::lacks_obtainable_abilities(id);
     }
 
     /// Effective weather as seen by damage formula and weather residuals.
@@ -3089,6 +3099,38 @@ self.trigger_emergency_exits();
             st = end;
         }
         perm
+    }
+
+    /// `ps-rng` only: `runEvent('AfterMega')` speed-sorts its `onAnyAfterMega`
+    /// handlers: White Herb, Mirror Herb, Eject Pack and Opportunist
+    /// (sim/battle-actions.ts runMegaEvo; data/items.ts, data/abilities.ts). Abilities
+    /// and items have different subOrders, so they never tie with each other.
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_mega_ties(&mut self) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 8];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
+                let item = matches!(
+                    m.item_id,
+                    data::item_id::WHITEHERB | data::item_id::MIRRORHERB | data::item_id::EJECTPACK
+                );
+                let ability = m.effective_ability_id() == data::ability_id::OPPORTUNIST;
+                let Some(speed) = self.ps_speed(side, slot) else { continue };
+                if ability {
+                    keys[n] = speed * 2 + 1;
+                    n += 1;
+                }
+                if item {
+                    keys[n] = speed * 2;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
     }
 
     /// `ps-rng` only: `Battle.eachEvent` / `runSwitch` speed-sort over the
@@ -5382,6 +5424,10 @@ self.trigger_emergency_exits();
     fn apply_megas(&mut self, megas: ([(SideRef, u8); 4], usize)) {
         for &(side, actor_slot) in &megas.0[..megas.1] {
             self.try_mega_evolve(side, actor_slot);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_after_mega_ties();
+            }
             // PS: the megaEvo action ends with eachEvent('Update').
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
@@ -6627,6 +6673,15 @@ self.trigger_emergency_exits();
                 // turnLoop (sim/battle.ts:2915, :2939-2940).
                 if self.plog() && !std::mem::replace(&mut self.p_mid_turn_resumed, true) {
                     self.p_turn_loop_start();
+                }
+                // Before the switch request, a living flagged mon runs
+                // runPursuitActivation: BeforeSwitchOut and eachEvent('Update')
+                // (sim/battle.ts runAction, sim/battle-actions.ts, PS 437926906).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() && !revives
+                    && self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive())
+                {
+                    self.ps_active_ties(false, "shuffle");
                 }
                 // Find the first unconsumed deferred switch matching this
                 // slot and pop it. If none is queued, a self-switch silently
@@ -10627,7 +10682,11 @@ self.trigger_emergency_exits();
             let chosen = target
                 .filter(|t| t.side == opp && matches!(m.target, 0 | 4 | 10))
                 .and_then(|t| self.side(opp).active_mon(t.slot as usize).filter(|d| d.is_alive()));
+            // Prankster never blocks a move aimed at an ally
+            // (!targets[i].isAlly(pokemon), sim/battle-actions.ts hitStepTryImmunity).
+            let aimed_at_ally = target.is_some_and(|t| t.side == actor_side);
             let blocked = match chosen {
+                _ if aimed_at_ally => false,
                 Some(d) => is_dark(d),
                 None => {
                     let all_targets_dark = (0..n)
@@ -11558,6 +11617,9 @@ self.trigger_emergency_exits();
         self.p_tag(crate::protocol::step::DAMAGE, ctx.tside, ctx.tslot);
         let sub_absorbed = dmg.min(ctx.defender.substitute_hp());
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
+        if ctx.move_id == data::move_id::STRUGGLE && !hit_sub && effective_dmg == 0 {
+            self.struggle_zero_hit = true;
+        }
         if hit_sub && self.plog() {
             // substitute onTryPrimaryHit (data/moves.ts substitute).
             if self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.substitute_hp() == 0) {
@@ -11824,7 +11886,7 @@ self.trigger_emergency_exits();
         self.p_tag(crate::protocol::step::AFTER_SECONDARY, ctx.tside, ctx.tslot);
 
         // Red Card / Eject Button (PS onAfterMoveSecondary).
-        self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg);
+        self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg, ctx.move_id);
         self.p_tag(crate::protocol::step::AFTER_FAINT, ctx.tside, ctx.tslot);
         self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
         self.p_set_hit(hit_idx as u8);
@@ -11943,7 +12005,18 @@ self.trigger_emergency_exits();
         actor_slot: u8,
         hit_sub: bool,
         effective_dmg: u16,
+        move_id: u16,
     ) {
+        // Sheer Force skips the AfterMoveSecondary event, except in Champions
+        // (sim/battle-actions.ts afterMoveSecondaryEvent; data/mods/champions/
+        // scripts.ts, PS fbafa7251).
+        let m = &self.moves()[move_id as usize];
+        if !self.champions
+            && crate::damage::move_is_sheer_force_boosted(m)
+            && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force)
+        {
+            return;
+        }
         if !hit_sub && effective_dmg > 0 {
             // Reactive-switch items — PS `onAfterDamage` slot.
             //   Red Card (forces ATTACKER out) runs BEFORE Eject
@@ -11970,6 +12043,53 @@ self.trigger_emergency_exits();
                     self, tside, tslot,
                 );
             }
+            self.try_pickpocket(tside, tslot, actor_side, actor_slot, move_id);
+        }
+    }
+
+    /// Pickpocket's onAfterMoveSecondary (data/abilities.ts pickpocket): an
+    /// itemless holder takes the item of the mon that made contact.
+    fn try_pickpocket(&mut self, tside: SideRef, tslot: u8, source_side: SideRef, source_slot: u8, move_id: u16) {
+        if (tside, tslot) == (source_side, source_slot) {
+            return;
+        }
+        let m = &self.moves()[move_id as usize];
+        let Some(source) = self.side(source_side).active_mon(source_slot as usize) else { return };
+        if !crate::damage::move_makes_contact(m, source) {
+            return;
+        }
+        let holder_ready = self.side(tside).active_mon(tslot as usize).is_some_and(|t| {
+            t.is_alive()
+                && t.effective_ability_id() == data::ability_id::PICKPOCKET
+                && t.item_id == u16::MAX
+                && !t.pending_self_switch()
+        });
+        if !holder_ready {
+            return;
+        }
+        // source.takeItem(target): Sticky Hold and items a mon can't lose keep it.
+        let Some(item) = self.side(source_side).active_mon(source_slot as usize).and_then(|s| {
+            (s.item_id != u16::MAX
+                && s.effective_ability_id() != data::ability_id::STICKYHOLD
+                && !s.holds_own_mega_stone()
+                && !s.pending_self_switch())
+            .then_some(s.item_id)
+        }) else {
+            return;
+        };
+        if self.plog() {
+            let of = self.p_ident(source_side, source_slot);
+            let name = crate::battle_protocol::item_name(item);
+            pmon!(self, "-enditem", source_side, source_slot, "|{name}|[silent]|[from] ability: Pickpocket|[of] {of}");
+            pmon!(self, "-item", tside, tslot, "|{name}|[from] ability: Pickpocket|[of] {of}");
+        }
+        if let Some(s) = self.side_mut(source_side).active_mon_mut(source_slot as usize) {
+            s.item_id = u16::MAX;
+            s.sync_can_mega_evolve();
+        }
+        if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+            t.item_id = item;
+            t.sync_can_mega_evolve();
         }
     }
 
@@ -13196,13 +13316,15 @@ self.trigger_emergency_exits();
                 }
                 // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
                 // Electro Shot in Rain) or Power Herb consumption.
-                // Mega Sol reads as sun for the user's own moves except
-                // Electro Shot (sim/pokemon.ts:2193 effectiveWeather).
+                // Mega Sol reads as sun for all the user's own moves, so
+                // Electro Shot charges under rain (sim/pokemon.ts effectiveWeather,
+                // PS 89905975e).
                 let mega_sol = attacker.effective_ability_id() == data::ability_id::MEGASOL;
                 let weather_skip = (matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
                     && (mega_sol
                         || matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)))
                     || (move_id == data::move_id::ELECTROSHOT
+                        && !mega_sol
                         && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
                 let power_herb = attacker.item_id == data::item_id::POWERHERB;
                 if weather_skip {
@@ -14635,7 +14757,10 @@ self.trigger_emergency_exits();
         // move id. `directDamage` bypasses the `onDamage` event, so neither
         // Magic Guard nor Rock Head reduces it.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
-        if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
+        // A hit that does 0 damage recoils too (sim/battle-actions.ts, PS 4148c1187).
+        if move_id == data::move_id::STRUGGLE
+            && (any_damage_dealt > 0 || std::mem::take(&mut self.struggle_zero_hit))
+        {
             self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -16369,6 +16494,23 @@ self.trigger_emergency_exits();
             if holder_sync {
                 // synchronize onAfterSetStatus (data/abilities.ts:4857-4866).
                 pmon!(self, "-activate", side, slot, "|ability: Synchronize");
+                // The source's trySetStatus treats Synchronize like a status move, so a
+                // failure shows a line (sim/pokemon.ts setStatus, data/abilities.ts synchronize).
+                if let Some((current, immune)) = self
+                    .side(source_side)
+                    .active_mon(source_slot as usize)
+                    .filter(|m| m.is_alive())
+                    .map(|m| (m.status, is_type_immune_to_status(m.effective_types(), status)))
+                {
+                    if current == status {
+                        pmon!(self, "-fail", source_side, source_slot, "|{}", crate::battle_protocol::status_id(status));
+                    } else if !matches!(current, Status::None) {
+                        pmon!(self, "-fail", side, slot);
+                        self.p_attr("[still]");
+                    } else if immune {
+                        pmon!(self, "-immune", source_side, source_slot);
+                    }
+                }
                 self.try_set_status_from(source_side, source_slot, status, side);
             }
         }
@@ -16578,8 +16720,23 @@ self.trigger_emergency_exits();
             )
         };
         if dmg > 0 {
+            if self.plog() {
+                let attacker = self.side(src_side).team[src_idx].clone();
+                if let Some(defender) = self.side(tside).active_mon(tslot as usize).cloned() {
+                    self.p_hit_messages(src_side, 0, tside, tslot, entry.move_id, &attacker, &defender, ps_crit);
+                }
+            }
+            // A future move no longer removes Endure before it hits
+            // (data/conditions.ts futuremove, PS 0ac140354).
+            let endured = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                d.volatiles.has(crate::pokemon::VolatileKind::Endure) && d.current_hp > 0 && dmg >= d.current_hp
+            });
+            if endured {
+                pmon!(self, "-activate", tside, tslot, "|move: Endure");
+            }
             if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                d.current_hp = d.current_hp.saturating_sub(dmg);
+                let dealt = if endured { d.current_hp - 1 } else { dmg };
+                d.current_hp = d.current_hp.saturating_sub(dealt);
                 if d.current_hp == 0 {
                     d.fainted = true;
                 }
@@ -20225,12 +20382,19 @@ self.trigger_emergency_exits();
                                 u.fainted = true;
                             }
                         }
-                        // curse: onHit's directDamage, then the volatile's `-start`
-                        // (data/moves.ts curse).
+                        // Curse's volatileStatus starts before its onHit's
+                        // directDamage (data/moves.ts curse, sim/battle-actions.ts
+                        // runMoveEffects). Champions' onHit pays first, then adds
+                        // the volatile (data/mods/champions/moves.ts curse).
                         if self.plog() {
                             let of = self.p_ident(actor_side, actor_slot);
-                            self.p_damage(actor_side, actor_slot, "");
-                            pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
+                            if self.champions {
+                                self.p_damage(actor_side, actor_slot, "");
+                                pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
+                            } else {
+                                pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
+                                self.p_damage(actor_side, actor_slot, "");
+                            }
                         }
                     }
                 }
@@ -20677,17 +20841,29 @@ self.trigger_emergency_exits();
                         actor_side,
                         actor_slot,
                     );
-                    if let Some(a) =
-                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
-                    {
-                        let _ = a.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::NoRetreat,
-                            turns_remaining: 0,
-                            payload: 0,
-                        });
+                    // noretreat condition onStart: addVolatile('trapped') fails on
+                    // a mon already trapped. Then Champions keeps the volatile
+                    // silently, and elsewhere the volatile doesn't stick
+                    // (data/moves.ts, data/mods/champions/moves.ts noretreat).
+                    let already_trapped = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::Trapped));
+                    if !already_trapped || self.champions {
+                        if let Some(a) =
+                            self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                        {
+                            let _ = a.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::NoRetreat,
+                                turns_remaining: 0,
+                                payload: 0,
+                            });
+                        }
                     }
-                    // noretreat condition onStart.
-                    pmon!(self, "-start", actor_side, actor_slot, "|move: No Retreat");
+                    if !already_trapped {
+                        pmon!(self, "-activate", actor_side, actor_slot, "|trapped");
+                        pmon!(self, "-start", actor_side, actor_slot, "|move: No Retreat");
+                    }
                 }
             }
             data::move_id::GASTROACID => {
@@ -25011,11 +25187,11 @@ mod tests {
     #[cfg(feature = "ps-rng")]
     #[test]
     fn ps_rng_a_u_turn_switch_runs_the_switch_sorts() {
-        // U-turn's runAction ends with its Update before the switch request
-        // (sim/battle.ts:2861, :2900); the switch action then ends with an
-        // Update and the queued runSwitch speed-sorts every active and ends
-        // with its own Update. Tied Snorlax, U-turn into another Snorlax vs
-        // Calm Mind: PS draws 14 shuffles on turn 1.
+        // U-turn's runAction ends with its Update and runPursuitActivation's
+        // Update before the switch request (PS 437926906); the switch action
+        // then ends with an Update and the queued runSwitch speed-sorts every
+        // active and ends with its own Update. Tied Snorlax, U-turn into
+        // another Snorlax vs Calm Mind: PS draws 15 shuffles on turn 1.
         let mut rng = Rng::ps("sodium,00000000000000000000000000000012").unwrap();
         rng.ps_mut().unwrap().enable_trace();
         let mut b = Battle::with_rng(
@@ -25034,7 +25210,7 @@ mod tests {
         assert_eq!(b.p1.active[0], 1);
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
-        assert_eq!(shuffles, 14, "{trace:#?}");
+        assert_eq!(shuffles, 15, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]

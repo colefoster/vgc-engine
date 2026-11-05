@@ -3270,3 +3270,7 @@ state, requests or log lines only.
   against the unpacked wheel (not installed).
 - `perf_bench --battles 5000`, 4 interleaved seeds: ~+1.2% ns/step vs
   `22129e7`, 0 allocations.
+
+## 2026-11-04: Showdown sync to 16db150a
+
+See [2026-11-04-showdown-sync.md](2026-11-04-showdown-sync.md) for each fix and its Showdown source, and `tools/protocol/ps-suite/` for the regression scenarios.

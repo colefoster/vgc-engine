@@ -17,6 +17,18 @@ CARGO_BUILD_JOBS=4 maturin build --release --features ps-rng -i PYTHON -o ../../
 | 0.4.2 | 426ac13 (explicit recharge/lock `legal_choices`, `prior_sample_seed`) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site), mimikyu analytics venv |
 | 0.5.0 | a2d60bf niche doubles pass: opt-in `ally_targets` (default off; on = larger doubles action space), Mean Look/Block/Jaw Lock/Fairy Lock traps, Parting Shot ally/no-change fixes, Pollen Puff ally Telepathy/Heal Block, Quick Guard adjusted priority + Triage/Gale Wings, Utility Umbrella holder orientation, Weakness Policy real type, bincode round-trip fix. Battle JSON now always carries `fairy_lock_turns`. | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | **not installed** (dist only; install per the rule below) |
 
+## Release workflow (CI wheels)
+
+`.github/workflows/release.yml` builds wheels with `--features ps-rng` for CPython 3.9-3.13 on Linux x86_64/aarch64 (manylinux), macOS x86_64/arm64 and Windows x64, plus an sdist.
+
+- **Trigger:** push a `v*` tag (`git tag v0.5.0 && git push origin v0.5.0`). The wheels are attached to a GitHub Release for that tag.
+- **PyPI is off.** Tag pushes never publish. The `pypi` job runs only from a manual dispatch (Actions > Release wheels > Run workflow) with `publish_pypi` ticked, which defaults to off.
+- **Trusted publishing setup (once, before the first PyPI run):**
+  1. On pypi.org, add a pending trusted publisher: project `vgc-engine`, owner `colefoster`, repository `vgc-engine`, workflow `release.yml`, environment `pypi`.
+  2. In the GitHub repo settings, create the environment `pypi` (optionally with a required reviewer).
+  3. No API token is stored; the job uses OIDC (`id-token: write`).
+- A manual dispatch from a branch builds wheels as workflow artifacts without making a release.
+
 ## Install rule for mimikyu
 
 Before installing a wheel into an environment mimikyu is using, check whether a long-running mimikyu evaluation job is still using the current wheel. If one is, build into `dist/` only and switch after it finishes. A mid-run version change forced a full evaluation restart on 2026-10-12.

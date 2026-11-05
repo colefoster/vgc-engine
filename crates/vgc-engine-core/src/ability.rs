@@ -2250,7 +2250,9 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
-            if attacker_alive && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) {
+            // The roll comes first even if Rocky Helmet already knocked out the
+            // attacker; only trySetStatus needs it alive (data/abilities.ts flamebody).
+            if proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) && attacker_alive {
                 battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                 // Contact-ability status (Static/Flame Body/Poison Point):
                 // the ABILITY HOLDER (the defender) is the source, so
