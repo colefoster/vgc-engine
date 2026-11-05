@@ -15160,6 +15160,12 @@ self.trigger_emergency_exits();
         // useMoveInner's `|move|` (sim/battle-actions.ts:457), held pending:
         // Focus Punch's beforeMoveCallback and Gravity's BeforeMove print
         // their `cant` before it, so they cancel it.
+        // Wonder Room's and Gravity's onModifyMove tie in useMoveInner's runEvent
+        // (data/moves.ts wonderroom, gravity; sim/battle.ts speedSort).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && self.wonder_room_turns > 0 && self.gravity_turns > 0 {
+            let _ = self.rng.ps_random_range("shuffle", 0, 2);
+        }
         self.after_move_user = Some((actor_side, actor_slot, self.side(actor_side).active[actor_slot as usize]));
         self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
         if matches!(
