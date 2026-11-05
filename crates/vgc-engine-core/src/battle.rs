@@ -8997,7 +8997,13 @@ self.trigger_emergency_exits();
             _ => None,
         };
         if let Some(pt) = pinch_type {
-            if m.type_ == pt
+            // move.type after ModifyType: Weather Ball, Tera Blast, Electrify ...
+            if crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
+                    weather: self.effective_weather_for(actor_side, actor_slot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                }) == pt
                 && (attacker.current_hp as u32) * 3 <= attacker.stats.hp as u32
             {
                 if physical_move || special_move {
