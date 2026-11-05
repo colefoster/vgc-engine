@@ -16070,6 +16070,7 @@ self.trigger_emergency_exits();
         let types = &types[..n as usize];
         match move_id {
             data::move_id::THUNDERWAVE => types.contains(&8),
+            data::move_id::LEECHSEED => types.contains(&4),
             data::move_id::WORRYSEED => matches!(t.effective_ability_id(), data::ability_id::TRUANT | data::ability_id::INSOMNIA),
             data::move_id::ATTRACT | data::move_id::CAPTIVATE => true,
             _ => false,
@@ -22110,6 +22111,7 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Powder_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
                 if self.target_is_powder_immune(ts, tslot) {
+                    self.p_powder_immune(ts, tslot, m.name);
                     self.ps_status_failed();
                     return;
                 }
