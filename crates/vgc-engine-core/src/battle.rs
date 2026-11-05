@@ -15051,6 +15051,62 @@ self.trigger_emergency_exits();
         true
     }
 
+    /// Yawn's TryAddVolatile vetoes, each with its own line: the target's ability
+    /// (data/abilities.ts insomnia, leafguard, purifyingsalt, vitalspirit), an ally's
+    /// veil (sweetveil, flowerveil), Electric Terrain and Safeguard (data/moves.ts).
+    fn yawn_blocked(&mut self, side: SideRef, slot: u8, src_side: SideRef, src_slot: u8) -> bool {
+        use data::ability_id as a;
+        let mold = self.side(src_side).active_mon(src_slot as usize).is_some_and(|s| {
+            matches!(s.effective_ability_id(), a::MOLDBREAKER | a::TERAVOLT | a::TURBOBLAZE)
+        });
+        let Some(t) = self.side(side).active_mon(slot as usize) else { return false };
+        let ab = t.effective_ability_id();
+        let grounded = t.is_grounded();
+        let grass = {
+            let (types, n) = t.effective_types();
+            types[..n as usize].iter().any(|&x| crate::battle_protocol::type_name(x) == "Grass")
+        };
+        let sun = matches!(self.effective_weather(), crate::weather::Weather::Sun);
+        if !mold {
+            let self_block = match ab {
+                a::INSOMNIA => Some("Insomnia"),
+                a::VITALSPIRIT => Some("Vital Spirit"),
+                a::PURIFYINGSALT => Some("Purifying Salt"),
+                a::LEAFGUARD if sun => Some("Leaf Guard"),
+                _ => None,
+            };
+            if let Some(name) = self_block {
+                pmon!(self, "-immune", side, slot, "|[from] ability: {name}");
+                return true;
+            }
+            for s in 0..self.format().active_count() as u8 {
+                let Some(h) = self.side(side).active_mon(s as usize).filter(|h| h.is_alive()) else { continue };
+                let name = match h.effective_ability_id() {
+                    a::SWEETVEIL => "Sweet Veil",
+                    a::FLOWERVEIL if grass => "Flower Veil",
+                    _ => continue,
+                };
+                if self.plog() {
+                    let of = self.p_ident(side, s);
+                    pmon!(self, "-block", side, slot, "|ability: {name}|[of] {of}");
+                }
+                return true;
+            }
+        }
+        if grounded && matches!(self.terrain, crate::terrain::Terrain::Electric) {
+            pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
+            return true;
+        }
+        if self.side(side).conditions.safeguard_turns > 0 && side != src_side {
+            let infiltrates = self.side(src_side).active_mon(src_slot as usize).is_some_and(|s| s.effective_ability_id() == a::INFILTRATOR);
+            if !infiltrates {
+                pmon!(self, "-activate", side, slot, "|move: Safeguard");
+                return true;
+            }
+        }
+        false
+    }
+
     /// PS resolveAction's `runEvent('FractionalPriority')` for one committed
     /// choice (sim/battle-queue.ts:249): the Quick Draw / Quick Claw rolls,
     /// recorded in `quick_frac` for the queue build.
@@ -20436,6 +20492,9 @@ self.trigger_emergency_exits();
                             && !t.volatiles.has(crate::pokemon::VolatileKind::Yawn)
                             && !Self::shields_down_shielded(t)
                     });
+                    if appliable && self.yawn_blocked(opp, slot, actor_side, actor_slot) {
+                        return;
+                    }
                     if appliable {
                         let source_payload = ((actor_side as u8 as u32) << 8) | actor_slot as u32;
                         if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
