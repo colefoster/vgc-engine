@@ -10433,6 +10433,11 @@ self.trigger_emergency_exits();
             move_hit = true;
             let mut hits_done = 0u8;
             for hit_idx in 0..ctx.hits {
+                // data/mods/champions/scripts.ts hitStepMoveHitLoop: a user put to
+                // sleep mid-move stops (Effect Spore).
+                if hit_idx > 0 && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.status == Status::Sleep) {
+                    break;
+                }
                 // Dragon Darts over two targets: hit n strikes targets[n-1]
                 // (data/mods/champions/scripts.ts:467-480).
                 let hit_no = if darts_phase[ti] == 2 && darts_pass == [true, true] { (ti - 2) as u8 } else { hit_idx as u8 };
