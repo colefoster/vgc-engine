@@ -5870,6 +5870,8 @@ self.trigger_emergency_exits();
         let mega_ability = stone.mega_ability_id;
         #[cfg(feature = "ps-rng")]
         let old_ability = self.side(side).active_mon(slot).map_or(u16::MAX, |m| m.effective_ability_id());
+        // setAbility runs the old ability's End (sim/pokemon.ts formeChange).
+        let lost_ability = self.side(side).active_mon(slot).map_or(u16::MAX, |m| m.effective_ability_id());
         // Forme + recomputed stats (Speed feeds the upcoming `action_order`).
         self.set_forme(side, actor_slot, mega_species, true);
         // formeChange(isPermanent) from the stone: `detailschange`, then
@@ -5904,6 +5906,9 @@ self.trigger_emergency_exits();
             m.protean_used = false;
         }
         self.side_mut(side).conditions.mega_used = true;
+        if lost_ability != mega_ability {
+            self.p_swap_end_lines(side, actor_slot, lost_ability);
+        }
         // Fire the mega ability's switch-in effect (Mega Charizard Y →
         // Drought-sun, Mega Manectric → Intimidate, ...). Reuses the
         // established re-invoke pattern (cf. Ogerpon-Tera switch-in).
@@ -16504,6 +16509,7 @@ self.trigger_emergency_exits();
                         ability: (m.ability_override, m.ability_suppressed),
                         types: m.type_override,
                         species: m.species_id,
+                        pp: m.pp,
                     };
                 }
             }
@@ -17971,7 +17977,9 @@ self.trigger_emergency_exits();
             };
             let n = self.format().active_count() as u8;
             let any = (0..n).any(|sl| holder(self, SideRef::P1, sl) || holder(self, SideRef::P2, sl));
-            if any {
+            // Sweet Veil's onAllySetStatus stops the event first (data/abilities.ts sweetveil).
+            let veiled = (0..n).any(|sl| self.side(side).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::SWEETVEIL));
+            if any && !veiled {
                 let msg = if holder(self, side, slot) { "|[msg]" } else { "" };
                 pmon!(self, "-fail", side, slot, "|slp|[from] Uproar{msg}");
                 return;
@@ -24952,6 +24960,7 @@ struct MonEffectSnapshot {
     ability: (u16, bool),
     types: [u8; 2],
     species: u16,
+    pp: [u8; 4],
 }
 
 /// One target's result in runMoveEffects' combineResults for a spread status

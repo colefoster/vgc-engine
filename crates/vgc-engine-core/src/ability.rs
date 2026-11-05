@@ -1948,10 +1948,13 @@ pub fn on_damaging_hit(
     // mon can't carry a volatile). Bellibolt / Tadbulb signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Electromorphosis_(Ability)>.
     if ability_id == data::ability_id::ELECTROMORPHOSIS && target_alive {
+        // onDamagingHitOrder: 1 (data/abilities.ts electromorphosis).
+        battle.p_sub(1);
         pmon!(battle, "-start", target_side, target_slot, "|Charge|{}|[from] ability: Electromorphosis", crate::battle_protocol::move_name(move_id));
         if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             m.set_charged(true);
         }
+        battle.p_sub(3);
     }
 
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
