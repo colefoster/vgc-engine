@@ -9101,6 +9101,12 @@ self.trigger_emergency_exits();
                     n_protected += 1;
                     continue;
                 }
+                // sturdy onTryHit (data/abilities.ts), ahead of accuracy.
+                if !attacker_breaks_mold && defender.effective_ability_id() == data::ability_id::STURDY {
+                    self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                    pmon!(self, "-immune", tside, tslot, "|[from] ability: Sturdy");
+                    continue;
+                }
                 // Level gate: user must be >= target level.
                 if attacker.level < defender.level {
                     self.p_tag(crate::protocol::step::ACCURACY, tside, tslot);
