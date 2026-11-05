@@ -8727,7 +8727,9 @@ self.trigger_emergency_exits();
         if move_id == data::move_id::LASTRESORT {
             let others_used = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
                 let known = a.moves.iter().filter(|&&id| id != u16::MAX).count();
+                // data/moves.ts lastresort onTry: `return hasLastResort`, for a called one.
                 known >= 2
+                    && a.moves.contains(&data::move_id::LASTRESORT)
                     && (0..4).all(|i| {
                         matches!(a.moves[i], u16::MAX | data::move_id::LASTRESORT) || a.moves_used & (1 << i) != 0
                     })
@@ -16930,9 +16932,10 @@ self.trigger_emergency_exits();
             Some(m) => m,
             None => return false,
         };
-        // getImmunity('powder') reads the live typing (sim/dex.ts getImmunity).
+        // getImmunity('powder') reads the live typing, Forest's Curse included
+        // (sim/dex.ts getImmunity, sim/pokemon.ts getTypes).
         let (types, nt) = m.effective_types();
-        if types[..nt as usize].contains(&4) {
+        if types[..nt as usize].contains(&4) || m.added_type == 4 {
             return true;
         }
         // Safety Goggles (held item) and Overcoat (ability) bypass.
