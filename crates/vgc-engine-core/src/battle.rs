@@ -6322,6 +6322,10 @@ self.trigger_emergency_exits();
             .map(|m| m.species_id);
         if cur != Some(target_id) {
             self.set_forme(side, slot, target_id, false);
+            // formeChange(forme, this.effect, false, '0', '[msg]') (data/abilities.ts forecast).
+            if self.plog() {
+                pmon!(self, "-formechange", side, slot, "|{}|[msg]|[from] ability: Forecast", data::SPECIES[target_id as usize].name);
+            }
         }
     }
 
