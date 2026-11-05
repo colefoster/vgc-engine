@@ -6633,6 +6633,22 @@ self.trigger_emergency_exits();
                 if let Some(ab) = self.side(side).active_mon(actor_slot as usize).filter(|m| m.is_alive()).map(|m| m.effective_ability_id()) {
                     self.ps_weather_suppressor_ties(ab);
                 }
+                // cloudnine onEnd's WeatherChange, with its abilityState.ending set
+                // (data/abilities.ts cloudnine, sim/field.ts suppressingWeather).
+                if self.side(side).active_mon(actor_slot as usize)
+                    .is_some_and(|m| matches!(m.effective_ability_id(), data::ability_id::CLOUDNINE | data::ability_id::AIRLOCK))
+                {
+                    let saved = self.side(side).active_mon(actor_slot as usize).map_or(false, |m| m.ability_suppressed);
+                    if let Some(m) = self.side_mut(side).active_mon_mut(actor_slot as usize) {
+                        m.ability_suppressed = true;
+                    }
+                    self.sync_weather_terrain_cache();
+                    self.refresh_forecast_formes();
+                    if let Some(m) = self.side_mut(side).active_mon_mut(actor_slot as usize) {
+                        m.ability_suppressed = saved;
+                    }
+                    self.sync_weather_terrain_cache();
+                }
                 self.shields_down_leave_field(side, actor_slot);
                 self.hunger_switch_leave_field(side, actor_slot, false);
                 self.gulp_missile_leave_field(side, actor_slot);
