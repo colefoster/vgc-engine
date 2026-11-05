@@ -17781,6 +17781,8 @@ self.trigger_emergency_exits();
         self.eot_octolock();
         self.eot_syrup_bomb();
         self.eot_yawn();
+        // Their handlers (order <= 22, or field and side) run before Perish Song's KO.
+        self.p_residual_timer_ends();
         self.eot_perish_song();
         // After Yawn (order 23): data/moves.ts uproar condition, order 28.
         self.eot_uproar();
@@ -17795,7 +17797,6 @@ self.trigger_emergency_exits();
                 self.hunger_switch_update(side, slot);
             }
         }
-        self.p_residual_timer_ends();
         self.p_res_close();
         // The residual action's faintMessages, before its Update.
         self.faint_forme_cleanup();
