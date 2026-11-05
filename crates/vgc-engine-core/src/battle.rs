@@ -9405,8 +9405,15 @@ self.trigger_emergency_exits();
                 // Night Shade=Ghost fails on Normal. PS `runImmunity`
                 // via the type chart. The general fixed-damage value is
                 // computed at the crit/roll site below.
+                // After ModifyType: Pixilate's Endeavor is Fairy (hitStepTypeImmunity).
+                let fixed_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
+                    weather: self.effective_weather_for(actor_side, actor_slot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                });
                 let eff = crate::damage::effectiveness_for_attack(
-                    &attacker, move_id, m.type_, &defender,
+                    &attacker, move_id, fixed_type, &defender,
                 );
                 if eff.is_immune() {
                     self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
