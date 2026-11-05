@@ -13735,6 +13735,14 @@ self.trigger_emergency_exits();
             // loop doesn't (data/mods/champions/scripts.ts:575).
             let sheer_force = !self.champions && crate::damage::move_is_sheer_force_boosted(m)
                 && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force);
+            // AfterMoveSecondary's handlers are gathered first and abilities sort ahead of
+            // items (sim/battle.ts resolvePriority): Pickpocket sees the Red Card still held,
+            // and an item it steals runs no handler of its own.
+            let item_before = self.side(tside).active_mon(tslot as usize).map_or(u16::MAX, |t| t.item_id);
+            self.try_pickpocket(tside, tslot, actor_side, actor_slot, move_id);
+            if item_before == u16::MAX {
+                return;
+            }
             if !sheer_force && self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive())
             {
@@ -13757,7 +13765,6 @@ self.trigger_emergency_exits();
                     self, tside, tslot,
                 );
             }
-            self.try_pickpocket(tside, tslot, actor_side, actor_slot, move_id);
         }
     }
 
