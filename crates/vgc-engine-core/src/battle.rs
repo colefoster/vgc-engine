@@ -10782,6 +10782,11 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             let _ = self.rng.percent_1_100();
+            // King's Rock / Razor Fang's own onModifyMove flinch came first
+            // (data/items.ts kingsrock); the draw order is all that shows.
+            if effect == 5 && ctx.attacker.effective_ability_id() != data::ability_id::STENCH {
+                let _ = self.rng.percent_1_100();
+            }
         }
         if hit_sub {
             return;
