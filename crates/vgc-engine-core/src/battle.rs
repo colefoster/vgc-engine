@@ -49825,9 +49825,8 @@ mod tests {
                 "Iron Hands took Dragon Claw damage");
         assert_eq!(b.p2.team[0].current_hp, chomp_max,
                    "Focus Punch must fail when user was hit this turn");
-        // PP was deducted on the failed Focus Punch (PS behavior). Focus
-        // Punch base PP 20 → PP-maxed to 32, so one use leaves 31.
-        assert_eq!(b.p1.team[0].pp[0], 31, "Focus Punch PP ticked on failure");
+        // beforeMoveCallback stops the move before deductPP (sim/battle-actions.ts runMove).
+        assert_eq!(b.p1.team[0].pp[0], 32, "Focus Punch spends no PP when it loses focus");
     }
 
     #[test]
