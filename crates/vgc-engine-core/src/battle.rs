@@ -17936,7 +17936,9 @@ self.trigger_emergency_exits();
             l.fainted_logged &= !(1u16 << (side as u16 * 8 + idx as u16));
         }
         if let Some(sl) = active_slot {
-            self.sync_status_dot_bit(side, sl as u8);
+            // The instaswitch: `|switch|`, hazards, switch-in effects (sim/battle.ts:2781-2797,
+            // sim/battle-actions.ts switchIn).
+            self.do_switch(side, sl as u8, idx);
             crate::ability::on_switch_in(self, side, sl as u8);
             crate::item::on_switch_in(self, side, sl as u8);
         }
