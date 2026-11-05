@@ -17727,6 +17727,7 @@ self.trigger_emergency_exits();
         self.eot_partial_trap();
         self.eot_salt_cure();
         self.eot_octolock();
+        self.eot_syrup_bomb();
         self.eot_yawn();
         self.eot_perish_song();
         // After Yawn (order 23): data/moves.ts uproar condition, order 28.
@@ -18730,6 +18731,50 @@ self.trigger_emergency_exits();
             && s.active_mon(slot).is_some_and(|m| m.is_alive())
     }
 
+    /// syrupbomb condition: order 14, `-end` when its duration runs out, else
+    /// -1 Speed from its source (data/moves.ts).
+    fn eot_syrup_bomb(&mut self) {
+        use crate::pokemon::VolatileKind as V;
+        let n = self.format().active_count() as u8;
+        if !self.eot_any_active_has_volatile(n, V::SyrupBomb) {
+            return;
+        }
+        let (order, k) = self.actives_by_speed();
+        for &(side, slot) in &order[..k] {
+            let Some(v) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()).and_then(|m| m.volatiles.get(V::SyrupBomb).copied()) else { continue };
+            self.p_res(14, 0, Some((side, slot)));
+            let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) else { continue };
+            m.volatiles.remove(V::SyrupBomb);
+            if v.turns_remaining <= 1 {
+                pmon!(self, "-end", side, slot, "|Syrup Bomb|[silent]");
+                continue;
+            }
+            let _ = m.volatiles.add(crate::pokemon::Volatile { turns_remaining: v.turns_remaining - 1, ..v });
+            let src_side = if (v.payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
+            let src_slot = ((v.payload >> 8) & 0xFF) as u8;
+            self.apply_foe_stat_drop(side, slot, &[4], -1, src_side, src_slot);
+        }
+    }
+
+    /// syrupbomb onUpdate: it ends once its source has left.
+    fn syrup_bomb_update(&mut self) {
+        use crate::pokemon::VolatileKind as V;
+        let n = self.format().active_count() as u8;
+        if !self.eot_any_active_has_volatile(n, V::SyrupBomb) {
+            return;
+        }
+        let (order, k) = self.actives_by_speed();
+        for &(side, slot) in &order[..k] {
+            let Some(v) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()).and_then(|m| m.volatiles.get(V::SyrupBomb).copied()) else { continue };
+            if !self.octolock_source_active(v.payload) {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    m.volatiles.remove(V::SyrupBomb);
+                }
+                pmon!(self, "-end", side, slot, "|Syrup Bomb|[silent]");
+            }
+        }
+    }
+
     /// EOT sub-phase `octolock`. PS data/moves.ts:12960 octolock condition,
     /// onResidualOrder 14: when the source has left the field or fainted the
     /// lock ends; otherwise `this.boost({def: -1, spd: -1}, pokemon, source)`,
@@ -18821,6 +18866,7 @@ self.trigger_emergency_exits();
         if self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Attract) {
             self.attract_update_cold();
         }
+        self.syrup_bomb_update();
     }
 
     #[cold]
@@ -24997,7 +25043,7 @@ fn apply_move_secondary(
     if rng.is_ps()
         && matches!(
             move_slug,
-            "stoneaxe" | "ceaselessedge" | "eeriespell" | "sparklingaria" | "spiritshackle" | "syrupbomb"
+            "stoneaxe" | "ceaselessedge" | "eeriespell" | "sparklingaria" | "spiritshackle"
         )
     {
         let _ = rng.percent_1_100();
@@ -25292,6 +25338,24 @@ fn apply_move_secondary(
     // returns false on re-add). Covert Cloak (gated above) already vetoes
     // the whole secondary. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
+    // Syrup Bomb: `secondary: { chance: 100, volatileStatus: 'syrupbomb' }`
+    // (data/moves.ts syrupbomb), condition duration 4.
+    if move_slug == "syrupbomb" {
+        let _ = rng.percent_1_100_t(100);
+        let idx = battle.side(attacker_side).active[attacker_slot as usize] as u32;
+        let payload = ((attacker_side as u32) << 16) | ((attacker_slot as u32) << 8) | idx;
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            if t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::SyrupBomb) {
+                let _ = t.volatiles.add(crate::pokemon::Volatile {
+                    kind: crate::pokemon::VolatileKind::SyrupBomb,
+                    turns_remaining: 4,
+                    payload,
+                });
+                pmon!(battle, "-start", target_side, target_slot, "|Syrup Bomb");
+            }
+        }
+        return;
+    }
     if move_slug == "saltcure" {
         // PS rolls random(100) for every secondary, a 100% one included
         // (sim/battle-actions.ts:1343), then applies it. The roll is
