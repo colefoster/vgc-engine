@@ -1209,14 +1209,28 @@ impl Pokemon {
     /// so Low Kick's BP table can't see a 0-weight target.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
     pub fn effective_weight_dg(&self) -> u32 {
-        let base = self.species().weight_dg as u32;
+        self.weight_dg_with(false)
+    }
+
+    /// `getWeight`: runEvent('ModifyWeight'), Heavy Metal and Light Metal
+    /// first (Ability before Item), then Float Stone (sim/pokemon.ts getWeight,
+    /// data/abilities.ts heavymetal, lightmetal; both breakable, hence the
+    /// flag for the target of a Mold Breaker user).
+    pub fn weight_dg_with(&self, ignore_ability: bool) -> u32 {
+        let mut w = self.species().weight_dg as u32;
+        if !ignore_ability {
+            match self.effective_ability_id() {
+                data::ability_id::HEAVYMETAL => w *= 2,
+                data::ability_id::LIGHTMETAL => w /= 2,
+                _ => {}
+            }
+        }
         // `effective_item_id()` is `u16::MAX` under Magic Room — Float Stone's
         // weight halving is an item effect, so it is suppressed (item kept).
         if self.effective_item_id() == data::item_id::FLOATSTONE {
-            (base / 2).max(1)
-        } else {
-            base
+            w /= 2;
         }
+        w.max(1)
     }
 
     pub fn is_alive(&self) -> bool {

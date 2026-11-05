@@ -1151,7 +1151,10 @@ pub(crate) fn calculate_damage_with_bp(
         // item's onModifyWeight); Heavy/Light Metal still deferred. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Low_Kick_(move)>
         // <https://bulbapedia.bulbagarden.net/wiki/Grass_Knot_(move)>
-        let w = defender.effective_weight_dg();
+        let w = defender.weight_dg_with(matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        ));
         let bp = if w >= 2000 { 120 }
             else if w >= 1000 { 100 }
             else if w >= 500 { 80 }
@@ -1173,12 +1176,14 @@ pub(crate) fn calculate_damage_with_bp(
         // We use hectograms (kg × 10) so the multiplicative checks are
         // exact integer comparisons. Float Stone on either combatant halves
         // that mon's weight (PS getWeight runs onModifyWeight for both the
-        // user and the target). Heavy Metal (×2) / Light Metal (×0.5) are
-        // still deferred to their own PRs.
+        // user and the target), as do Heavy Metal (×2) and Light Metal (×0.5).
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heat_Crash_(move)>
         //             <https://bulbapedia.bulbagarden.net/wiki/Heavy_Slam_(move)>
         let user_w = attacker.effective_weight_dg() as u64;
-        let tgt_w = (defender.effective_weight_dg() as u64).max(1);
+        let tgt_w = defender.weight_dg_with(matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        )) as u64;
         let bp = if user_w >= tgt_w * 5 { 120 }
             else if user_w >= tgt_w * 4 { 100 }
             else if user_w >= tgt_w * 3 { 80 }
