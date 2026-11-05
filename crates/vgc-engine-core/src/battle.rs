@@ -16052,8 +16052,8 @@ self.trigger_emergency_exits();
         actor_side: SideRef,
         actor_slot: u8,
         move_id: u16,
-        move_slot: u8,
-        attacker: &crate::pokemon::Pokemon,
+        _move_slot: u8,
+        _attacker: &crate::pokemon::Pokemon,
         m: &data::MoveDef,
         any_damage_dealt: u16,
         _attacker_item_id: u16,
@@ -26121,7 +26121,11 @@ fn pressure_extra_pp(
             let slot = if dmg > 0 && by_side == opp as u8 {
                 by_slot as usize
             } else {
-                battle.ps_scripted_pick[actor_side as usize][(actor_slot as usize).min(1)] as usize
+                // Only ps-rng keeps resolveAction's pick; otherwise no foe is charged.
+                #[cfg(feature = "ps-rng")]
+                { battle.ps_scripted_pick[actor_side as usize][(actor_slot as usize).min(1)] as usize }
+                #[cfg(not(feature = "ps-rng"))]
+                { usize::MAX }
             };
             (slot < active_n && is_pressure_foe(slot)) as u8
         }
