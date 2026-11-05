@@ -16641,6 +16641,10 @@ self.trigger_emergency_exits();
     /// the encored move when it landed (`champions_encore_requeue`), so the
     /// slots match here and nothing is drawn twice.
     fn encore_override(&mut self, side: SideRef, slot: u8, move_slot: u8, target: Option<Target>) -> (u8, Option<Target>) {
+        // Champions removes onOverrideAction (data/mods/champions/moves.ts encore).
+        if self.champions {
+            return (move_slot, target);
+        }
         let Some(m) = self.side(side).active_mon(slot as usize) else { return (move_slot, target) };
         let enc = m.encored_move_slot();
         if !m.is_alive() || m.encore_turns() == 0 || enc == 255 || enc == move_slot
