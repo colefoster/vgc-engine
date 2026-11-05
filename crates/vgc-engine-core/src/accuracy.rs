@@ -122,83 +122,90 @@ pub(crate) fn effective_accuracy(
         return AccuracyComputation { threshold: None, consumed_micle: false };
     }
 
-    let acc_stage = attacker.boosts[5] as i32;
-    // `ignoreEvasion` moves skip the target's evasion stage entirely (PS
-    // sim/battle-actions.ts:719; data/moves.ts darkestlariat et al.).
-    let eva_stage = if crate::damage::ignores_defensive_boosts(move_id) { 0 } else { defender.boosts[6] as i32 };
-    let boost = (acc_stage - eva_stage).clamp(-6, 6);
-    let mut eff_acc: u32 = if boost > 0 {
-        (base_acc as u32) * (3 + boost as u32) / 3
-    } else if boost < 0 {
-        (base_acc as u32) * 3 / (3 + (-boost) as u32)
-    } else {
-        base_acc as u32
-    };
-    // Wide Lens.
-    if attacker_item_id == data::item_id::WIDELENS {
-        eff_acc = (eff_acc * 4505 / 4096).min(100);
+    let attacker_breaks_mold = matches!(
+        attacker.effective_ability_id(),
+        data::ability_id::MOLDBREAKER
+            | data::ability_id::TERAVOLT
+            | data::ability_id::TURBOBLAZE
+    ) || (m.category == 2 && attacker.effective_ability_id() == data::ability_id::MYCELIUMMIGHT);
+    let def_ability = if attacker_breaks_mold { u16::MAX } else { defender.effective_ability_id() };
+    let atk_ability = attacker.effective_ability_id();
+    // runEvent('ModifyAccuracy'): the handlers chain one modifier, by priority, and
+    // it applies once (sim/battle.ts chainModify, sim/battle-actions.ts
+    // hitStepAccuracy). Wonder Skin (priority 10) replaces the base; then Gravity
+    // (0); then the abilities (-1); then the items (-2).
+    let mut acc: u32 = if def_ability == data::ability_id::WONDERSKIN && m.category == 2 { 50 } else { base_acc as u32 };
+    let mut chain: u32 = 4096;
+    let mut mult = |next: u32| chain = (chain * next + 2048) >> 12;
+    if battle.gravity_turns > 0 {
+        mult(6840);
     }
-    // Zoom Lens — needs target's pending-action kind.
-    if attacker_item_id == data::item_id::ZOOMLENS {
-        let tk = pending_kind[tside as usize][(tslot as usize).min(1)];
-        let target_will_move = tk == 1 || tk == 2;
-        if !target_will_move {
-            eff_acc = (eff_acc * 4915 / 4096).min(100);
+    if atk_ability == data::ability_id::COMPOUNDEYES {
+        mult(5325);
+    }
+    if atk_ability == data::ability_id::HUSTLE && m.category == 0 {
+        mult(3277);
+    }
+    match (def_ability, battle.effective_weather()) {
+        (data::ability_id::SANDVEIL, crate::weather::Weather::Sand) | (data::ability_id::SNOWCLOAK, crate::weather::Weather::Snow) => mult(3277),
+        _ => {}
+    }
+    // data/abilities.ts tangledfeet onModifyAccuracy.
+    if def_ability == data::ability_id::TANGLEDFEET && defender.volatiles.has(crate::pokemon::VolatileKind::Confusion) {
+        mult(2048);
+    }
+    // Victory Star, the user's or its partner's (data/abilities.ts victorystar onAnyModifyAccuracy).
+    for sl in 0..battle.format().active_count() {
+        if battle.side(actor_side).active_mon(sl).is_some_and(|x| x.is_alive() && x.effective_ability_id() == data::ability_id::VICTORYSTAR) {
+            mult(4506);
         }
     }
-    // Micle Berry — caller clears the latch iff `consumed_micle` is true.
+    if matches!(defender.effective_item_id(), data::item_id::BRIGHTPOWDER | data::item_id::LAXINCENSE) {
+        mult(3686);
+    }
+    if attacker_item_id == data::item_id::WIDELENS {
+        mult(4505);
+    }
+    // Zoom Lens: `!this.queue.willMove(target)`.
+    if attacker_item_id == data::item_id::ZOOMLENS {
+        let tk = pending_kind[tside as usize][(tslot as usize).min(1)];
+        if tk != 1 && tk != 2 {
+            mult(4915);
+        }
+    }
+    if chain != 4096 {
+        acc = ((acc * chain) + 2047) / 4096;
+    }
+    // ModifyBoost, then the stages. Unaware zeroes the other side's stage
+    // (data/abilities.ts unaware onAnyModifyBoost); Keen Eye, Illuminate and the
+    // `ignoreEvasion` moves skip the evasion stage (data/abilities.ts keeneye,
+    // illuminate onModifyMove; data/moves.ts darkestlariat et al.).
+    let acc_stage = if def_ability == data::ability_id::UNAWARE { 0 } else { attacker.boosts[5] as i32 };
+    let eva_stage = if crate::damage::ignores_defensive_boosts(move_id)
+        || matches!(atk_ability, data::ability_id::KEENEYE | data::ability_id::ILLUMINATE | data::ability_id::UNAWARE)
+    {
+        0
+    } else {
+        defender.boosts[6] as i32
+    };
+    let boost = (acc_stage.clamp(-6, 6) - eva_stage).clamp(-6, 6);
+    if boost > 0 {
+        acc = acc * (3 + boost as u32) / 3;
+    } else if boost < 0 {
+        acc = acc * 3 / (3 + (-boost) as u32);
+    }
+    // runEvent('Accuracy'): Micle Berry's volatile (data/items.ts micleberry
+    // onSourceAccuracy); the caller clears the latch iff `consumed_micle`.
     let micle_active = battle
         .side(actor_side)
         .active_mon(actor_slot as usize)
         .is_some_and(|a| a.micle_next_move);
     let mut consumed_micle = false;
     if micle_active {
-        eff_acc = (eff_acc * 4915 / 4096).min(100);
+        acc = ((acc * 4915) + 2047) / 4096;
         consumed_micle = true;
     }
-    // Compound Eyes (data/abilities.ts compoundeyes onSourceModifyAccuracy).
-    if attacker.effective_ability_id() == data::ability_id::COMPOUNDEYES {
-        eff_acc = (eff_acc * 5325 + 2048 - 1) / 4096;
-    }
-    // Victory Star, the user's or its partner's (data/abilities.ts victorystar onAnyModifyAccuracy).
-    let n_active = battle.format().active_count();
-    let stars = (0..n_active).filter(|&sl| {
-        battle.side(actor_side).active_mon(sl).is_some_and(|x| x.is_alive() && x.effective_ability_id() == data::ability_id::VICTORYSTAR)
-    }).count();
-    for _ in 0..stars {
-        eff_acc = (eff_acc * 4506 + 2048 - 1) / 4096;
-    }
-    // Hustle — physical-only.
-    if attacker.effective_ability_id() == data::ability_id::HUSTLE && m.category == 0 {
-        eff_acc = eff_acc * 3277 / 4096;
-    }
-    // Bright Powder / Lax Incense — defender side.
-    if defender.effective_item_id() == data::item_id::BRIGHTPOWDER
-        || defender.effective_item_id() == data::item_id::LAXINCENSE
-    {
-        eff_acc = eff_acc * 3686 / 4096;
-    }
-    // Sand Veil / Snow Cloak — defender side, weather-gated, Mold-Breaker
-    // bypassable.
-    let def_ability = defender.effective_ability_id();
-    let weather_veil = match (def_ability, battle.effective_weather()) {
-        (data::ability_id::SANDVEIL, crate::weather::Weather::Sand) => true,
-        (data::ability_id::SNOWCLOAK, crate::weather::Weather::Snow) => true,
-        _ => false,
-    };
-    let attacker_breaks_mold = matches!(
-        attacker.effective_ability_id(),
-        data::ability_id::MOLDBREAKER
-            | data::ability_id::TERAVOLT
-            | data::ability_id::TURBOBLAZE
-    );
-    if weather_veil && !attacker_breaks_mold {
-        eff_acc = eff_acc * 3277 / 4096;
-    }
-    // Gravity — field condition, ×6840/4096 to every numeric-accuracy move.
-    if battle.gravity_turns > 0 {
-        eff_acc = eff_acc * 6840 / 4096;
-    }
+    let eff_acc = acc.min(100);
 
     AccuracyComputation { threshold: Some(eff_acc), consumed_micle }
 }
