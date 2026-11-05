@@ -25069,9 +25069,7 @@ fn sleep_talk_excluded(slug: &str) -> bool {
     matches!(
         slug,
         // nosleeptalk flag:
-        // flags.recharge fail too (data/moves.ts instruct onHit).
-        "hyperbeam" | "gigaimpact" | "blastburn" | "hydrocannon" | "frenzyplant" | "rockwrecker" | "roaroftime" | "prismaticlaser" | "eternabeam"
-            | "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
+        "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
             | "chatter" | "combattorque" | "copycat" | "dynamaxcannon"
             | "focuspunch" | "freezeshock" | "geomancy" | "holdhands"
             | "iceburn" | "magicaltorque" | "mefirst" | "metronome"
@@ -25083,6 +25081,7 @@ fn sleep_talk_excluded(slug: &str) -> bool {
             // carry both flags such as Dig/Fly/Bounce/Solar Blade):
             | "bounce" | "dig" | "dive" | "fly" | "phantomforce"
             | "shadowforce" | "skullbash" | "skydrop" | "solarblade"
+            | "celebrate" | "electroshot" | "meteorbeam"
     )
 }
 
