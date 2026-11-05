@@ -20259,6 +20259,18 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::STUNSPORE => {
+                // data/moves.ts stunspore: `status: 'par'`, powder.
+                if let Some((ts, tslot)) = opp_target.filter(|&(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    self.p_powder_immune(ts, tslot, m.name);
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) { return; }
+                if let Some((ts, tslot)) = opp_target {
+                    if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                    self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
+                }
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
