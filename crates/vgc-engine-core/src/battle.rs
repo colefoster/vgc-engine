@@ -21688,9 +21688,9 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Tidy_Up_(move)>
                 let n = self.format().active_count() as u8;
                 let mut success = false;
-                let (order, k) = self.actives_by_speed();
-                let _ = n;
-                for &(s, slot) in &order[..k] {
+                // getAllActive's order, side by side (data/moves.ts tidyup onHit).
+                let order = [(SideRef::P1, 0u8), (SideRef::P1, 1), (SideRef::P2, 0), (SideRef::P2, 1)];
+                for &(s, slot) in order.iter().filter(|o| o.1 < n) {
                     if self.side(s).active_mon(slot as usize).is_some_and(|mon| mon.substitute_hp() > 0) {
                         if let Some(mon) = self.side_mut(s).active_mon_mut(slot as usize) {
                             mon.set_substitute_hp(0);
