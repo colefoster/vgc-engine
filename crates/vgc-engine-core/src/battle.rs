@@ -372,7 +372,7 @@ pub struct Battle {
     pub champions: bool,
     /// A hit of the current move reached its target for 0 damage (Endure or Sturdy at
     /// 1 HP, Disguise): PS's damage is the number 0, which still counts as a hit.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) zero_hit_this_move: bool,
     /// Per active seat (side * 2 + slot): the seats that damaged it this turn
     /// (Pokemon.attackedBy, for Avalanche and Revenge).
@@ -567,7 +567,7 @@ pub struct Battle {
     #[serde(skip)]
     pub(crate) after_secondary_pending: [Option<(SideRef, u8, bool, u16, u8)>; 3],
     /// Count of boost() calls that moved a stage, for the status-move snapshot.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) boost_changes: u32,
     /// Wonder Room's onModifyMove has run since it started.
     #[serde(default)]
@@ -578,7 +578,7 @@ pub struct Battle {
     pub(crate) status_bounced: bool,
     /// A Stall holder that Mega Evolves this turn: FractionalPriority ran in
     /// resolveAction, before the megaEvo action (sim/battle-queue.ts:249), and sticks.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) mega_keeps_stall: [[bool; 2]; 2],
     /// Move slot each active queued this turn (`[side][slot]`, 255 = no
     /// move). With `pending_kind` it answers PS `queue.willMove(target)`
@@ -3211,6 +3211,11 @@ self.trigger_emergency_exits();
             }
             StepPhase::Done(r) => {
                 cursor.phase = StepPhase::Done(r);
+                // These only live within a turn. A mid-turn switch request comes before this,
+                // so they serialize.
+                self.boost_changes = 0;
+                self.zero_hit_this_move = false;
+                self.mega_keeps_stall = [[false; 2]; 2];
                 StepProgress::Done(r)
             }
         }
