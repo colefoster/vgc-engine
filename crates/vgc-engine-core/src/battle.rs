@@ -3562,20 +3562,22 @@ self.trigger_emergency_exits();
         {
             return 0;
         }
-        if !hit_sub {
-            let breaks_mold = matches!(
-                attacker.effective_ability_id(),
-                data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
-            );
-            let filtered = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
-                d.item_id == data::item_id::COVERTCLOAK
-                    || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
-            });
-            if filtered {
-                return 0;
-            }
+        if !hit_sub && self.secondaries_filtered(tside, tslot, attacker) {
+            return 0;
         }
         if plural { 2 } else { 1 }
+    }
+
+    /// Shield Dust / Covert Cloak's ModifySecondaries empties the list.
+    fn secondaries_filtered(&self, tside: SideRef, tslot: u8, attacker: &Pokemon) -> bool {
+        let breaks_mold = matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        );
+        self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+            d.item_id == data::item_id::COVERTCLOAK
+                || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
+        })
     }
 
     /// `ps-rng` only: the speed sort of PS's `fieldEvent('Residual')`
@@ -10666,10 +10668,84 @@ self.trigger_emergency_exits();
         }
     }
 
-    /// data/moves.ts fling condition onUpdate: `-enditem` at the next Update.
+    /// data/moves.ts fling condition onUpdate: `-enditem` at the next Update,
+    /// then AfterUseItem (Unburden, Symbiosis).
     pub(crate) fn flush_fling_item(&mut self) {
         if let Some((side, slot, item)) = self.fling_pending.take() {
             self.p_item_line("-enditem", side, slot, item, "|[from] move: Fling");
+            crate::ability::on_item_consumed(self, side, slot);
+        }
+    }
+
+    /// The item Fling threw (data/moves.ts fling onPrepareHit).
+    fn flung_item(&self, side: SideRef, slot: u8) -> Option<u16> {
+        self.side(side).active_mon(slot as usize).map(|a| a.consumed_item).filter(|&i| i != u16::MAX)
+    }
+
+    /// fling onPrepareHit's `move.secondaries.push`: rolled like any secondary
+    /// (sim/battle-actions.ts secondaries), with the item's status or flinch.
+    fn fling_secondary(&mut self, ctx: &PerTargetContext, hit_sub: bool) {
+        let Some(item) = self.flung_item(ctx.actor_side, ctx.actor_slot) else { return };
+        let effect = data::ITEMS[item as usize].fling_effect;
+        if effect == 0 || data::ITEMS[item as usize].is_berry {
+            return;
+        }
+        if !hit_sub && self.secondaries_filtered(ctx.tside, ctx.tslot, &ctx.attacker) {
+            return;
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let _ = self.rng.percent_1_100();
+        }
+        if hit_sub {
+            return;
+        }
+        match effect {
+            1 => self.apply_status_to_target_inner(ctx.tside, ctx.tslot, Status::Burn, ctx.actor_slot),
+            2 => self.apply_status_to_target_inner(ctx.tside, ctx.tslot, Status::Paralysis, ctx.actor_slot),
+            3 => self.apply_status_to_target_inner(ctx.tside, ctx.tslot, Status::Poison, ctx.actor_slot),
+            4 => self.apply_status_to_target_inner(ctx.tside, ctx.tslot, Status::Toxic, ctx.actor_slot),
+            _ => {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    if t.is_alive() {
+                        t.set_flinched(true);
+                    }
+                }
+            }
+        }
+    }
+
+    /// fling onPrepareHit's `move.onHit`: the foe eats a thrown berry, or a
+    /// thrown herb's `fling.effect` runs on it (data/items.ts whiteherb, mentalherb).
+    fn fling_on_hit(&mut self, ctx: &PerTargetContext) {
+        let Some(item) = self.flung_item(ctx.actor_side, ctx.actor_slot) else { return };
+        let (ts, tslot) = (ctx.tside, ctx.tslot);
+        if !self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_alive()) {
+            return;
+        }
+        self.p_tag(crate::protocol::step::EFFECTS, ts, tslot);
+        if data::ITEMS[item as usize].is_berry {
+            if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                t.ate_berry = true;
+            }
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::item::eat_effect(self, ts, tslot, item, &mut rng, Some((ctx.actor_side, ctx.actor_slot)));
+            self.rng = rng;
+        } else if item == data::item_id::WHITEHERB {
+            let mut any = false;
+            if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                for b in t.boosts.iter_mut() {
+                    if *b < 0 {
+                        *b = 0;
+                        any = true;
+                    }
+                }
+            }
+            if any {
+                pmon!(self, "-clearnegativeboost", ts, tslot, "|[silent]");
+            }
+        } else if item == data::item_id::MENTALHERB {
+            crate::item::mental_herb_cure(self, ts, tslot);
         }
     }
 
@@ -11788,6 +11864,9 @@ self.trigger_emergency_exits();
         if hit_sub {
             return;
         }
+        if ctx.move_id == data::move_id::FLING {
+            self.fling_on_hit(ctx);
+        }
         // Clear Smog onHit (data/moves.ts clearsmog): also on a target the hit KO'd.
         if ctx.move_id == data::move_id::CLEARSMOG {
             if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
@@ -12207,6 +12286,9 @@ self.trigger_emergency_exits();
             self.rng = rng;
         }
 
+        if ctx.move_id == data::move_id::FLING {
+            self.fling_secondary(ctx, hit_sub);
+        }
         self.apply_move_specific_post_damage(ctx, hit_sub);
         self.p_tag(crate::protocol::step::DAMAGING_HIT, ctx.tside, ctx.tslot);
         // Handlers without onDamagingHitOrder run after the ordered ones.
@@ -12285,9 +12367,10 @@ self.trigger_emergency_exits();
         // the berry first): data/mods/champions/scripts.ts:538. Starf Berry
         // draws RNG for its random-stat pick, so swap self.rng out across
         // the borrow (mem::replace idiom).
+        self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
+        self.flush_fling_item();
         if !hit_sub {
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-            self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
             // eachEvent('Update') over the actives in speed order: the
             // target, and the attacker when this hit cost it HP (Rocky
             // Helmet / Rough Skin), eat their berries here, before recoil
@@ -12915,66 +12998,6 @@ self.trigger_emergency_exits();
             }
         }
 
-        // Fling — consume the thrown item and apply its on-hit effect. PS
-        // data/moves.ts:fling: the `fling` volatile's `onUpdate` removes the
-        // user's item after the move; the per-item `fling.status` /
-        // `volatileStatus` rides as a 100% secondary, so it lands only on a
-        // real (non-Substitute) hit and respects the target's status
-        // immunities. We gate consumption on the move connecting
-        // (`any_damage_dealt > 0`, which also covers a Substitute absorb —
-        // item still spent, status blocked); a clean miss spends nothing.
-        // `drag_target` is the real-hit foe slot (None behind a Sub), so the
-        // status/flinch applies exactly where PS's secondary would.
-        // Berry Fling (the TARGET eats the berry) is NOT modelled here — the
-        // berry is consumed and deals its 10 BP, but the foe's on-eat effect
-        // is deferred (same shape as Trick's un-modelled receive-time item
-        // effects). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
-        if move_id == data::move_id::FLING && any_damage_dealt > 0 {
-            // The item was already consumed at onPrepareHit timing (above, at
-            // the flingable check) regardless of connect, so it now lives in the
-            // user's `consumed_item`. The status/flinch is a move secondary, so
-            // it applies only here on a connecting hit.
-            let item_id = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .map(|a| a.consumed_item)
-                .unwrap_or(u16::MAX);
-            if item_id != u16::MAX {
-                let effect = data::ITEMS[item_id as usize].fling_effect;
-                // A flung berry: data/moves.ts fling onPrepareHit `move.onHit`, the foe eats it.
-                if data::ITEMS[item_id as usize].is_berry {
-                    if let Some((ts, tslot)) = drag_target {
-                        if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_alive()) {
-                            if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
-                                t.ate_berry = true;
-                            }
-                            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                            crate::item::cud_chew_reeat(self, ts, tslot, item_id, &mut rng);
-                            self.rng = rng;
-                        }
-                    }
-                }
-                if let Some((ts, tslot)) = drag_target {
-                    match effect {
-                        1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
-                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot),
-                        3 => self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot),
-                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot),
-                        5 => {
-                            if let Some(t) =
-                                self.side_mut(ts).active_mon_mut(tslot as usize)
-                            {
-                                if t.is_alive() {
-                                    t.set_flinched(true);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
     }
 
     /// Self-effects applied to the move's USER after damage + secondaries
