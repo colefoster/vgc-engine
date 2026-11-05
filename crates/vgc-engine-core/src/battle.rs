@@ -1741,6 +1741,8 @@ impl Battle {
     /// or an Ability Shield, prints `-ability|<holder>|<new>|<old>|[from]
     /// ability: Receiver|[of] <ally>`, then runs the new ability's Start.
     fn receiver_on_ally_faint(&mut self, side: SideRef, holder: u8, fainted: u8) {
+        // runEvent('Faint') comes before the loop's AfterFaint (sim/battle.ts faintMessages).
+        self.p_tag_step(crate::protocol::step::LOOP_FAINT);
         let Some(h) = self.side(side).active_mon(holder as usize) else { return };
         let old = h.effective_ability_id();
         if !h.is_alive() || !matches!(old, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY) {
