@@ -23648,8 +23648,16 @@ self.trigger_emergency_exits();
                 }
                 // +2 Atk on the foe (raise — apply_boosts clamps to +6 and
                 // inverts under Contrary).
+                let (maxed, confused) = self.side(ts).active_mon(tslot as usize).map_or((false, false), |t| {
+                    (t.boosts[0] >= 6, t.volatiles.has(crate::pokemon::VolatileKind::Confusion))
+                });
                 self.apply_boosts(ts, tslot, &[(0, 2)], actor_side, actor_slot);
                 self.confuse_from_move(ts, tslot, actor_side, actor_slot);
+                // boost's null and addVolatile's false combine to false:
+                // runMoveEffects' `-fail` (sim/battle-actions.ts).
+                if maxed && confused {
+                    self.p_try_fail(actor_side, actor_slot);
+                }
             }
             _ => {
                 // Foe-stat-lowering STATUS moves (Growl, Leer, Tail Whip,
