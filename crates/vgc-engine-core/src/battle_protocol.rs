@@ -962,7 +962,7 @@ impl Battle {
     /// announcement precedes every priority-0 ability (data/abilities.ts
     /// unnerve; sim/battle-actions.ts runSwitch fieldEvent('SwitchIn')).
     pub(crate) fn p_pre_announce(&mut self, order: &[(SideRef, u8)]) {
-        if !self.plog() || order.len() < 2 {
+        if !self.plog() {
             return;
         }
         for &(s, sl) in order {
@@ -1156,6 +1156,23 @@ impl Battle {
             }
             if matches!(self.terrain, crate::terrain::Terrain::Electric) && status == Status::Sleep {
                 pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
+                return;
+            }
+        }
+        // sweetveil / pastelveil onAllySetStatus: `-block`, naming the holder
+        // (data/abilities.ts).
+        let veil = match status {
+            Status::Sleep => Some((data::ability_id::SWEETVEIL, "Sweet Veil")),
+            Status::Poison | Status::Toxic => Some((data::ability_id::PASTELVEIL, "Pastel Veil")),
+            _ => None,
+        };
+        if let Some((veil, name)) = veil {
+            let holder = (0..self.format().active_count() as u8).find(|&sl| {
+                self.side(side).active_mon(sl as usize).is_some_and(|h| h.is_alive() && h.effective_ability_id() == veil)
+            });
+            if let Some(h) = holder.filter(|&h| !(h == slot && veil == data::ability_id::PASTELVEIL)) {
+                let of = self.p_ident(side, h);
+                pmon!(self, "-block", side, slot, "|ability: {name}|[of] {of}");
                 return;
             }
         }

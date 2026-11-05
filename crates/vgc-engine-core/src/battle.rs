@@ -4571,6 +4571,7 @@ self.trigger_emergency_exits();
                 };
                 let counter = self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
                     m.is_alive()
+                        && !m.must_recharge
                         && m.moves
                             .get(move_slot as usize)
                             .is_some_and(|&id| matches!(id, data::move_id::COUNTER | data::move_id::MIRRORCOAT))
@@ -8007,7 +8008,7 @@ self.trigger_emergency_exits();
             return;
         }
         if !called && !move_locked {
-            self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, skip_pp_deduct);
+            self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, ps_pick.or(target), skip_pp_deduct);
         }
         // Metronome's volatile onTryMove (data/items.ts metronome): `skip_pp_deduct`
         // is a two-turn move's release, when `twoturnmove` is still up.
@@ -12415,11 +12416,6 @@ self.trigger_emergency_exits();
                 pmon!(self, "-singlemove", ctx.actor_side, ctx.actor_slot, "|Glaive Rush|[silent]");
             }
         }
-        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
-        // hit (data/moves.ts outrage, data/conditions.ts lockedmove onStart / onRestart).
-        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH | data::move_id::RAGINGFURY) {
-            self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
-        }
         if hit_sub {
             return;
         }
@@ -12496,6 +12492,8 @@ self.trigger_emergency_exits();
             use crate::pokemon::VolatileKind as V;
             let gravity = self.gravity_turns > 0;
             let mut applies = false;
+            // smackdown onStart's queue.cancelMove (data/moves.ts).
+            let mut cancel = false;
             if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                 if t.is_alive() && !t.volatiles.has(V::SmackdownGrounded) {
                     let (types, n) = t.effective_types();
@@ -12526,6 +12524,9 @@ self.trigger_emergency_exits();
                         });
                     }
                 }
+            }
+            if cancel {
+                self.pursuit_consumed[ctx.tside as usize][(ctx.tslot as usize).min(1)] = true;
             }
             if applies {
                 pmon!(self, "-start", ctx.tside, ctx.tslot, "|Smack Down");
@@ -20461,6 +20462,12 @@ self.trigger_emergency_exits();
                                     turns_remaining: 0,
                                     payload: 0,
                                 });
+                            }
+                            if cancel {
+                                self.pursuit_consumed[side as usize][s as usize] = true;
+                            }
+                            if applies {
+                                pmon!(self, "-activate", side, s, "|move: Gravity");
                             }
                         }
                     }
