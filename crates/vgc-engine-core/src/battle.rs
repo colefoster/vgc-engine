@@ -8044,7 +8044,8 @@ self.trigger_emergency_exits();
                 return;
             };
             let before = self.status_effect_snapshot();
-            let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m, target).is_some();
+            let bounce_holder = if m.is_reflectable { self.find_magic_bounce_target(actor_side, m, target) } else { None };
+            let bounced = bounce_holder.is_some();
             self.resolve_status_move_branch(
                 actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act, &before,
             );
@@ -8058,7 +8059,9 @@ self.trigger_emergency_exits();
             let dragging = matches!(move_id, data::move_id::ROAR | data::move_id::WHIRLWIND)
                 && self.force_switch_flags.iter().flatten().any(|&f| f);
             if r == crate::pokemon::MoveResult::Failed && !dragging {
-                self.p_status_fail_fallback(actor_side, actor_slot);
+                // A reflected move fails on its new user.
+                let (fs, fsl) = bounce_holder.unwrap_or((actor_side, actor_slot));
+                self.p_status_fail_fallback(fs, fsl);
             }
             // charge onAfterMove: any Electric move but Charge ends it.
             if m.type_ == 3 && move_id != data::move_id::CHARGE {
@@ -16354,6 +16357,16 @@ self.trigger_emergency_exits();
         target: Option<Target>,
     ) -> Option<(SideRef, u8)> {
         let opp = actor_side.opposing();
+        // Magic Bounce is breakable (data/abilities.ts magicbounce): `active_move_user`
+        // is the mon whose move is running.
+        let breaks = self.after_move_user.is_some_and(|(s, sl, _)| {
+            s == actor_side && self.side(s).active_mon(sl as usize).is_some_and(|a| {
+                matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE)
+            })
+        });
+        if breaks {
+            return None;
+        }
         // A protected holder blocks the move first: Protect's onTryHit runs
         // at priority 3, Magic Bounce's at 1 (data/moves.ts protect,
         // data/abilities.ts magicbounce).
