@@ -23590,6 +23590,16 @@ self.trigger_emergency_exits();
                     }
                     return;
                 }
+                // uproar onAnySetStatus runs ahead of the terrains' onSetStatus.
+                let n_uproar = self.format().active_count() as u8;
+                let uproar = |b: &Self, sd: SideRef, sl: u8| {
+                    b.side(sd).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.volatiles.has(crate::pokemon::VolatileKind::Uproar))
+                };
+                if (0..n_uproar).any(|sl| uproar(self, SideRef::P1, sl) || uproar(self, SideRef::P2, sl)) {
+                    let msg = if uproar(self, actor_side, actor_slot) { "|[msg]" } else { "" };
+                    pmon!(self, "-fail", actor_side, actor_slot, "|slp|[from] Uproar{msg}");
+                    return;
+                }
                 // onHit's setStatus('slp'): SetStatus vetoes fail the move, except
                 // Sweet Veil's `null` (data/abilities.ts, data/moves.ts terrains).
                 if shielded {
