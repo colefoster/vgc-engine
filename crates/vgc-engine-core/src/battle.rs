@@ -5088,25 +5088,21 @@ self.trigger_emergency_exits();
         }
         self.white_herb_move_defer = true;
         self.snapshot_hp_before_action(action.side, action.actor_slot, action.choice);
-        // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
-        // iff any action ordered AFTER the current one this turn is a
-        // move/switch/instaswitch/shift. PS shifts the current action
-        // off the queue BEFORE running it, so `willAct()` only sees
-        // later actions. Stall moves (Protect family / Endure / etc.)
-        // gate their success+RNG draw on this — if no later action
-        // will act, the stall move FAILS and does NOT draw. We mirror
-        // by scanning the remainder of `order` for a still-alive Move
-        // action (switches in our engine already ran up-front, so the
-        // only "later acting" actions at move-resolution time are
-        // moves).
+        // PS `Battle.queue.willAct()` (sim/battle-queue.ts:315): true iff any
+        // action after the current one this turn is a move/switch/instaswitch/
+        // shift. PS shifts the current action off the queue BEFORE running it,
+        // so `willAct()` only sees later actions. Stall moves (Protect family /
+        // Endure / etc.) gate their success+RNG draw on this — if no later
+        // action will act, the stall move FAILS and does NOT draw. A fainted
+        // mon's action stays queued and counts (faintMessages doesn't cancel
+        // it); only switchIn's cancelAction removes an action, for a mon that
+        // left the field (sim/battle-actions.ts switchIn). Switches in our
+        // engine already ran up-front, so later actions are moves.
         let will_act = order[idx + 1..].iter().any(|a| {
             matches!(
                 a.choice,
                 Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. }
-            ) && self
-                    .side(a.side)
-                    .active_mon(a.actor_slot as usize)
-                    .is_some_and(|m| m.is_alive())
+            ) && !self.replaced_mid_turn[a.side as usize][(a.actor_slot as usize).min(1)]
         });
         // Mark this actor as having consumed their queued action
         // BEFORE resolving — so Sucker Punch's `willMove(target)`
@@ -10011,9 +10007,16 @@ self.trigger_emergency_exits();
                     && self.pursuit_intercepting,
                 ally_power_spot, ally_battery, steely_spirit_holders,
                 defender_friend_guarded,
-                // Analytic ×1.3: the attacker moves last iff no later action
-                // this turn is a move by a live mon (PS queue.willMove scan).
-                attacker_moves_last: !will_act,
+                // Analytic ×1.3: no other active mon will still move this turn
+                // (data/abilities.ts analytic: queue.willMove, null if fainted).
+                attacker_moves_last: ![SideRef::P1, SideRef::P2].into_iter().any(|sd| {
+                    (0..2usize).any(|sl| {
+                        matches!(pending_kind[sd as usize][sl], 1 | 2)
+                            && !(sd == actor_side && sl == actor_slot as usize)
+                            && !self.replaced_mid_turn[sd as usize][sl]
+                            && self.side(sd).active_mon(sl).is_some_and(|m| m.is_alive())
+                    })
+                }),
                 champions: self.champions,
                 // A resist berry's onSourceModifyDamage returns early on a hit its
                 // holder's Substitute takes (data/items.ts chopleberry et al.).
