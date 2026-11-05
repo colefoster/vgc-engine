@@ -49,8 +49,6 @@
 {"game":"Imposter should not activate if Skill Swapped","format":"gen9customgame"}
 {"game":"Intrepid Sword should only increase the user's Attack stat once per game","format":"gen9customgame"}
 {"game":"Intrepid Sword should not use up its once-per-game boost if it switches in while its Ability is suppressed","format":"gen9customgame"}
-{"game":"Klutz should negate residual healing events","format":"gen9customgame"}
-{"game":"Klutz should prevent items from being consumed","format":"gen9customgame"}
 {"game":"Klutz should not prevent Pokemon from Mega Evolving","format":"gen9customgame"}
 {"game":"Levitate should have its airborne property suppressed by Mold Breaker if it is forced out by a move","format":"gen9customgame"}
 {"game":"Lightning Rod should redirect to the Pokemon having the ability longest","format":"gen9doublescustomgame"}
