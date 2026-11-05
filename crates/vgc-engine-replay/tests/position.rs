@@ -204,6 +204,7 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                             ("borrowed_slot", serde_json::json!([65535, 0])),
                             ("last_foe_damage", serde_json::json!(0)),
                             ("hurt_this_turn", serde_json::json!(false)),
+                            ("foe_hit_slot", serde_json::json!(0)),
                         ] {
                             if m.get(key) == Some(&rest) {
                                 m.remove(key);
@@ -220,6 +221,16 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                     }
                 }
                 // Same for the turn-scoped ps-rng field, absent without the feature.
+                for (key, rest) in [
+                    ("wonder_room_ran", serde_json::json!(false)),
+                    ("boost_changes", serde_json::json!(0)),
+                    ("zero_hit_this_move", serde_json::json!(false)),
+                    ("mega_keeps_stall", serde_json::json!([[false, false], [false, false]])),
+                ] {
+                    if battle[key] == rest {
+                        battle.as_object_mut().unwrap().remove(key);
+                    }
+                }
                 if battle["ps_recharge_changed"] == serde_json::json!([0, 0]) {
                     battle.as_object_mut().unwrap().remove("ps_recharge_changed");
                 }

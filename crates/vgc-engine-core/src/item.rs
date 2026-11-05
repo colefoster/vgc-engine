@@ -103,17 +103,11 @@ pub fn try_consume_type_resist_berry(
     // eatItem's `[eat]` (sim/pokemon.ts:1783), then the berry's
     // onSourceModifyDamage `[weaken]` (data/items.ts occaberry et al.).
     battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[eat]");
+    // eatItem's runEvent('EatItem'), ahead of onEat's return (sim/pokemon.ts eatItem,
+    // data/abilities.ts cheekpouch).
+    on_eat_item_event(battle, target_side, target_slot, item_id, None);
     battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[weaken]");
     maybe_on_item_consumed(battle, target_side, target_slot, item_id);
-    // Cud Chew's onEatItem schedules the re-eat for this berry too
-    // (data/abilities.ts:742-750); its onEat does nothing.
-    let in_residual = battle.in_residual;
-    if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        if m.effective_ability_id() == data::ability_id::CUDCHEW {
-            m.cud_chew_berry = item_id;
-            m.cud_chew_counter = if in_residual { 1 } else { 2 };
-        }
-    }
     true
 }
 
@@ -186,7 +180,7 @@ pub fn type_resist_berry_fires(
     if requires_se {
         use crate::damage::TypeEff;
         let eff = crate::damage::effectiveness_for_move_type(move_id, move_type, defender);
-        if !matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+        if !matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
             return false;
         }
     }
@@ -423,7 +417,7 @@ fn hp_berries_on_update(
         // gen 6+ heals 1/4 max (was 30 flat HP in gen 4).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 4).max(1);
+                let heal = (m.stats.hp / 4).max(1) * if m.effective_ability_id() == data::ability_id::RIPEN { 2 } else { 1 };
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
             m.consume_item();
@@ -469,7 +463,7 @@ fn hp_berries_on_update(
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
             if !m.is_heal_blocked() {
-                m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
+                m.current_hp = m.current_hp.saturating_add(if m.effective_ability_id() == data::ability_id::RIPEN { 20 } else { 10 }).min(m.stats.hp);
             }
             m.consume_item();
         }
@@ -497,7 +491,7 @@ fn hp_berries_on_update(
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
             if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 3).max(1);
+                let heal = (m.stats.hp / 3).max(1) * if m.effective_ability_id() == data::ability_id::RIPEN { 2 } else { 1 };
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
             m.consume_item();
@@ -760,6 +754,8 @@ fn eat_heal(battle: &mut Battle, side: SideRef, slot: u8, amount: u16, name: &st
     if m.is_heal_blocked() || m.current_hp == 0 || m.current_hp >= m.stats.hp {
         return;
     }
+    // ripen onTryHeal doubles a berry's heal (data/abilities.ts ripen).
+    let amount = if m.effective_ability_id() == data::ability_id::RIPEN { amount.saturating_mul(2) } else { amount };
     m.current_hp = m.current_hp.saturating_add(amount).min(m.stats.hp);
     if battle.plog() {
         let suffix = match of {
@@ -894,7 +890,7 @@ pub(crate) fn eat_effect(
     ) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 3).max(1);
+                let heal = (m.stats.hp / 3).max(1) * if m.effective_ability_id() == data::ability_id::RIPEN { 2 } else { 1 };
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
         }
@@ -1201,7 +1197,7 @@ pub fn on_damaging_hit(
                 move_type < 18
                     && matches!(
                         crate::damage::effectiveness_for_attack(a, move_id, move_type, d),
-                        TypeEff::DoubleX | TypeEff::QuadrupleX
+                        TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX
                     )
             }
             _ => false,
@@ -1235,7 +1231,7 @@ pub fn on_damaging_hit(
             };
             let eff = crate::damage::type_effectiveness(mv.type_, species);
             use crate::damage::TypeEff;
-            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
                 let before = battle.side(target_side).active_mon(target_slot as usize).map_or(0, |t| t.current_hp);
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
                     // Eaten even under Heal Block; `onTryHeal` vetoes the heal.
@@ -1268,10 +1264,7 @@ pub fn on_damaging_hit(
     // <https://bulbapedia.bulbagarden.net/wiki/Absorb_Bulb>.
     // Aura Wheel's onModifyType has already run (data/moves.ts:801-807):
     // Dark from a Morpeko-Hangry, so it doesn't trigger Cell Battery.
-    let move_type = match battle.side(attacker_side).active_mon(attacker_slot as usize) {
-        Some(a) if move_id == data::move_id::AURAWHEEL => crate::damage::aura_wheel_type(a),
-        _ => data::MOVES[move_id as usize].type_,
-    };
+    let move_type = crate::ability::hit_move_type(battle, attacker_side, attacker_slot, move_id);
     // (slug, required type, stat index — 0=Atk, 2=SpA, 3=SpD).
     let booster_entry = match item_id {
         data::item_id::ABSORBBULB   => Some((2u8, 2usize)), // Water → SpA
