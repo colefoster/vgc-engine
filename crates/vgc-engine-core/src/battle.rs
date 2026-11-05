@@ -21750,6 +21750,9 @@ self.trigger_emergency_exits();
                 //   4. Clear the Terrain (gen 8+).
                 // accuracy: true (never misses) — no accuracy roll.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Defog_(move)>
+                // `return success`, set by the evasion drop and the removals, not
+                // by the terrain.
+                let mut defog_success = false;
                 if let Some((ts, tslot)) = opp_target {
                     // Evasion drop unless the target hides behind a Sub.
                     let sub_blocks = self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot);
@@ -21763,6 +21766,7 @@ self.trigger_emergency_exits();
                     } else if !sub_blocks {
                         let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(ts, tslot, &[(6, -1)], actor_side, actor_slot);
+                        defog_success |= self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.boosts != before);
                         if ts != actor_side {
                             self.after_foe_drop(ts, tslot, before, true);
                         }
@@ -21778,20 +21782,22 @@ self.trigger_emergency_exits();
                     if tc.mist_turns > 0 { self.p_push(format!("|-sideend|{sid}|Mist")); }
                     self.p_defog_hazards(ts, &of);
                     let tc = &mut self.side_mut(ts).conditions;
+                    defog_success |= tc.reflect_turns > 0 || tc.light_screen_turns > 0 || tc.aurora_veil_turns > 0
+                        || tc.safeguard_turns > 0 || tc.mist_turns > 0;
                     tc.reflect_turns = 0;
                     tc.light_screen_turns = 0;
                     tc.aurora_veil_turns = 0;
                     tc.safeguard_turns = 0;
                     tc.mist_turns = 0;
                     // Hazards off the target's side.
-                    self.clear_entry_hazards(ts);
+                    defog_success |= self.clear_entry_hazards(ts);
                 }
                 // Hazards off the Defogger's own side.
                 if self.plog() {
                     let of = self.p_ident(actor_side, actor_slot);
                     self.p_defog_hazards(actor_side, &of);
                 }
-                self.clear_entry_hazards(actor_side);
+                defog_success |= self.clear_entry_hazards(actor_side);
                 // Clear Terrain (gen 8+).
                 if self.terrain != crate::terrain::Terrain::None {
                     let name = crate::battle_protocol::terrain_end_name(self.terrain);
@@ -21801,6 +21807,9 @@ self.trigger_emergency_exits();
                 self.terrain_turns = 0;
                 // PR-LC1: terrain field changed — refresh cache.
                 self.sync_weather_terrain_cache();
+                if !defog_success {
+                    self.p_try_fail(actor_side, actor_slot);
+                }
             }
             data::move_id::TIDYUP => {
                 // PS data/moves.ts:tidyup onHit. Status move, target "self",
