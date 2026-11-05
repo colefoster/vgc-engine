@@ -2500,10 +2500,12 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(has_ability_shield);
+            // mummy onDamagingHit: `sourceAbility.flags['cantsuppress']` keeps it.
             if attacker_alive
                 && attacker_curr_id != u16::MAX
                 && attacker_curr_id != rep
                 && !attacker_shielded
+                && !is_unsuppressable_ability(attacker_curr_id)
             {
                 if let Some(a) = battle
                     .side_mut(attacker_side)
