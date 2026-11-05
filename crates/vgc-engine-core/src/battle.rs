@@ -19150,9 +19150,12 @@ self.trigger_emergency_exits();
                 );
                 (immune, acc, attacker.effective_crit_stage().saturating_add(m.crit_stage_delta), crit_immune)
             };
+            // noguard onAnyAccuracy returns true, on either side (data/abilities.ts noguard).
+            let no_guard = src_mon.effective_ability_id() == data::ability_id::NOGUARD
+                || self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.effective_ability_id() == data::ability_id::NOGUARD);
             if !immune {
                 self.rng.set_decision(RngDecision::Accuracy);
-                if self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
+                if !no_guard && self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
                     self.p_future_miss(src_side, src_idx as u8, tside, tslot);
                     return;
                 }
