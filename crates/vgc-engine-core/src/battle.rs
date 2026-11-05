@@ -25923,7 +25923,23 @@ fn pressure_extra_pp(
         // 5 allAdjacent | 6 allAdjacentFoes | 12 all — every opposing
         // Pressure holder (the ally / user targets don't add).
         5 | 6 | 12 => count_all(),
-        // self / ally / side / team / scripted — no foe target.
+        // scripted: resolveAction's pick, or the attacker's slot once one hit the
+        // user (data/moves.ts counter onRedirectTarget, metalburst onModifyTarget).
+        14 => {
+            let Some(a) = battle.side(actor_side).active_mon(actor_slot as usize) else { return 0 };
+            let ((by_side, by_slot), dmg) = match m.slug {
+                "counter" => (a.last_phys_attacker, a.last_phys_damage),
+                "mirrorcoat" => (a.last_spec_attacker, a.last_spec_damage),
+                _ => (a.last_attacker, a.last_foe_damage),
+            };
+            let slot = if dmg > 0 && by_side == opp as u8 {
+                by_slot as usize
+            } else {
+                battle.ps_scripted_pick[actor_side as usize][(actor_slot as usize).min(1)] as usize
+            };
+            (slot < active_n && is_pressure_foe(slot)) as u8
+        }
+        // self / ally / side / team — no foe target.
         _ => 0,
     }
 }
