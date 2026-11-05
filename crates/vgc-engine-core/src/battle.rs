@@ -18134,7 +18134,10 @@ self.trigger_emergency_exits();
                 b.side(sd).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.volatiles.has(crate::pokemon::VolatileKind::Uproar))
             };
             let n = self.format().active_count() as u8;
-            let any = (0..n).any(|sl| holder(self, SideRef::P1, sl) || holder(self, SideRef::P2, sl));
+            // trySetStatus keeps the current status, so a statused target fails on
+            // that before the event (sim/pokemon.ts trySetStatus).
+            let any = self.side(side).active_mon(slot as usize).is_some_and(|m| matches!(m.status, Status::None))
+                && (0..n).any(|sl| holder(self, SideRef::P1, sl) || holder(self, SideRef::P2, sl));
             // Sweet Veil's onAllySetStatus stops the event first (data/abilities.ts sweetveil).
             let veiled = (0..n).any(|sl| self.side(side).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::SWEETVEIL));
             if any && !veiled {
