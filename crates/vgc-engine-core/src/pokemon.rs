@@ -1223,6 +1223,13 @@ impl Pokemon {
         base.max(1)
     }
 
+    /// The weight with the holder's breakable weight ability ignored.
+    pub fn weight_dg_ignoring_ability(&self) -> u32 {
+        let base = self.species().weight_dg as u32;
+        let w = if self.effective_item_id() == data::item_id::FLOATSTONE { base / 2 } else { base };
+        w.max(1)
+    }
+
     pub fn is_alive(&self) -> bool {
         !self.fainted && self.current_hp > 0
     }

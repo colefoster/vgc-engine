@@ -1144,7 +1144,12 @@ pub(crate) fn calculate_damage_with_bp(
         // item's onModifyWeight); Heavy/Light Metal still deferred. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Low_Kick_(move)>
         // <https://bulbapedia.bulbagarden.net/wiki/Grass_Knot_(move)>
-        let w = defender.effective_weight_dg();
+        // A Mold Breaker user ignores the target's Heavy / Light Metal.
+        let w = if matches!(attacker.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE) {
+            defender.weight_dg_ignoring_ability()
+        } else {
+            defender.effective_weight_dg()
+        };
         let bp = if w >= 2000 { 120 }
             else if w >= 1000 { 100 }
             else if w >= 500 { 80 }
@@ -1171,7 +1176,10 @@ pub(crate) fn calculate_damage_with_bp(
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heat_Crash_(move)>
         //             <https://bulbapedia.bulbagarden.net/wiki/Heavy_Slam_(move)>
         let user_w = attacker.effective_weight_dg() as u64;
-        let tgt_w = (defender.effective_weight_dg() as u64).max(1);
+        // A Mold Breaker user ignores the target's Heavy / Light Metal (breakable,
+        // sim/battle.ts suppressingAbility).
+        let breaks = matches!(attacker.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
+        let tgt_w = (if breaks { defender.weight_dg_ignoring_ability() } else { defender.effective_weight_dg() } as u64).max(1);
         let bp = if user_w >= tgt_w * 5 { 120 }
             else if user_w >= tgt_w * 4 { 100 }
             else if user_w >= tgt_w * 3 { 80 }
