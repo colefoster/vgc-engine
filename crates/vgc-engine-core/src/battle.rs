@@ -13745,6 +13745,12 @@ self.trigger_emergency_exits();
                 pipeline.current = raw;
                 pipeline.current
             } else {
+                // getDamage rolls whatever Shell Armor's CriticalHit then says
+                // (sim/battle-actions.ts), as on the first hit.
+                #[cfg(feature = "ps-rng")]
+                if inv.crit_immune && self.force_crit.is_none() && self.rng.is_ps() {
+                    let _ = self.rng.crit_with_stage(inv.crit_stage);
+                }
                 let hc = if inv.crit_immune {
                     false
                 } else if let Some(v) = self.force_crit {
@@ -13774,6 +13780,15 @@ self.trigger_emergency_exits();
             if hit_idx == 0 {
                 inv.base_hit_dmg
             } else {
+                #[cfg(feature = "ps-rng")]
+                if inv.crit_immune
+                    && inv.fixed_dmg_snapshot.is_none()
+                    && inv.move_id != data::move_id::SURGINGSTRIKES
+                    && self.force_crit.is_none()
+                    && self.rng.is_ps()
+                {
+                    let _ = self.rng.crit_with_stage(inv.crit_stage);
+                }
                 let hc = if inv.fixed_dmg_snapshot.is_some() || inv.crit_immune {
                     false
                 } else if inv.move_id == data::move_id::SURGINGSTRIKES {
