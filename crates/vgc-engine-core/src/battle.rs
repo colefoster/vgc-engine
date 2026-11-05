@@ -7328,8 +7328,8 @@ self.trigger_emergency_exits();
                 #[cfg(feature = "ps-rng")]
                 if self.rng.is_ps() && !revives
                     && self.side(side).active_mon(slot as usize).is_some_and(|m| {
-                        // Baton Pass sets skipPursuit (data/moves.ts batonpass self.onHit).
-                        m.is_alive() && m.moves.get(m.last_used_move_slot as usize) != Some(&data::move_id::BATONPASS)
+                        // Baton Pass and Shed Tail set skipPursuit (data/moves.ts:1110, :16186).
+                        m.is_alive() && !matches!(m.moves.get(m.last_used_move_slot as usize), Some(&data::move_id::BATONPASS | &data::move_id::SHEDTAIL))
                     })
                 {
                     self.ps_active_ties(false, "shuffle");
