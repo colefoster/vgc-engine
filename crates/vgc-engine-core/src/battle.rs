@@ -9594,6 +9594,11 @@ self.trigger_emergency_exits();
                     }
                 }
                 self.apply_destiny_bond_counter_faint(actor_side, actor_slot, tside, tslot);
+                // The hit's DamagingHit and AfterMoveSecondary run as for any other move
+                // (data/mods/champions/scripts.ts:402, :575).
+                self.p_tag(crate::protocol::step::DAMAGING_HIT, tside, tslot);
+                self.damaging_hit_event(tside, tslot, actor_side, actor_slot, move_id, &attacker, false, false, capped, capped, capped);
+                self.apply_reactive_switch_items(tside, tslot, actor_side, actor_slot, false, capped, move_id);
                 continue;
             }
 
@@ -13438,73 +13443,9 @@ self.trigger_emergency_exits();
             self.fling_secondary(ctx, hit_sub);
         }
         self.apply_move_specific_post_damage(ctx, hit_sub);
-        self.p_tag(crate::protocol::step::DAMAGING_HIT, ctx.tside, ctx.tslot);
-        // Handlers without onDamagingHitOrder run after the ordered ones.
-        self.p_sub(3);
-        if !hit_sub && hp_lost > 0 {
-            self.p_illusion_break(ctx.tside, ctx.tslot);
-        }
-
-        // Aftermath (onDamagingHitOrder 1): a holder KO'd by a contact move costs the
-        // attacker 1/4 of its HP; Damp stops it (data/abilities.ts aftermath, damp).
-        if !hit_sub && hp_lost > 0 {
-            let aftermath = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| {
-                d.current_hp == 0 && d.effective_ability_id() == data::ability_id::AFTERMATH
-            }) && crate::damage::move_makes_contact(&ctx.move_def, &ctx.attacker)
-                && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive() && !crate::ability::has_magic_guard(a));
-            let damp = (0..self.format().active_count() as u8).any(|sl| {
-                [SideRef::P1, SideRef::P2].iter().any(|&sd| self.side(sd).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::DAMP))
-            });
-            if aftermath && !damp {
-                if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
-                    a.current_hp = a.current_hp.saturating_sub((a.stats.hp / 4).max(1));
-                    if a.current_hp == 0 {
-                        a.fainted = true;
-                    }
-                }
-                if self.plog() {
-                    let of = self.p_ident(ctx.tside, ctx.tslot);
-                    self.p_sub(1);
-                    self.p_damage(ctx.actor_side, ctx.actor_slot, &format!("|[from] ability: Aftermath|[of] {of}"));
-                    self.p_sub(3);
-                }
-            }
-        }
-
-        // Innards Out (onDamagingHitOrder 1): a holder KO'd by the hit deals
-        // the HP it lost (plus earlier hits of a multi-hit move) to the
-        // attacker (data/abilities.ts:2140-2147).
-        if !hit_sub && hp_lost > 0 {
-            let innards = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| {
-                d.current_hp == 0 && d.effective_ability_id() == data::ability_id::INNARDSOUT
-            });
-            if innards {
-                let dmg = if ctx.hits > 1 { ctx.any_damage_dealt } else { hp_lost };
-                if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
-                    if a.is_alive() && !crate::ability::has_magic_guard(a) {
-                        a.current_hp = a.current_hp.saturating_sub(dmg);
-                        if a.current_hp == 0 {
-                            a.fainted = true;
-                        }
-                    }
-                }
-                self.ps_note_hit_ko(ctx.actor_side, ctx.actor_slot);
-                if self.plog() {
-                    let of = self.p_ident(ctx.tside, ctx.tslot);
-                    self.p_sub(1);
-                    self.p_damage(ctx.actor_side, ctx.actor_slot, &format!("|[from] ability: Innards Out|[of] {of}"));
-                    self.p_sub(3);
-                }
-            }
-        }
-
-        // Defender ability `onDamagingHit` and the DamagingHit items (Rocky
-        // Helmet, Jaboca). Runs only when the hit actually reached the mon —
-        // sub-absorbed hits skipped. PS runs DamagingHit before the move's
-        // AfterHit (data/mods/champions/scripts.ts spreadMoveHit).
-        self.apply_on_hit_reactions(
-            ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
-        );
+        let total_dealt = ctx.any_damage_dealt;
+        let (ats, atsl, attacker_snapshot) = (ctx.actor_side, ctx.actor_slot, &ctx.attacker);
+        self.damaging_hit_event(ctx.tside, ctx.tslot, ats, atsl, ctx.move_id, attacker_snapshot, ctx.crit, hit_sub, effective_dmg, hp_lost, if ctx.hits > 1 { total_dealt } else { hp_lost });
 
         // Knock Off's AfterHit takes the item after the DamagingHit
         // reactions (data/moves.ts knockoff onAfterHit).
@@ -13627,6 +13568,93 @@ self.trigger_emergency_exits();
                 self.ps_reset_speed(ctx.tside, ctx.tslot as usize);
             }
         }
+    }
+
+    /// spreadMoveHit's runEvent('DamagingHit') for one target (data/mods/champions/scripts.ts:402):
+    /// Illusion, Aftermath, Innards Out, the on-hit abilities and items.
+    #[allow(clippy::too_many_arguments)]
+    fn damaging_hit_event(
+        &mut self,
+        tside: SideRef,
+        tslot: u8,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &Pokemon,
+        crit: bool,
+        hit_sub: bool,
+        effective_dmg: u16,
+        hp_lost: u16,
+        innards_dmg: u16,
+    ) {
+        self.p_tag(crate::protocol::step::DAMAGING_HIT, tside, tslot);
+        // Handlers without onDamagingHitOrder run after the ordered ones.
+        self.p_sub(3);
+        if !hit_sub && hp_lost > 0 {
+            self.p_illusion_break(tside, tslot);
+        }
+
+        // Aftermath (onDamagingHitOrder 1): a holder KO'd by a contact move costs the
+        // attacker 1/4 of its HP; Damp stops it (data/abilities.ts aftermath, damp).
+        if !hit_sub && hp_lost > 0 {
+            let aftermath = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                d.current_hp == 0 && d.effective_ability_id() == data::ability_id::AFTERMATH
+            }) && crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker)
+                && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive() && !crate::ability::has_magic_guard(a));
+            let damp = (0..self.format().active_count() as u8).any(|sl| {
+                [SideRef::P1, SideRef::P2].iter().any(|&sd| self.side(sd).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::DAMP))
+            });
+            if aftermath && !damp {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = a.current_hp.saturating_sub((a.stats.hp / 4).max(1));
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+                if self.plog() {
+                    let of = self.p_ident(tside, tslot);
+                    self.p_sub(1);
+                    self.p_damage(actor_side, actor_slot, &format!("|[from] ability: Aftermath|[of] {of}"));
+                    self.p_sub(3);
+                }
+            }
+        }
+
+        // Innards Out (onDamagingHitOrder 1): a holder KO'd by the hit deals
+        // the HP it lost (plus earlier hits of a multi-hit move) to the
+        // attacker (data/abilities.ts:2140-2147).
+        if !hit_sub && hp_lost > 0 {
+            let innards = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                d.current_hp == 0 && d.effective_ability_id() == data::ability_id::INNARDSOUT
+            });
+            if innards {
+                let dmg = innards_dmg;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() && !crate::ability::has_magic_guard(a) {
+                        a.current_hp = a.current_hp.saturating_sub(dmg);
+                        if a.current_hp == 0 {
+                            a.fainted = true;
+                        }
+                    }
+                }
+                self.ps_note_hit_ko(actor_side, actor_slot);
+                if self.plog() {
+                    let of = self.p_ident(tside, tslot);
+                    self.p_sub(1);
+                    self.p_damage(actor_side, actor_slot, &format!("|[from] ability: Innards Out|[of] {of}"));
+                    self.p_sub(3);
+                }
+            }
+        }
+
+        // Defender ability `onDamagingHit` and the DamagingHit items (Rocky
+        // Helmet, Jaboca). Runs only when the hit actually reached the mon —
+        // sub-absorbed hits skipped. PS runs DamagingHit before the move's
+        // AfterHit (data/mods/champions/scripts.ts spreadMoveHit).
+        self.apply_on_hit_reactions(
+            tside, tslot, actor_side, actor_slot, move_id, attacker, crit, hit_sub, effective_dmg,
+        );
+
     }
 
     /// Post-damage attacker/defender reactions that fire per-hit once a
