@@ -14843,6 +14843,7 @@ self.trigger_emergency_exits();
                     // veto: the failed move is still the last move.
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
+                    mon.lock_choice(move_slot);
                 }
                 return MoveIdentityOutcome::Abort;
             }
@@ -14866,6 +14867,7 @@ self.trigger_emergency_exits();
                 mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
+                mon.lock_choice(move_slot);
             }
             return MoveIdentityOutcome::Abort;
         }
@@ -14915,13 +14917,7 @@ self.trigger_emergency_exits();
                     // veto: the failed move is still the last move.
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
-                    // A Choice item's onModifyMove also precedes onTry
-                    // (sim/battle-actions.ts useMoveInner, data/items.ts choicescarf).
-                    let choice = matches!(mon.item_id, data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
-                        || mon.effective_ability_id() == data::ability_id::GORILLATACTICS;
-                    if choice && mon.locked_move_slot() == 255 {
-                        mon.set_locked_move_slot(move_slot);
-                    }
+                    mon.lock_choice(move_slot);
                 }
                 return MoveIdentityOutcome::Abort;
             }
@@ -14949,13 +14945,7 @@ self.trigger_emergency_exits();
                     mon.spend_pp(move_slot, 1 + extra);
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
-                    // A Choice item's onModifyMove also precedes onTry
-                    // (sim/battle-actions.ts useMoveInner, data/items.ts choicescarf).
-                    let choice = matches!(mon.item_id, data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
-                        || mon.effective_ability_id() == data::ability_id::GORILLATACTICS;
-                    if choice && mon.locked_move_slot() == 255 {
-                        mon.set_locked_move_slot(move_slot);
-                    }
+                    mon.lock_choice(move_slot);
                 }
                 return MoveIdentityOutcome::Abort;
             }
@@ -15065,6 +15055,7 @@ self.trigger_emergency_exits();
                 mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
+                mon.lock_choice(move_slot);
             }
             return MoveIdentityOutcome::Abort;
         }
