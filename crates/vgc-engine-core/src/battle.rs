@@ -19322,8 +19322,6 @@ self.trigger_emergency_exits();
             return;
         }
         self.terrain = terrain;
-        // PR-LC1: terrain field changed — refresh cache.
-        self.sync_weather_terrain_cache();
         // The terrain's onFieldStart, before the TerrainChange event
         // (seeds, paradox abilities; data/moves.ts electricterrain et al.).
         if self.plog() {
@@ -19336,6 +19334,8 @@ self.trigger_emergency_exits();
                 None => self.p_push(format!("|-fieldstart|{name}")),
             }
         }
+        // PR-LC1: terrain field changed — refresh cache (and TerrainChange).
+        self.sync_weather_terrain_cache();
         let setter_item = self
             .side(setter_side)
             .active_mon(setter_slot as usize)
