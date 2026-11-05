@@ -5813,6 +5813,11 @@ self.trigger_emergency_exits();
             }
         }
         self.turn = self.turn.saturating_add(1);
+        // A Cloud Nine holder that fainted stops suppressing the weather: the
+        // cache must agree with a reload at the replacement stop.
+        if self.cached_weather != self.weather {
+            self.cached_weather = self.recompute_effective_weather();
+        }
         let p1_dead = self.p1.is_defeated();
         let p2_dead = self.p2.is_defeated();
         let winner = match (p1_dead, p2_dead) {
