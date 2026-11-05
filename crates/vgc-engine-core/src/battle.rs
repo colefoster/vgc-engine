@@ -11058,6 +11058,7 @@ self.trigger_emergency_exits();
                 pipeline,
                 hits,
                 any_damage_dealt,
+                sub_hits: 0,
                 drag_target,
                 target_fainted_this_hit: false,
                 per_hit_inv,
@@ -13147,11 +13148,15 @@ self.trigger_emergency_exits();
             self.p_item_line("-enditem", ctx.tside, ctx.tslot, data::item_id::AIRBALLOON, "");
             crate::ability::on_item_consumed(self, ctx.tside, ctx.tslot);
         }
-        // PS counts every hit whose damage is a number, a Substitute's
-        // HIT_SUBSTITUTE (0) included (data/mods/champions/scripts.ts:564-567).
-        if (ctx.tside, ctx.tslot) != (ctx.actor_side, ctx.actor_slot) {
+        // timesAttacked += hit - 1, only for a target still in targetsCopy after the last
+        // hit: a Substitute's hit nulls it, so a hit that stops at the doll doesn't count
+        // and one that breaks it counts once a later hit lands (scripts.ts:564-567).
+        if hit_sub {
+            ctx.sub_hits = ctx.sub_hits.saturating_add(1);
+        } else if (ctx.tside, ctx.tslot) != (ctx.actor_side, ctx.actor_slot) {
+            let n = 1 + std::mem::take(&mut ctx.sub_hits);
             if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                d.times_attacked = d.times_attacked.saturating_add(1);
+                d.times_attacked = d.times_attacked.saturating_add(n);
             }
         }
         // Rebind `m` after the &mut ctx borrow above ends, so the
@@ -25804,6 +25809,8 @@ pub(crate) struct PerTargetContext {
 
     // ---- mutable accumulators (read back by per-target tail) ----
     pub any_damage_dealt: u16,
+    /// Hits so far that a Substitute took, not yet in the target's timesAttacked.
+    pub sub_hits: u8,
     pub drag_target: Option<(SideRef, u8)>,
 
     // ---- per-hit scratch (reset each iteration; bundled for ergonomics) ----
