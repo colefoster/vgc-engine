@@ -764,6 +764,7 @@ impl Battle {
             l.loop_ended = true;
         }
         self.p_set_hit(255);
+        self.flush_fling_item();
         self.p_tag_step(crate::protocol::step::LOOP_FAINT);
         let user_down = self
             .protocol
