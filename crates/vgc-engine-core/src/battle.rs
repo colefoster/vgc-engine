@@ -12847,6 +12847,17 @@ self.trigger_emergency_exits();
             self.apply_boosts(ctx.tside, ctx.tslot, &[(0, 12)], ctx.tside, ctx.tslot);
         }
 
+        // Beak Blast's charge — PS data/moves.ts:1136 beakblast condition onHit, in
+        // runMoveEffects' Hit event: a contact move burns its user, ahead of the
+        // secondaries (the holder is the source).
+        if !hit_sub
+            && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::BeakBlast))
+            && crate::damage::move_makes_contact(&self.moves()[ctx.move_id as usize], &ctx.attacker)
+            && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive())
+        {
+            self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
+            self.try_set_status_from(ctx.actor_side, ctx.actor_slot, Status::Burn, ctx.tside);
+        }
         // Secondary if target still alive — and the sub didn't take
         // the hit. PS: Substitute blocks all secondaries that target
         // the user-of-the-sub (flinch, stat drops, status). Sound
@@ -13131,14 +13142,6 @@ self.trigger_emergency_exits();
                 self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
             );
             self.rng = rng;
-            // Beak Blast's charge — PS data/moves.ts:1136 beakblast condition
-            // onHit: a contact move burns its user (the holder is the source).
-            if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::BeakBlast))
-                && crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker)
-                && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive())
-            {
-                self.try_set_status_from(actor_side, actor_slot, Status::Burn, tside);
-            }
             // Defender's held item reacts to the contact hit —
             // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
             // Skin / Iron Barbs: contact-only, attacker not Magic-
