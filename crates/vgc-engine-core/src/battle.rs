@@ -12318,7 +12318,7 @@ self.trigger_emergency_exits();
                 // (data/moves.js healpulse / floralhealing, and the weather
                 // heals at full HP), and the moves whose onHit returns nothing
                 // even if it changed nothing.
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis"
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis" | "corrosivegas"
                     | "partingshot" | "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit")
                 // onTry fails without a Stockpile, before the hit loop
                 // (data/moves.ts swallow).
@@ -16873,6 +16873,8 @@ self.trigger_emergency_exits();
             "partingshot" if !self.ps_status_missed => true,
             // onHit's failed heal returns NOT_FAIL (data/moves.ts healpulse, morningsun).
             "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis" | "shoreup" => true,
+            // onHit's `-fail` returns nothing (data/moves.ts corrosivegas).
+            "corrosivegas" => true,
             // onHit copies the stages, even all zero, and returns nothing.
             "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit" => true,
             _ => {
