@@ -9955,6 +9955,14 @@ self.trigger_emergency_exits();
             let crit_stage = attacker
                 .effective_crit_stage()
                 .saturating_add(m.crit_stage_delta);
+            // Merciless — data/abilities.ts merciless onModifyCritRatio returns 5.
+            let crit_stage = if attacker.effective_ability_id() == data::ability_id::MERCILESS
+                && matches!(defender.status, Status::Poison | Status::Toxic)
+            {
+                crit_stage.max(3)
+            } else {
+                crit_stage
+            };
             // Shell Armor / Battle Armor — the DEFENDER is immune to crits.
             // PS data/abilities.ts:shellarmor / battlearmor both expose
             //   `onCriticalHit: false`, which vetoes the crit regardless of
