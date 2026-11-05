@@ -18155,8 +18155,11 @@ self.trigger_emergency_exits();
         if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::LeechSeed) {
             return;
         }
-        for target_side in [SideRef::P1, SideRef::P2] {
-            for target_slot in 0..n {
+        // Speed order: each handler's heal sees the HP the previous one left
+        // (sim/battle.ts fieldEvent).
+        let (order, k) = self.actives_by_speed();
+        {
+            for &(target_side, target_slot) in &order[..k] {
                 let (chip, source_side, source_slot, magic_guard) = match self
                     .side(target_side)
                     .active_mon(target_slot as usize)
