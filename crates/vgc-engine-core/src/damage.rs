@@ -571,7 +571,42 @@ const TYPE_NORMAL: u8 = 0;
 const TYPE_FIGHTING: u8 = 6;
 const TYPE_GHOST: usize = 13;
 
+/// `effectiveness_base` plus the type Trick-or-Treat / Forest's Curse added
+/// (sim/pokemon.ts getTypes includes addedType).
 fn effectiveness_inner(
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+    ignore_ghost: bool,
+) -> TypeEff {
+    let base = effectiveness_base(move_id, move_type, defender, ignore_ghost);
+    if defender.added_type == 255 || move_id == data::move_id::STRUGGLE || base == TypeEff::Immune {
+        return base;
+    }
+    let mut net = match base {
+        TypeEff::Immune => 0,
+        TypeEff::QuarterX => -2,
+        TypeEff::HalfX => -1,
+        TypeEff::Neutral => 0,
+        TypeEff::DoubleX => 1,
+        TypeEff::QuadrupleX => 2,
+    };
+    match data::TYPE_CHART[defender.added_type as usize][move_type as usize] {
+        1 => net += 1,
+        2 => net -= 1,
+        3 if !defender.negates_type_immunity() && !ignore_ghost => return TypeEff::Immune,
+        _ => {}
+    }
+    match net.clamp(-2, 2) {
+        -2 => TypeEff::QuarterX,
+        -1 => TypeEff::HalfX,
+        0 => TypeEff::Neutral,
+        1 => TypeEff::DoubleX,
+        _ => TypeEff::QuadrupleX,
+    }
+}
+
+fn effectiveness_base(
     move_id: u16,
     move_type: u8,
     defender: &Pokemon,
@@ -728,6 +763,10 @@ pub fn move_type_in_ctx(
     ctx: &DamageContext,
 ) -> u8 {
     let t = base_move_type_in_ctx(attacker, move_id, ctx);
+    // data/moves.ts electrify condition onModifyType (priority -2, after -ate).
+    if attacker.volatiles.has(crate::pokemon::VolatileKind::Electrify) && move_id != data::move_id::STRUGGLE {
+        return 3;
+    }
     // -ate abilities rebind a Normal move (same gate as `calculate_damage`):
     // PS data/abilities.ts aerilate / pixilate / refrigerate / galvanize,
     // and Champions' dragonize, `onModifyType`.
@@ -909,6 +948,7 @@ pub(crate) fn calculate_damage_with_bp(
             | data::move_id::LOWKICK | data::move_id::GRASSKNOT
             | data::move_id::GYROBALL | data::move_id::ELECTROBALL
             | data::move_id::FLING | data::move_id::HARDPRESS
+            | data::move_id::FLAIL | data::move_id::REVERSAL | data::move_id::SPITUP
     ) {
         return 0;
     }
@@ -979,6 +1019,30 @@ pub(crate) fn calculate_damage_with_bp(
         let (hp, max) = (defender.current_hp as u64, defender.stats.hp.max(1) as u64);
         let bp = ((100 * (100 * (hp * 4096 / max)) + 2047) / 4096) / 100;
         (m.type_, bp.max(1) as u32)
+    } else if matches!(move_id, data::move_id::FLAIL | data::move_id::REVERSAL) {
+        // PS data/moves.ts flail / reversal basePowerCallback.
+        let ratio = (attacker.current_hp as u32 * 48 / attacker.stats.hp.max(1) as u32).max(1);
+        let bp = match ratio {
+            0..=1 => 200,
+            2..=4 => 150,
+            5..=9 => 100,
+            10..=16 => 80,
+            17..=32 => 40,
+            _ => 20,
+        };
+        (m.type_, bp)
+    } else if move_id == data::move_id::ASSURANCE {
+        // PS data/moves.ts assurance basePowerCallback: `target.hurtThisTurn`.
+        let bp = m.base_power as u32 * if defender.damaged_this_turn() { 2 } else { 1 };
+        (m.type_, bp)
+    } else if move_id == data::move_id::VENOSHOCK {
+        // PS data/moves.ts venoshock onBasePower: doubled against psn / tox.
+        let poisoned = matches!(defender.status, crate::pokemon::Status::Poison | crate::pokemon::Status::Toxic);
+        (m.type_, m.base_power as u32 * if poisoned { 2 } else { 1 })
+    } else if move_id == data::move_id::SPITUP {
+        // PS data/moves.ts spitup basePowerCallback: 100 per Stockpile layer.
+        let layers = attacker.volatiles.get(crate::pokemon::VolatileKind::Stockpile).map_or(0, |v| v.payload & 3);
+        (m.type_, layers as u32 * 100)
     } else if move_id == data::move_id::RAGEFIST {
         // PS data/moves.ts:14583 ragefist basePowerCallback:
         // `Math.min(350, 50 + 50 * pokemon.timesAttacked)`.

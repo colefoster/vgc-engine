@@ -503,6 +503,7 @@ impl Battle {
     /// runMove's closing `faintMessages(); checkWin();` (sim/battle-actions.ts:347-348).
     #[inline(always)]
     pub(crate) fn p_move_end_win_check(&mut self) {
+        self.flush_fling_item();
         if self.plog() {
             self.p_move_end_win_check_cold();
         }
@@ -763,6 +764,7 @@ impl Battle {
             l.loop_ended = true;
         }
         self.p_set_hit(255);
+        self.flush_fling_item();
         self.p_tag_step(crate::protocol::step::LOOP_FAINT);
         let user_down = self
             .protocol
@@ -1590,7 +1592,13 @@ impl Battle {
         let id = self.p_ident(side, slot);
         let tgt = display.map(|(s, sl)| self.p_ident(s, sl)).unwrap_or_default();
         let locked = attacker.lockin_turns > 0 || attacker.charging_turns > 0;
-        let from = if locked { "|[from] lockedmove" } else { "" };
+        let from = if self.called_from != u16::MAX {
+            format!("|[from] move: {}", move_name(self.called_from))
+        } else if locked {
+            "|[from] lockedmove".to_string()
+        } else {
+            String::new()
+        };
         let line = format!("|move|{id}|{}|{tgt}{from}", move_name(move_id));
         if let Some(l) = self.protocol.log_mut() {
             l.flush_pending_move();
