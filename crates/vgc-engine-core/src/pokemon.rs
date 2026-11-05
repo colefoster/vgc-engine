@@ -2389,6 +2389,10 @@ impl Pokemon {
         if self.volatiles.has(VolatileKind::SmackdownGrounded) {
             return true;
         }
+        // Ingrain — sim/pokemon.ts isGrounded (`'ingrain' in this.volatiles`).
+        if self.volatiles.has(VolatileKind::Ingrain) {
+            return true;
+        }
         // Gravity — while the field condition is up every Pokémon is
         // grounded (PS `Pokemon.isGrounded()` checks
         // `this.battle.field.getPseudoWeather('gravity')`). The battle
