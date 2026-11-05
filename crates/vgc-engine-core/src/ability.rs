@@ -2507,6 +2507,14 @@ pub fn on_damaging_hit(
                 && !attacker_shielded
                 && !is_unsuppressable_ability(attacker_curr_id)
             {
+                // setAbility's End of the old ability (data/abilities.ts supremeoverlord
+                // onEnd, flashfire onEnd).
+                if attacker_curr_id == data::ability_id::SUPREMEOVERLORD {
+                    let fallen = battle.side(attacker_side).active_mon(attacker_slot as usize).map_or(0, |a| a.supreme_overlord_fallen);
+                    if fallen > 0 && fallen != u8::MAX {
+                        pmon!(battle, "-end", attacker_side, attacker_slot, "|fallen{fallen}|[silent]");
+                    }
+                }
                 if let Some(a) = battle
                     .side_mut(attacker_side)
                     .active_mon_mut(attacker_slot as usize)
