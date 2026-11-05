@@ -14880,6 +14880,7 @@ self.trigger_emergency_exits();
             // Lucario / Mega Mewtwo X signature. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
             if attacker.effective_ability_id() == data::ability_id::STEADFAST {
+                self.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::STEADFAST));
                 self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
             }
             return PreMoveOutcome::Abort;
