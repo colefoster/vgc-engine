@@ -18651,7 +18651,31 @@ self.trigger_emergency_exits();
                 // Time's up: clear the slot, then deliver the hit.
                 self.future_pending[tside as usize][tslot] = None;
                 self.p_res(3, 0, Some((tside, tslot as u8)));
+                let probe = |b: &Self| b.side(tside).active_mon(tslot).map_or((0, 0), |m| (m.current_hp, m.substitute_hp()));
+                let before = probe(self);
+                #[cfg(feature = "ps-rng")]
+                let mut live = 0u8;
+                #[cfg(feature = "ps-rng")]
+                for (si, sd) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+                    for sl in 0..n.min(2) {
+                        if self.side(sd).active_mon(sl).is_some_and(|m| m.is_alive()) {
+                            live |= 1 << (si * 2 + sl);
+                        }
+                    }
+                }
                 self.resolve_future_hit(tside, tslot as u8, entry);
+                // The hit runs the whole hit loop, with its two Updates (sim/battle.ts
+                // onEnd of futuremove -> trySpreadMoveHit; data/mods/champions/scripts.ts).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() && probe(self) != before {
+                    let saved = self.ps_action_live;
+                    self.ps_action_live = live;
+                    self.ps_hit_update();
+                    self.ps_action_live = saved;
+                    self.ps_active_ties(false, "shuffle");
+                }
+                #[cfg(not(feature = "ps-rng"))]
+                let _ = (probe, before);
             }
         }
     }
