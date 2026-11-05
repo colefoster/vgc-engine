@@ -3178,7 +3178,7 @@ self.trigger_emergency_exits();
                     }
                 }
                 // battle.damage's 'confused' case (sim/battle.ts:2150).
-                self.p_damage(actor_side, actor_slot, "|[from] confusion");
+                self.p_direct_damage(actor_side, actor_slot, "|[from] confusion");
                 if disguised {
                     self.disguise_bust_at(actor_side, actor_slot);
                     #[cfg(feature = "ps-rng")]
@@ -21580,7 +21580,7 @@ self.trigger_emergency_exits();
                     }
                 }
                 if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.substitute_hp() > 0) {
-                    self.p_damage(actor_side, actor_slot, "");
+                    self.p_direct_damage(actor_side, actor_slot, "");
                 }
             }
             data::move_id::AURORAVEIL => {
@@ -23310,11 +23310,11 @@ self.trigger_emergency_exits();
                         if self.plog() {
                             let of = self.p_ident(actor_side, actor_slot);
                             if self.champions {
-                                self.p_damage(actor_side, actor_slot, "");
+                                self.p_direct_damage(actor_side, actor_slot, "");
                                 pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
                             } else {
                                 pmon!(self, "-start", ts, tslot, "|Curse|[of] {of}");
-                                self.p_damage(actor_side, actor_slot, "");
+                                self.p_direct_damage(actor_side, actor_slot, "");
                             }
                         }
                     }
@@ -24186,7 +24186,7 @@ self.trigger_emergency_exits();
                 }
                 if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.pending_switch_sheds_tail()) {
                     pmon!(self, "-start", actor_side, actor_slot, "|Substitute|[from] move: Shed Tail");
-                    self.p_damage(actor_side, actor_slot, "");
+                    self.p_direct_damage(actor_side, actor_slot, "");
                 }
             }
             data::move_id::BATONPASS => {
@@ -24295,7 +24295,7 @@ self.trigger_emergency_exits();
                 // Clangorous Soul boost in onTryHit before onHit's directDamage
                 // (data/moves.ts clangoroussoul, filletaway).
                 if move_id == data::move_id::BELLYDRUM {
-                    self.p_damage(actor_side, actor_slot, "");
+                    self.p_direct_damage(actor_side, actor_slot, "");
                     self.p_boost_fx(crate::protocol::BoostFx::Silent);
                     if self.plog() {
                         pmon!(self, "-setboost", actor_side, actor_slot, "|atk|6|[from] move: Belly Drum");
@@ -24303,7 +24303,7 @@ self.trigger_emergency_exits();
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
                 } else {
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
-                    self.p_damage(actor_side, actor_slot, "");
+                    self.p_direct_damage(actor_side, actor_slot, "");
                 }
                 // The self-inflicted HP cost can drop the user past a berry's
                 // HP threshold (Sitrus at 1/2, the pinch berries at 1/4). PS
