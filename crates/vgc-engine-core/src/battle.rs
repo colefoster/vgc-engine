@@ -9937,7 +9937,10 @@ self.trigger_emergency_exits();
                 // this turn is a move by a live mon (PS queue.willMove scan).
                 attacker_moves_last: !will_act,
                 champions: self.champions,
+                // A resist berry's onSourceModifyDamage returns early on a hit its
+                // holder's Substitute takes (data/items.ts chopleberry et al.).
                 defender_resist_berry: fixed_damage.is_none()
+                    && !(defender.substitute_hp() > 0 && !is_sound_move(m.slug) && !attacker_infiltrates)
                     && crate::item::type_resist_berry_fires(self, tside, tslot, move_id, berry_move_type, &defender),
                 parental_bond_hit: false,
             };
@@ -10204,7 +10207,8 @@ self.trigger_emergency_exits();
                     champions: self.champions,
                     ..DamageContext::default()
                 });
-                let halved = crate::item::try_consume_type_resist_berry(
+                let hits_sub = defender.substitute_hp() > 0 && !is_sound_move(m.slug) && !attacker_infiltrates;
+                let halved = !hits_sub && crate::item::try_consume_type_resist_berry(
                     self, tside, tslot, move_id, berry_move_type, &defender,
                 );
                 // The ×0.5 is already in the damage calc's ModifyDamage chain
