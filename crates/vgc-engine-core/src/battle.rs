@@ -8892,6 +8892,18 @@ self.trigger_emergency_exits();
                         continue;
                     }
                 }
+                // substitute onTryPrimaryHit: the OHKO breaks the doll, `-ohko` first
+                // (data/moves.ts substitute).
+                if defender.substitute_hp() > 0 && attacker.effective_ability_id() != data::ability_id::INFILTRATOR {
+                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        d.set_substitute_hp(0);
+                    }
+                    self.p_tag(crate::protocol::step::SUB_HIT, tside, tslot);
+                    self.p_push("|-ohko".to_string());
+                    pmon!(self, "-end", tside, tslot, "|Substitute");
+                    any_damage_dealt = any_damage_dealt.saturating_add(1);
+                    continue;
+                }
                 // Hit. Set damage to target's current HP; Sturdy / Focus
                 // Sash's on_before_damage cap will reduce to hp-1 if
                 // applicable. PS's onDamage gates fire on `damage > 0`.
