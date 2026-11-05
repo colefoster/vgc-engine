@@ -18032,9 +18032,14 @@ self.trigger_emergency_exits();
         if self.plog() {
             let holder = self.p_ident(target_side, target_slot);
             let idx = self.side(attacker_side).active[attacker_slot as usize];
-            self.p_queue_faint_idx(target_side, self.side(target_side).active[target_slot as usize]);
-            self.p_faint_prefix(attacker_side, idx, format!("|-activate|{holder}|move: Destiny Bond"));
+            let holder_idx = self.side(target_side).active[target_slot as usize];
+            self.p_queue_faint_idx(target_side, holder_idx);
             self.p_queue_faint_idx(attacker_side, idx);
+            // onFaint runs when the holder's turn in the faint queue comes, and
+            // source.faint() joins the queue's end (sim/battle.ts faintMessages).
+            if let Some(l) = self.protocol.log_mut() {
+                l.faint_chain.push(((target_side as u8, holder_idx), (attacker_side as u8, idx), format!("|-activate|{holder}|move: Destiny Bond")));
+            }
         }
     }
 
