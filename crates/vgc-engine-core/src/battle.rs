@@ -22467,9 +22467,11 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recycle_(move)>
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.item_id == u16::MAX && a.consumed_item != u16::MAX {
-                        a.item_id = a.consumed_item;
+                        let item = a.consumed_item;
+                        a.item_id = item;
                         a.consumed_item = u16::MAX;
                         a.sync_can_mega_evolve();
+                        self.p_item_line("-item", actor_side, actor_slot, item, "|[from] move: Recycle");
                     }
                 }
             }
