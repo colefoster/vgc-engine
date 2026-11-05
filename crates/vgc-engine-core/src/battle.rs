@@ -6757,7 +6757,7 @@ self.trigger_emergency_exits();
                     if matches!(v.kind, V::ThroatChop | V::PartialTrap | V::Octolock | V::Substitute | V::Confusion | V::Taunt | V::HealBlock | V::Embargo
                         | V::LeechSeed | V::Curse | V::PerishSong | V::Ingrain | V::AquaRing | V::MagnetRise
                         | V::Telekinesis | V::GastroAcid | V::FocusEnergy | V::LaserFocus | V::Charge
-                        | V::Tarshot | V::DragonCheer)
+                        | V::Tarshot | V::DragonCheer | V::Stall | V::Flinch | V::HelpingHand | V::NoRetreat | V::Electrify)
                     {
                         incoming.volatiles.add(*v);
                     }
