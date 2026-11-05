@@ -500,6 +500,18 @@ impl Battle {
         if m.throat_chop_turns() > 0 && md.is_sound {
             return Some(true);
         }
+        // gravity onDisableMove (data/moves.ts gravity condition, flags.gravity).
+        if self.gravity_turns > 0
+            && matches!(
+                mv,
+                data::move_id::FLY | data::move_id::BOUNCE | data::move_id::SKYDROP
+                    | data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK
+                    | data::move_id::SPLASH | data::move_id::MAGNETRISE
+                    | data::move_id::TELEKINESIS | data::move_id::FLYINGPRESS
+            )
+        {
+            return Some(true);
+        }
         if m.taunt_turns() > 0 && md.category == 2 && mv != data::move_id::MEFIRST {
             return Some(true);
         }
