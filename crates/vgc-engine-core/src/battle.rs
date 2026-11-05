@@ -7784,7 +7784,7 @@ self.trigger_emergency_exits();
             // A chosen foe that already fainted retargets to the remaining
             // foe, as for any single-target move (sim/battle.ts getTarget ->
             // getRandomTarget), so the future hit pends on THAT slot.
-            let tslot = match target {
+            let tslot = match ps_pick.or(target) {
                 Some(Target { side, slot }) if side == opp
                     && self.side(opp).active_mon(slot as usize).is_some_and(|p| p.is_alive()) => slot,
                 _ => {
@@ -7815,6 +7815,9 @@ self.trigger_emergency_exits();
                 }
                 // futuresight onTry returns NOT_FAIL.
                 self.set_move_result(actor_side, actor_slot, crate::pokemon::MoveResult::Skipped);
+            } else {
+                // addSlotCondition returned false (data/moves.ts futuresight onTry).
+                self.p_try_fail(actor_side, actor_slot);
             }
             return;
         }
@@ -15490,7 +15493,7 @@ self.trigger_emergency_exits();
         let ok = match m.slug {
             "instruct" if instructed => true,
             "sleeptalk" | "copycat" => self.called_ran,
-            "stuffcheeks" | "teatime" => true,
+            "teatime" => true,
             // A consecutive Destiny Bond removes the volatile and fails.
             "destinybond" => user.volatiles.has(crate::pokemon::VolatileKind::DestinyBond),
             // addType (not modelled) succeeds on a target without the type
@@ -15689,6 +15692,20 @@ self.trigger_emergency_exits();
     /// the first opposing active.
     /// A status move without `bypasssub` into a target's Substitute: data/moves.ts
     /// substitute onTryPrimaryHit fails it (the caller's `-fail` fallback prints it).
+    /// Moves whose immunity comes before accuracy, so a Substitute never sees them
+    /// (sim/battle-actions.ts hitStepTryImmunity, hitStepTypeImmunity).
+    fn status_gate_has_own_immunity(&self, move_id: u16, ts: SideRef, tslot: u8) -> bool {
+        let Some(t) = self.side(ts).active_mon(tslot as usize) else { return true };
+        let (types, n) = t.effective_types();
+        let types = &types[..n as usize];
+        match move_id {
+            data::move_id::THUNDERWAVE => types.contains(&8),
+            data::move_id::WORRYSEED => matches!(t.effective_ability_id(), data::ability_id::TRUANT | data::ability_id::INSOMNIA),
+            data::move_id::ATTRACT | data::move_id::CAPTIVATE => true,
+            _ => false,
+        }
+    }
+
     fn status_blocked_by_substitute(&self, ts: SideRef, tslot: u8, us: SideRef, uslot: u8) -> bool {
         (ts, tslot) != (us, uslot)
             && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0)
@@ -18911,7 +18928,13 @@ self.trigger_emergency_exits();
         // charge volatile's onInvulnerability (returns false) before any
         // accuracy roll; No Guard on either side (onAnyInvulnerability ->
         // 0) lets it through. Seen as Decorate on an ally mid Phantom Force.
-        if matches!(m.target, 0 | 4 | 10) {
+        // A non-Ghost Curse targets the user (data/mods/champions/moves.ts curse onModifyMove).
+        let self_curse = move_id == data::move_id::CURSE
+            && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
+                let (types, n) = u.effective_types();
+                !types[..n as usize].contains(&13)
+            });
+        if matches!(m.target, 0 | 4 | 10) && !self_curse {
             if let Some((ts, tslot)) = opp_target {
                 let no_guard = |b: &Self, s: SideRef, sl: u8| {
                     b.side(s).active_mon(sl as usize).is_some_and(|x| x.effective_ability_id() == data::ability_id::NOGUARD)
@@ -18933,6 +18956,22 @@ self.trigger_emergency_exits();
                     .is_some_and(|t| t.is_protected_this_turn())
                 {
                     pmon!(self, "-activate", ts, tslot, "|move: Protect");
+                    return;
+                }
+            }
+        }
+        // data/moves.ts substitute onTryPrimaryHit, after accuracy: a status move
+        // without `bypasssub` fails on a target's Substitute. Moves with their own
+        // accuracy or immunity order before it stay in their arms.
+        if matches!(m.target, 0 | 4 | 10) && !status_bypasses_sub(m.slug) && !m.is_sound
+            && !matches!(move_id, data::move_id::CURSE)
+        {
+            if let Some((ts, tslot)) = opp_target {
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot)
+                    && !(m.is_powder && self.target_is_powder_immune(ts, tslot))
+                    && !self.status_gate_has_own_immunity(move_id, ts, tslot)
+                {
+                    let _ = self.rolled_accuracy_passed(m);
                     return;
                 }
             }
@@ -20023,6 +20062,7 @@ self.trigger_emergency_exits();
                         "moldbreaker" | "teravolt" | "turboblaze"
                     ));
                 if self.side_has_aroma_veil(ts, encore_src_breaks_mold) {
+                    self.p_aroma_veil_block(ts, tslot);
                     return;
                 }
                 // `!this.queue.willMove(target)`: its pending byte is no
@@ -20089,6 +20129,7 @@ self.trigger_emergency_exits();
                         "moldbreaker" | "teravolt" | "turboblaze"
                     ));
                 if self.side_has_aroma_veil(ts, taunt_src_breaks_mold) {
+                    self.p_aroma_veil_block(ts, tslot);
                     return;
                 }
                 // PS onStart duration bump: +1 when the target has already
@@ -22918,9 +22959,20 @@ self.trigger_emergency_exits();
                         let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                             let Some(t) = self.side(ts).active_mon(tslot as usize) else { continue };
-                            if (m.is_powder && self.target_is_powder_immune(ts, tslot))
-                                || (fd.respects_protect && t.is_protected_this_turn())
-                            {
+                            // hitStepInvulnerabilityEvent, then hitStepTryHitEvent's Protect:
+                            // the target leaves the move before accuracy and `[spread]`
+                            // (sim/battle-actions.ts).
+                            if t.semi_invuln != 0 && !user_noguard && t.effective_ability_id() != data::ability_id::NOGUARD {
+                                acc_hit[i] = false;
+                                self.p_miss(actor_side, actor_slot, ts, tslot);
+                                continue;
+                            }
+                            if fd.respects_protect && t.is_protected_this_turn() {
+                                acc_hit[i] = false;
+                                pmon!(self, "-activate", ts, tslot, "|move: Protect");
+                                continue;
+                            }
+                            if m.is_powder && self.target_is_powder_immune(ts, tslot) {
                                 continue;
                             }
                             let sure = user_noguard
@@ -22975,6 +23027,11 @@ self.trigger_emergency_exits();
                                 buf[k] = (idx, delta);
                                 k += 1;
                             }
+                        }
+                        if k < fd.boosts.len() && ts != actor_side {
+                            let mut stats = [0u8; 7];
+                            for (st, b) in stats.iter_mut().zip(fd.boosts) { *st = b.0; }
+                            self.p_drop_blocked(ts, tslot, &stats[..fd.boosts.len()]);
                         }
                         if k > 0 {
                             let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
@@ -23294,6 +23351,18 @@ struct MonEffectSnapshot {
     ability: (u16, bool),
     types: [u8; 2],
     species: u16,
+}
+
+/// PS status moves with `flags.bypasssub` (data/moves.ts).
+fn status_bypasses_sub(slug: &str) -> bool {
+    matches!(slug, "afteryou" | "aromaticmist" | "attract" | "bestow" | "coaching" | "confide" | "conversion2"
+        | "curse" | "defog" | "destinybond" | "disable" | "dragoncheer" | "encore" | "fairylock" | "foresight"
+        | "gearup" | "grasswhistle" | "growl" | "grudge" | "guardswap" | "haze" | "healbell" | "heartswap"
+        | "helpinghand" | "holdhands" | "imprison" | "instruct" | "junglehealing" | "lifedew" | "magneticflux"
+        | "mefirst" | "metalsound" | "mimic" | "miracleeye" | "nobleroar" | "odorsleuth" | "partingshot"
+        | "perishsong" | "playnice" | "powder" | "powerswap" | "psychup" | "reflecttype" | "roar" | "roleplay"
+        | "screech" | "sing" | "sketch" | "skillswap" | "snatch" | "speedswap" | "spite" | "supersonic"
+        | "taunt" | "teatime" | "torment" | "whirlwind")
 }
 
 /// PS `flags.failcopycat` (data/moves.ts).
