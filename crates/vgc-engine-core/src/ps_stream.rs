@@ -200,6 +200,12 @@ impl BattleStream {
         self.session.as_ref()
     }
 
+    /// The session, for the save/load differential test.
+    #[doc(hidden)]
+    pub fn session_mut_unchecked(&mut self) -> Option<&mut PsSession> {
+        self.session.as_mut()
+    }
+
     /// PS `battle.inputLog`.
     pub fn input_log(&self) -> &[String] {
         &self.input_log

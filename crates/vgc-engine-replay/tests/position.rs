@@ -144,6 +144,48 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                 if battle["round_chain"] == serde_json::json!([[false, false], [false, false]]) {
                     battle.as_object_mut().unwrap().remove("round_chain");
                 }
+                // Fields that now survive save/load (the save/load differential in
+                // vgc-engine-conformance), at their resting value.
+                for (key, rest) in [
+                    ("called_ran", serde_json::json!(false)),
+                    ("disguise_hit_this_move", serde_json::json!(false)),
+                    ("healing_wish", serde_json::json!([[false, false], [false, false]])),
+                    ("last_hit_crit", serde_json::json!(false)),
+                    ("last_move_any", serde_json::json!(65535)),
+                    ("last_move_before", serde_json::json!(65535)),
+                    ("move_sub_absorbed", serde_json::json!(0)),
+                    ("ps_damaged_by", serde_json::json!([0, 0, 0, 0])),
+                    ("status_acc_boost", serde_json::json!(0)),
+                    ("status_acc_pair", serde_json::Value::Null),
+                    ("status_hit_failed", serde_json::json!(false)),
+                    ("status_pending_kind", serde_json::json!([[0, 0], [0, 0]])),
+                    ("status_sure_hit", serde_json::json!(false)),
+                    ("ps_status_sub_null", serde_json::json!(false)),
+                    ("receiver_possible", serde_json::Value::Null),
+                    ("turn_keys", serde_json::json!({"qc_bump": [[0, 0], [0, 0]], "frac": [[0, 0], [0, 0]], "bias": [[0, 0], [0, 0]]})),
+                    // ps-rng only.
+                    ("ps_action_live", serde_json::json!(0)),
+                    ("ps_charge_volatile", serde_json::json!([0, 0])),
+                    ("ps_commit_megas", serde_json::json!([[[0, 0], [0, 0], [0, 0], [0, 0]], 0])),
+                    ("ps_commit_moves", serde_json::json!([[[0, 0], [0, 0], [0, 0], [0, 0]], 0])),
+                    ("ps_commit_teras", serde_json::json!([[[0, 0], [0, 0], [0, 0], [0, 0]], 0])),
+                    ("ps_fainted_transform_moves", serde_json::json!([[[0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0], [0, 0, 0, 0]]])),
+                    ("ps_hit_dead", serde_json::json!(0)),
+                    ("ps_loop_hits", serde_json::json!(0)),
+                    ("ps_move_used", serde_json::json!(false)),
+                    ("ps_scripted_pick", serde_json::json!([[0, 0], [0, 0]])),
+                    ("ps_status_fnt", serde_json::json!([0, 0])),
+                    ("ps_status_missed", serde_json::json!(false)),
+                    ("ps_twoturn_release", serde_json::json!([0, 0])),
+                ] {
+                    if battle.get(key) == Some(&rest) {
+                        battle.as_object_mut().unwrap().remove(key);
+                    }
+                }
+                // Set by every reconstruction under ps-rng (restore_ps_caches), so
+                // never at rest: derived from the fields the digest does guard.
+                battle.as_object_mut().unwrap().remove("ps_field_seen");
+                battle.as_object_mut().unwrap().remove("ps_speed_cache");
                 for side in ["p1", "p2"] {
                     let Some(team) = battle[side]["team"].as_array_mut() else { continue };
                     for mon in team {
