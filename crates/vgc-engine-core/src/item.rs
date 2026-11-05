@@ -417,7 +417,7 @@ fn hp_berries_on_update(
         // gen 6+ heals 1/4 max (was 30 flat HP in gen 4).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 4).max(1);
+                let heal = (m.stats.hp / 4).max(1) * if m.effective_ability_id() == data::ability_id::RIPEN { 2 } else { 1 };
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
             m.consume_item();
@@ -463,7 +463,7 @@ fn hp_berries_on_update(
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
             if !m.is_heal_blocked() {
-                m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
+                m.current_hp = m.current_hp.saturating_add(if m.effective_ability_id() == data::ability_id::RIPEN { 20 } else { 10 }).min(m.stats.hp);
             }
             m.consume_item();
         }
@@ -491,7 +491,7 @@ fn hp_berries_on_update(
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
             if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 3).max(1);
+                let heal = (m.stats.hp / 3).max(1) * if m.effective_ability_id() == data::ability_id::RIPEN { 2 } else { 1 };
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
             m.consume_item();
@@ -890,7 +890,7 @@ pub(crate) fn eat_effect(
     ) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 3).max(1);
+                let heal = (m.stats.hp / 3).max(1) * if m.effective_ability_id() == data::ability_id::RIPEN { 2 } else { 1 };
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
         }
