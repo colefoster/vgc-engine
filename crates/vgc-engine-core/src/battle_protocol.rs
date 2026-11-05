@@ -1646,7 +1646,7 @@ impl Battle {
         let mut rod: Option<(SideRef, u8, u16)> = None;
         if let Some(t) = display {
             let m = &self.moves()[move_id as usize];
-            if matches!(m.target, 0 | 4 | 10) {
+            if matches!(m.target, 0 | 4 | 10 | 13) {
                 let r = self.resolve_targets(side, slot, move_id, attacker, m, crate::battle::TargetBuf::single(t));
                 if r.len() == 1 {
                     if r[0] != t {
