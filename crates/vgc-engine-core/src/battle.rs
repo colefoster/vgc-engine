@@ -24601,16 +24601,27 @@ self.trigger_emergency_exits();
                 // `-heal` or `-fail|heal` (+ `[still]`), then `[spread]`
                 // (sim/battle-actions.ts moveHit heal, :618).
                 let mut dew: [Option<bool>; 2] = [None; 2];
+                // An ally in Dig or Fly is missed (hitStepInvulnerabilityEvent),
+                // ahead of the heal step.
+                let mut missed: Option<u8> = None;
                 for slot in [actor_slot, actor_slot ^ 1] {
                     if slot >= n {
                         continue;
                     }
                     if let Some(p) = self.side(actor_side).active_mon(slot as usize).filter(|p| p.is_alive()) {
+                        if slot != actor_slot && p.semi_invuln != 0 {
+                            missed = Some(slot);
+                            continue;
+                        }
                         dew[slot as usize & 1] = Some(p.current_hp < p.stats.hp);
                     }
                 }
+                if let Some(m) = missed {
+                    let of = self.p_ident(actor_side, m);
+                    pmon!(self, "-miss", actor_side, actor_slot, "|{of}");
+                }
                 for slot in [actor_slot, actor_slot ^ 1] {
-                    if slot >= n {
+                    if slot >= n || missed == Some(slot) {
                         continue;
                     }
                     if let Some(p) = self.side_mut(actor_side).active_mon_mut(slot as usize) {
@@ -24642,7 +24653,7 @@ self.trigger_emergency_exits();
                     // A failed heal adds `[still]`; with every target failed the
                     // move fails too (a second `[still]`) and `[spread]` lists
                     // no slot, else it lists every target (sim/battle-actions.ts:618).
-                    let n_t = dew.iter().flatten().count();
+                    let n_t = dew.iter().flatten().count() + usize::from(missed.is_some());
                     let n_ok = dew.iter().flatten().filter(|&&h| h).count();
                     let s = actor_side as u8 + 1;
                     let mut slots: Vec<String> = Vec::new();
