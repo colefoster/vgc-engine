@@ -19741,15 +19741,41 @@ self.trigger_emergency_exits();
     /// removed; behavior is byte-identical.
     /// Healer / Hydration / Shed Skin (PS onResidualOrder 5), ahead of
     /// Leftovers and the status damage.
+    /// The active slots fastest first, ties in collection order, as a Residual
+    /// handler list sorts them (sim/battle.ts comparePriority).
+    fn residual_speed_order(&self) -> ([(SideRef, u8); 4], usize) {
+        let mut order = [(SideRef::P1, 0u8); 4];
+        let mut spe = [0u32; 4];
+        let mut k = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) as u8 {
+                order[k] = (side, slot);
+                spe[k] = self.p_res_speed(side, slot) as u32;
+                k += 1;
+            }
+        }
+        for i in 1..k {
+            let mut j = i;
+            while j > 0 && spe[j - 1] < spe[j] {
+                spe.swap(j - 1, j);
+                order.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        (order, k)
+    }
+
     fn eot_cure_abilities(&mut self) {
         let n = self.format().active_count() as u8;
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
-                self.p_res(5, 3, Some((side, slot)));
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                crate::ability::on_residual_cures(self, side, slot, &mut rng);
-                self.rng = rng;
-            }
+        // fieldEvent runs the handlers by speed, so their draws (Moody, Shed Skin,
+        // Harvest, Healer) come in that order (sim/battle.ts fieldEvent).
+        let (order, k) = self.residual_speed_order();
+        for &(side, slot) in &order[..k] {
+            let _ = n;
+            self.p_res(5, 3, Some((side, slot)));
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::ability::on_residual_cures(self, side, slot, &mut rng);
+            self.rng = rng;
         }
     }
 
@@ -19758,13 +19784,15 @@ self.trigger_emergency_exits();
         // for speedboost is 28 — last among the residual phases.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
-                self.p_res(28, 2, Some((side, slot)));
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                crate::ability::on_residual(self, side, slot, &mut rng);
-                self.rng = rng;
-            }
+        // fieldEvent runs the handlers by speed, so their draws (Moody, Shed Skin,
+        // Harvest, Healer) come in that order (sim/battle.ts fieldEvent).
+        let (order, k) = self.residual_speed_order();
+        for &(side, slot) in &order[..k] {
+            let _ = n;
+            self.p_res(28, 2, Some((side, slot)));
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::ability::on_residual(self, side, slot, &mut rng);
+            self.rng = rng;
         }
     }
 
