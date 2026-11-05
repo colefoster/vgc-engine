@@ -191,14 +191,6 @@ pub(crate) fn react_to_opposing_stat_drop(
     battle.apply_boosts(target_side, target_slot, &[(stat_index as u8, 2)], target_side, target_slot);
 }
 
-/// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest stage-
-/// boosted stat. PS `Pokemon.getBestStat(false, true)` from
-/// sim/pokemon.ts: stat stages ARE applied (unboosted=false), but
-/// Modify* events (Choice Band, Paralysis, Assault Vest, etc.) are
-/// skipped (unmodified=true). HP excluded.
-///
-/// Tie-break: PS visits stats in order atk, def, spa, spd, spe and
-/// uses strict `>`, so the EARLIER stat wins a tie.
 pub(crate) fn best_unboosted_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
     // getBestStat(true, true): stages don't count (data/abilities.ts beastboost, eelevate).
     let s = &mon.stats;
@@ -211,6 +203,14 @@ pub(crate) fn best_unboosted_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
     best.0
 }
 
+/// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest stage-
+/// boosted stat. PS `Pokemon.getBestStat(false, true)` from
+/// sim/pokemon.ts: stat stages ARE applied (unboosted=false), but
+/// Modify* events (Choice Band, Paralysis, Assault Vest, etc.) are
+/// skipped (unmodified=true). HP excluded.
+///
+/// Tie-break: PS visits stats in order atk, def, spa, spd, spe and
+/// uses strict `>`, so the EARLIER stat wins a tie.
 pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
     let s = &mon.stats;
     // Apply the stat-stage multiplier per PS apply_boost equivalent.
