@@ -18254,12 +18254,28 @@ self.trigger_emergency_exits();
                 Status::Sleep => data::ability_id::SWEETVEIL,
                 _ => u16::MAX,
             };
-            veil_id != u16::MAX
-                && (0..self.format().active_count()).any(|s| {
+            let holder = |id: u16| {
+                (0..self.format().active_count()).any(|s| {
                     self.side(side)
                         .active_mon(s)
-                        .is_some_and(|m| m.is_alive() && m.effective_ability_id() == veil_id)
+                        .is_some_and(|m| m.is_alive() && m.effective_ability_id() == id)
                 })
+            };
+            // Flower Veil guards Grass types against anyone else's status
+            // (data/abilities.ts flowerveil onAllySetStatus, breakable).
+            let flower_veil = !(source_side == side && source_slot == slot)
+                && self.side(side).active_mon(slot as usize).is_some_and(|m| {
+                    let (types, n) = m.effective_types();
+                    types[..n as usize].contains(&4)
+                })
+                && !self.side(source_side).active_mon(source_slot as usize).is_some_and(|m| {
+                    matches!(
+                        m.effective_ability_id(),
+                        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+                    )
+                })
+                && holder(data::ability_id::FLOWERVEIL);
+            (veil_id != u16::MAX && holder(veil_id)) || flower_veil
         };
         // Harsh sunlight prevents freeze. PS `data/conditions.ts` sunnyday /
         // desolateland `onImmunity(type) { if (type === 'frz') return false; }`
