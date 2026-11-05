@@ -397,15 +397,15 @@ pub struct Battle {
     status_sub_blocks: bool,
     /// While a called move runs (sim/battle-actions.ts useMove from Sleep Talk,
     /// Copycat): the calling move. It skips runMove's BeforeMove and PP.
-    #[serde(skip, default = "no_called_move")]
+    #[serde(skip, default = "no_move")]
     pub(crate) called_from: u16,
     /// A called move ran, for the caller's result.
     #[serde(skip)]
     called_ran: bool,
     /// PS `battle.lastMove` (sim/battle.ts clearActiveMove), for Copycat.
-    #[serde(skip)]
+    #[serde(skip, default = "no_move")]
     last_move_any: u16,
-    #[serde(skip)]
+    #[serde(skip, default = "no_move")]
     last_move_before: u16,
     /// Item thrown by Fling: its `-enditem` waits for the next Update
     /// (data/moves.ts fling condition onUpdate).
@@ -5246,6 +5246,7 @@ self.trigger_emergency_exits();
             // `|upkeep|` (sim/battle.ts:2817) precedes the action's Update.
             self.p_upkeep();
             // PS: the residual action ends with eachEvent('Update').
+            self.attract_update();
             self.update_hp_berries();
             self.in_residual = false;
             self.residual_emergency_exits(hp_before);
@@ -14263,10 +14264,7 @@ self.trigger_emergency_exits();
         //      the user took damage before its action via `onHit` on the
         //      `focuspunch` volatile (PS clears it on any move that
         //      `damage > 0`). Our engine collapses this to: fail if
-        //      `damaged_this_turn` is set when resolution starts. PP is
-        //      still ticked (PS "Lost focus!" message — move fails after
-        //      PP deduct in PS's flow, but the gen-9 outcome is the same:
-        //      the move slot pays PP, no damage is dealt).
+        //      `damaged_this_turn` is set when resolution starts.
         //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
         if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
             // focuspunch beforeMoveCallback: `cant` instead of `|move|`.
@@ -23685,6 +23683,10 @@ fn status_bypasses_sub(slug: &str) -> bool {
         | "taunt" | "teatime" | "torment" | "whirlwind")
 }
 
+fn no_move() -> u16 {
+    u16::MAX
+}
+
 /// PS `flags.failcopycat` (data/moves.ts).
 fn copycat_fails(slug: &str) -> bool {
     matches!(slug, "assist" | "banefulbunker" | "beakblast" | "behemothbash" | "behemothblade" | "belch" | "bestow"
@@ -25213,10 +25215,6 @@ fn is_type_immune_to_status((types, n): ([u8; 2], u8), status: Status) -> bool {
 ///
 /// Used for the gen-6+ "sound bypasses Substitute" rule and (when
 /// implemented) the Soundproof / Throat Spray / Punk Rock hooks.
-fn no_called_move() -> u16 {
-    u16::MAX
-}
-
 pub(crate) fn is_sound_move(slug: &str) -> bool {
     matches!(
         slug,
@@ -46649,10 +46647,11 @@ mod tests {
         assert!(b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
                 "after lock ends, Confusion volatile added");
         assert_eq!(b.p1.team[0].lockin_move_slot, 255, "lockin slot cleared");
-        // A locked move spends no PP (sim/battle-actions.ts runMove's getLockedMove),
-        // and slot 1 PP is unchanged (player choice ignored).
+        // Outrage PP decremented further (lock forced re-use), slot 1 PP
+        // unchanged (player choice ignored).
+        // sim/battle-actions.ts runMove: a locked move pays no PP after its first use.
         assert_eq!(b.p1.team[0].pp[0], outrage_pp_after_first,
-                "Outrage PP stays put while locked");
+                "Outrage PP does not decrease while locked");
         assert_eq!(b.p1.team[0].pp[1], other_pp_before,
                 "slot 1 PP unchanged — locked into Outrage");
     }
@@ -49831,8 +49830,7 @@ mod tests {
                 "Iron Hands took Dragon Claw damage");
         assert_eq!(b.p2.team[0].current_hp, chomp_max,
                    "Focus Punch must fail when user was hit this turn");
-        // beforeMoveCallback stops the move before deductPP (sim/battle-actions.ts runMove).
-        assert_eq!(b.p1.team[0].pp[0], 32, "Focus Punch spends no PP when it loses focus");
+        assert_eq!(b.p1.team[0].pp[0], 32, "a lost Focus Punch pays no PP (beforeMoveCallback precedes deductPP)");
     }
 
     #[test]
