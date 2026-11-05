@@ -442,6 +442,28 @@ pub enum VolatileKind {
     /// dropped when the source switches out, ignored once it has fainted.
     /// Payload: `side << 16 | team index` of the source.
     Trapped,
+    /// Power Trick (data/moves.ts powertrick): Atk and Def swapped in `stats`.
+    PowerTrick,
+    /// Lock-On (data/moves.ts lockon), duration 2. Payload: `side << 1 | slot`
+    /// of the locked target.
+    LockOn,
+    /// Electrify (data/moves.ts electrify), duration 1: the holder's move turns Electric.
+    Electrify,
+    /// Uproar (data/moves.ts uproar condition), duration 3. Payload: remaining
+    /// residuals. The move itself is locked through `lockin_turns`.
+    Uproar,
+}
+
+fn no_metronome_move() -> u16 {
+    u16::MAX
+}
+
+fn no_added_type() -> u8 {
+    255
+}
+
+fn no_borrowed_slot() -> (u16, u8) {
+    (u16::MAX, 0)
 }
 
 /// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
@@ -745,6 +767,16 @@ pub struct Pokemon {
     /// Used by Counter / Mirror Coat / Metal Burst / Bide payout
     /// calculation. Cleared at end of step.
     pub last_damage_taken: u16,
+    /// HP damage of the last hit from a foe this turn: Metal Burst and
+    /// Comeuppance read `getLastDamagedBy(true)`, which skips allies
+    /// (sim/pokemon.ts). `last_damage_taken` also holds an ally's spread hit.
+    #[serde(default)]
+    pub last_foe_damage: u16,
+    /// PS `hurtThisTurn` read as a truth value: spreadDamage set it to the HP
+    /// left after any damage, recoil and Life Orb included (sim/battle.ts
+    /// spreadDamage). Assurance reads it (data/moves.ts assurance).
+    #[serde(default)]
+    pub hurt_this_turn: bool,
     /// Encoded `(side_byte, slot_byte)` of the most recent *physical*
     /// attacker this turn, and the HP damage it dealt. Counter
     /// (`data/moves.ts:counter`) keys off these specifically — PS tracks
@@ -829,6 +861,13 @@ pub struct Pokemon {
     /// (255 = none). The runner must dispatch this slot regardless
     /// of the player's Choice while the lock is active.
     pub lockin_move_slot: u8,
+    /// A damaging hit landed this turn, from either side: Focus Punch's
+    /// `lostFocus` (data/moves.ts focuspunch condition onHit).
+    #[serde(default)]
+    pub lost_focus: bool,
+    /// lockedmove's `trueDuration` (data/conditions.ts); `lockin_turns` is its `duration`.
+    #[serde(default)]
+    pub lockin_true: u8,
     /// Tera type. PS `pokemon.teraType` — encoded as a type code
     /// 0..=17 (same indexing as `species().types`). 255 = none assigned
     /// (legacy / set without teratype). Set at team load from the JSON
@@ -974,6 +1013,16 @@ pub struct Pokemon {
     /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
     /// mirroring PS `effectState.counter`.
     pub cud_chew_counter: u8,
+    /// The foe's stat rises Opportunist or Mirror Herb has collected and not yet
+    /// spent (their effectState.boosts).
+    #[serde(default)]
+    pub foe_boosts_pending: [i8; 7],
+    /// Metronome item: the consecutive-use count and the last move counted
+    /// (data/items.ts metronome condition's effectState).
+    #[serde(default)]
+    pub metronome_count: u8,
+    #[serde(default = "no_metronome_move")]
+    pub metronome_move: u16,
     /// Supreme Overlord's `effectState.fallen` (data/abilities.ts:4730-4738):
     /// min(side.totalFainted, 5) latched at the ability's onStart, so allies
     /// fainting later do not raise it. `u8::MAX` = never started (e.g. a
@@ -986,6 +1035,19 @@ pub struct Pokemon {
     /// hashed: it is always reset before it can matter again.
     #[serde(default)]
     pub used_item_this_turn: bool,
+    /// PS `pokemon.ateBerry` (sim/pokemon.ts eatItem), for Belch. Survives switching.
+    #[serde(default)]
+    pub ate_berry: bool,
+    /// PS `pokemon.addedType` (Trick-or-Treat, Forest's Curse); 255 = none. setType
+    /// and switching out clear it.
+    #[serde(default = "no_added_type")]
+    pub added_type: u8,
+    /// Types changed but not yet shown (Reflect Type off a foe; sim/battle.ts nextTurn).
+    #[serde(default)]
+    pub type_unseen: bool,
+    /// Slot 3's real move and PP while a called move holds it, `u16::MAX` = none.
+    #[serde(default = "no_borrowed_slot")]
+    pub borrowed_slot: (u16, u8),
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
     /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
@@ -1093,6 +1155,8 @@ impl Pokemon {
             last_attacker: (255, 255),
             last_attacker_category: 255,
             last_damage_taken: 0,
+            last_foe_damage: 0,
+            hurt_this_turn: false,
             last_phys_attacker: (255, 255),
             last_phys_damage: 0,
             last_spec_attacker: (255, 255),
@@ -1105,6 +1169,8 @@ impl Pokemon {
             must_recharge: false,
             lockin_turns: 0,
             lockin_move_slot: 255,
+            lockin_true: 0,
+            lost_focus: false,
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
@@ -1119,8 +1185,15 @@ impl Pokemon {
             commanded: false,
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
+            foe_boosts_pending: [0; 7],
+            metronome_count: 0,
+            metronome_move: u16::MAX,
             supreme_overlord_fallen: u8::MAX,
             used_item_this_turn: false,
+            ate_berry: false,
+            added_type: 255,
+            type_unseen: false,
+            borrowed_slot: (u16::MAX, 0),
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
             moves_used: 0,
@@ -1147,14 +1220,28 @@ impl Pokemon {
     /// so Low Kick's BP table can't see a 0-weight target.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
     pub fn effective_weight_dg(&self) -> u32 {
-        let base = self.species().weight_dg as u32;
+        self.weight_dg_with(false)
+    }
+
+    /// `getWeight`: runEvent('ModifyWeight'), Heavy Metal and Light Metal
+    /// first (Ability before Item), then Float Stone (sim/pokemon.ts getWeight,
+    /// data/abilities.ts heavymetal, lightmetal; both breakable, hence the
+    /// flag for the target of a Mold Breaker user).
+    pub fn weight_dg_with(&self, ignore_ability: bool) -> u32 {
+        let mut w = self.species().weight_dg as u32;
+        if !ignore_ability {
+            match self.effective_ability_id() {
+                data::ability_id::HEAVYMETAL => w *= 2,
+                data::ability_id::LIGHTMETAL => w /= 2,
+                _ => {}
+            }
+        }
         // `effective_item_id()` is `u16::MAX` under Magic Room — Float Stone's
         // weight halving is an item effect, so it is suppressed (item kept).
         if self.effective_item_id() == data::item_id::FLOATSTONE {
-            (base / 2).max(1)
-        } else {
-            base
+            w /= 2;
         }
+        w.max(1)
     }
 
     pub fn is_alive(&self) -> bool {
@@ -1240,6 +1327,9 @@ impl Pokemon {
     #[inline]
     pub fn set_type_override(&mut self, primary: u8, secondary: Option<u8>) {
         self.type_override = [primary, secondary.unwrap_or(255)];
+        self.added_type = 255;
+        // setType refreshes apparentType (sim/pokemon.ts setType).
+        self.type_unseen = false;
     }
 
     /// Burn Up's self effect (PS data/moves.ts:2092 burnup `self.onHit`):
@@ -1263,6 +1353,7 @@ impl Pokemon {
     #[inline]
     pub fn clear_type_override(&mut self) {
         self.type_override = [255, 255];
+        self.type_unseen = false;
     }
 
     /// Effective crit stage from on-mon contributors (held item,
@@ -1280,10 +1371,9 @@ impl Pokemon {
         if self.effective_ability_id() == data::ability_id::SUPERLUCK {
             s = s.saturating_add(1);
         }
-        let item = if self.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[self.item_id as usize].slug
+        let item = match self.effective_item_id() {
+            u16::MAX => "",
+            id => data::ITEMS[id as usize].slug,
         };
         match item {
             "scopelens" | "razorclaw" => s = s.saturating_add(1),
@@ -1368,6 +1458,18 @@ impl Pokemon {
         if self.item_suppressed {
             return u16::MAX;
         }
+        // sim/pokemon.ts ignoringItem: Klutz, except the items flagged ignoreKlutz
+        // (data/items.ts).
+        if self.effective_ability_id() == data::ability_id::KLUTZ
+            && !matches!(
+                self.item_id,
+                data::item_id::ABILITYSHIELD | data::item_id::MACHOBRACE | data::item_id::POWERANKLET
+                    | data::item_id::POWERBAND | data::item_id::POWERBELT | data::item_id::POWERBRACER | data::item_id::POWERLENS
+                    | data::item_id::POWERWEIGHT
+            )
+        {
+            return u16::MAX;
+        }
         self.item_id
     }
 
@@ -1381,8 +1483,23 @@ impl Pokemon {
     /// Bestow, Magician, Symbiosis, Sticky Barb), which must keep clearing
     /// `item_id` directly WITHOUT touching `consumed_item`.
     #[inline]
+    /// Slot 3 goes back to its real move once a called move's lock has ended.
+    pub fn release_borrowed_slot(&mut self) {
+        if self.borrowed_slot.0 != u16::MAX
+            && !(self.lockin_turns > 0 && self.lockin_move_slot == 3)
+            && !(self.charging_turns > 0 && self.charging_move_slot == 3)
+        {
+            self.moves[3] = self.borrowed_slot.0;
+            self.pp[3] = self.borrowed_slot.1;
+            self.borrowed_slot = (u16::MAX, 0);
+        }
+    }
+
     pub fn consume_item(&mut self) {
         self.consumed_item = self.item_id;
+        if self.item_id != u16::MAX && data::ITEMS[self.item_id as usize].is_berry {
+            self.ate_berry = true;
+        }
         self.used_item_this_turn = true;
         self.item_id = u16::MAX;
         self.sync_can_mega_evolve();
@@ -1634,13 +1751,25 @@ impl Pokemon {
     #[inline]
     pub fn set_damaged_this_turn(&mut self, on: bool) {
         if on {
+            // The payload is PS `hurtThisTurn`, the HP left by the last hit
+            // (sim/battle.ts spreadDamage), for Emergency Exit.
             self.volatiles.add(Volatile {
                 kind: VolatileKind::DamagedThisTurn,
                 turns_remaining: 0,
-                payload: 0,
+                payload: self.current_hp as u32,
             });
         } else {
             self.volatiles.remove(VolatileKind::DamagedThisTurn);
+        }
+    }
+
+    /// A Choice item's or Gorilla Tactics' lock from a move that got as far as
+    /// onModifyMove (sim/battle-actions.ts useMoveInner, data/items.ts choicescarf).
+    pub(crate) fn lock_choice(&mut self, move_slot: u8) {
+        let choice = matches!(self.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
+            || self.effective_ability_id() == data::ability_id::GORILLATACTICS;
+        if choice && self.locked_move_slot() == 255 {
+            self.set_locked_move_slot(move_slot);
         }
     }
 
@@ -1678,6 +1807,15 @@ impl Pokemon {
             turns_remaining: 0,
             payload: variant as u32,
         });
+    }
+
+    /// Whether the active Protect volatile stops `m`. King's Shield, Obstruct,
+    /// Burning Bulwark and Silk Trap (variants 3, 4, 5, 6) call
+    /// checkMoveBypassesProtect with blockStatus false, so status moves pass
+    /// (sim/battle.ts:1082, data/moves.ts kingsshield).
+    #[inline]
+    pub fn protect_stops(&self, m: &data::MoveDef) -> bool {
+        self.is_protected_this_turn() && (m.category != 2 || !matches!(self.protect_variant(), 3..=6))
     }
 
     /// Which protect-family move laid the active Protect volatile (0 = plain
@@ -2389,6 +2527,10 @@ impl Pokemon {
         if self.volatiles.has(VolatileKind::SmackdownGrounded) {
             return true;
         }
+        // Ingrain — sim/pokemon.ts isGrounded (`'ingrain' in this.volatiles`).
+        if self.volatiles.has(VolatileKind::Ingrain) {
+            return true;
+        }
         // Gravity — while the field condition is up every Pokémon is
         // grounded (PS `Pokemon.isGrounded()` checks
         // `this.battle.field.getPseudoWeather('gravity')`). The battle
@@ -2420,6 +2562,10 @@ impl Pokemon {
         if (ab == data::ability_id::LEVITATE || ab == data::ability_id::EELEVATE)
             && !ignore_levitate
         {
+            return false;
+        }
+        // sim/pokemon.ts isGrounded: Magnet Rise and Telekinesis, after Levitate.
+        if self.volatiles.has(VolatileKind::MagnetRise) || self.volatiles.has(VolatileKind::Telekinesis) {
             return false;
         }
         if self.effective_item_id() == data::item_id::AIRBALLOON {

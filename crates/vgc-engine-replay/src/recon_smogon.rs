@@ -588,14 +588,14 @@ mod tests {
                 &StatSpread { hp: 252, atk: 0, def: 0, spa: 0, spd: 252, spe: 4 }, def_nat);
             let def = mk(data::SPECIES.iter().position(|s| s.slug == "snorlax").unwrap() as u16, 50, def_stats);
             let mid = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
-            let ctx = |roll: u8| DamageContext {
+            let ctx = |roll: u8| DamageContext { ssa_physical: false,
                 crit: false, roll, is_spread: false,
                 weather: vgc_engine_core::weather::Weather::None,
                 defender_has_reflect: false, defender_has_light_screen: false,
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: vgc_engine_core::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false, aura_break_active: false,
-                attacker_total_fainted_allies: 0,
+                attacker_total_fainted_allies: 0, speed_stats: None,
                 attacker_stats: None, defender_stats: None,
                 pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
                 defender_friend_guarded: false,
@@ -603,7 +603,7 @@ mod tests {
                 // Replay recon reads Champions ladder logs.
                 champions: true,
                 defender_resist_berry: false,
-                parental_bond_hit: false,
+                parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0,
             };
             let lo = calculate_damage(&atk, &def, mid, ctx(DamageContext::MIN_ROLL));
             let hi = calculate_damage(&atk, &def, mid, ctx(DamageContext::MAX_ROLL));

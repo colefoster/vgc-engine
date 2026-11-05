@@ -515,6 +515,10 @@ fn champions_tail(slug: &str, tail: &str) -> String {
     if slug == "freezedry" {
         t = t.replace("has_secondary: true", "has_secondary: false");
     }
+    // The mod lets Milk Drink aim at the ally.
+    if slug == "milkdrink" {
+        t = t.replace("target: 1,", "target: 3,");
+    }
     t
 }
 
@@ -787,7 +791,9 @@ fn main() {
             m.pp.min(u8::MAX as u32) as u8,
             m.priority.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
             target_code(&m.target),
-            !m.secondary.is_null(),
+            // `secondaries` lists are dropped by the dex dump; they are Sheer Force
+            // moves too (data/abilities.ts sheerforce onModifyMove).
+            !m.secondary.is_null() || matches!(slug.as_str(), "firefang" | "icefang" | "thunderfang" | "triplearrows"),
             matches!(slug.as_str(), "electroshot" | "orderup"),
             m.flags.contains_key("contact"),
             m.flags.contains_key("punch"),
@@ -998,6 +1004,13 @@ fn main() {
             .find(|fx| fx.forme == slug.as_str() && fx.atk != 0)
             .map_or(bs.atk, |fx| fx.atk as u32);
         let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
+        // The dex dump predates these Champions Megas' weights (data/pokedex.ts).
+        let weight_dg = match slug.as_str() {
+            "eelektrossmega" => 1800,
+            "drampamega" => 2405,
+            "tatsugiricurlymega" | "tatsugiridroopymega" | "tatsugiristretchymega" => 240,
+            _ => weight_dg,
+        };
         let is_nfe = !s.evos.is_empty();
         // PS `species.gender`: "M"/"F"/"N" are fixed; absent ⇒ ratio'd
         // (rolled per individual). Unknown values fall back to Random.

@@ -173,6 +173,19 @@ impl Battle {
 
     /// PS `Pokemon.toString()` for the mon in active `slot`: `p1a: Name`
     /// (`p1: Name` once its `|faint|` printed: no longer `isActive`).
+    /// An ident captured earlier, as it reads now: a mon no longer in that slot
+    /// prints without its position (sim/pokemon.ts toString).
+    pub(crate) fn p_current_ident(&self, ident: &str) -> String {
+        let (Some(pos), Some(name)) = (ident.get(..3), ident.get(5..)) else { return ident.to_string() };
+        let side = if pos.starts_with("p1") { SideRef::P1 } else { SideRef::P2 };
+        let slot = pos.as_bytes()[2].wrapping_sub(b'a');
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive()) && self.p_ident(side, slot).ends_with(name) {
+            ident.to_string()
+        } else {
+            format!("{}: {name}", &pos[..2])
+        }
+    }
+
     pub(crate) fn p_ident(&self, side: SideRef, slot: u8) -> String {
         let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
         if self.p_faint_logged(side, idx) {
@@ -361,10 +374,33 @@ impl Battle {
         }
     }
 
+    /// `-damage` from directDamage (Substitute, Belly Drum, confusion ...), which
+    /// doesn't set hurtThisTurn (sim/battle.ts directDamage, spreadDamage).
+    pub(crate) fn p_direct_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        let hurt = self.side(side).active_mon(slot as usize).is_some_and(|m| m.hurt_this_turn);
+        self.p_damage(side, slot, suffix);
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.hurt_this_turn = hurt;
+        }
+    }
+
     /// `|-damage|`, queueing a faint when the HP hit 0 (PS `damage` ->
     /// `faintQueue`, sim/battle.ts:2108-2142).
     #[inline(always)]
     pub(crate) fn p_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        // spreadDamage's hurtThisTurn: every damage line, whatever its source.
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.hurt_this_turn = m.current_hp > 0;
+        }
+        // Focus Band's onDamage rolls on every damage event, and only then checks for a
+        // lethal move hit (data/items.ts focusband). Move hits roll in item::on_before_damage.
+        #[cfg(feature = "ps-rng")]
+        if !suffix.is_empty()
+            && self.rng.is_ps()
+            && self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_item_id() == vgc_engine_data::item_id::FOCUSBAND)
+        {
+            let _ = self.rng.ps_random_range("focusband", 0, 10);
+        }
         if self.plog() {
             self.p_damage_cold(side, slot, suffix);
         }
@@ -458,7 +494,14 @@ impl Battle {
                 let keys = std::mem::take(&mut l.faint_keys);
                 let mut q: Vec<_> = keys.into_iter().zip(std::mem::take(&mut l.faint_queue)).collect();
                 q.sort_by_key(|&(k, _)| k);
-                q.into_iter().map(|(_, e)| e).collect::<Vec<_>>()
+                let mut q: Vec<_> = q.into_iter().map(|(_, e)| e).collect();
+                for &(_, taken, _) in &l.faint_chain {
+                    if let Some(i) = q.iter().position(|&e| e == taken) {
+                        let e = q.remove(i);
+                        q.push(e);
+                    }
+                }
+                q
             }
             None => return,
         };
@@ -481,6 +524,17 @@ impl Battle {
             }
             let id = self.p_ident_idx(side, idx);
             self.p_push(format!("|faint|{id}"));
+            let chained: Vec<String> = match self.protocol.log_mut() {
+                Some(l) => {
+                    let (hit, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut l.faint_chain).into_iter().partition(|&(h, _, _)| h == (s, idx));
+                    l.faint_chain = keep;
+                    hit.into_iter().map(|(_, _, line)| line).collect()
+                }
+                None => Vec::new(),
+            };
+            for line in chained {
+                self.p_push(line);
+            }
             // faintMessages runs the ability's End while still active.
             if let Some(slot) = self.side(side).active.iter().position(|&a| a == idx).filter(|&s| s < self.format().active_count()) {
                 self.p_ability_end_lines(side, slot as u8, true);
@@ -503,6 +557,7 @@ impl Battle {
     /// runMove's closing `faintMessages(); checkWin();` (sim/battle-actions.ts:347-348).
     #[inline(always)]
     pub(crate) fn p_move_end_win_check(&mut self) {
+        self.flush_fling_item();
         if self.plog() {
             self.p_move_end_win_check_cold();
         }
@@ -569,8 +624,11 @@ impl Battle {
                 }
                 None => self.p_push("|tie".to_string()),
             }
+            // A user down at the hit loop's resolveFaints ends the battle before
+            // useMoveInner's `[spread]`, which attrLastMove still writes
+            // (sim/battle.ts attrLastMove has no ended check).
+            self.p_close_move_window_cold();
             if let Some(l) = self.protocol.log_mut() {
-                l.window_close();
                 l.ended = true;
             }
         }
@@ -763,6 +821,7 @@ impl Battle {
             l.loop_ended = true;
         }
         self.p_set_hit(255);
+        self.flush_fling_item();
         self.p_tag_step(crate::protocol::step::LOOP_FAINT);
         let user_down = self
             .protocol
@@ -787,6 +846,8 @@ impl Battle {
             return;
         }
         l.ee_announced |= bit;
+        // The hit loop's Update comes first (data/mods/champions/scripts.ts).
+        self.attract_update();
         pmon!(self, "-activate", side, slot, "|ability: Emergency Exit");
     }
 
@@ -844,13 +905,6 @@ impl Battle {
         self.p_window_close(spread);
         if let Some(l) = self.protocol.log_mut() {
             l.loop_ended = false;
-        }
-    }
-
-    /// Print `line` right before `|faint|` for the mon (side, team index).
-    pub(crate) fn p_faint_prefix(&mut self, side: SideRef, idx: u8, line: String) {
-        if let Some(l) = self.protocol.log_mut() {
-            l.faint_prefix.push((side as u8, idx, line));
         }
     }
 
@@ -915,7 +969,7 @@ impl Battle {
     /// announcement precedes every priority-0 ability (data/abilities.ts
     /// unnerve; sim/battle-actions.ts runSwitch fieldEvent('SwitchIn')).
     pub(crate) fn p_pre_announce(&mut self, order: &[(SideRef, u8)]) {
-        if !self.plog() || order.len() < 2 {
+        if !self.plog() {
             return;
         }
         for &(s, sl) in order {
@@ -925,6 +979,14 @@ impl Battle {
                     l.pre_announced |= 1 << (s as u8 * 2 + sl.min(1));
                 }
             }
+        }
+    }
+
+    /// One entering mon's Unnerve, unless already announced for its batch.
+    pub(crate) fn p_pre_announce_once(&mut self, side: SideRef, slot: u8) {
+        let bit = 1 << (side as u8 * 2 + slot.min(1));
+        if self.protocol.log().is_some_and(|l| l.pre_announced & bit == 0) {
+            self.p_pre_announce(&[(side, slot)]);
         }
     }
 
@@ -950,9 +1012,11 @@ impl Battle {
             let s = self.p_side_ident(side);
             self.p_push(format!("|-sidestart|{s}|{label}"));
         } else {
-            let user = self.protocol.log().map(|_| ()).map(|_| side);
-            let _ = user;
-            let us = self.p_user_side();
+            // The running move's user: a bounced move's is the Magic Bounce holder.
+            let us = match self.protocol.log().and_then(|l| l.status_ctx) {
+                Some((s, _, _)) => if s == 0 { SideRef::P1 } else { SideRef::P2 },
+                None => self.p_user_side(),
+            };
             self.p_try_fail(us, user_slot);
         }
     }
@@ -967,6 +1031,12 @@ impl Battle {
 
     /// A status move's missed accuracy roll (`-miss`, `[miss]`).
     pub(crate) fn p_status_miss(&mut self) {
+        if self.status_spread_rolls {
+            if let Some((us, usl, ts, tsl)) = self.status_acc_pair() {
+                self.p_miss(us, usl, ts, tsl);
+            }
+            return;
+        }
         let Some((us, usl, Some((ts, tsl)))) = self.protocol.log().and_then(|l| l.status_ctx) else { return };
         let side = |s: u8| if s == 0 { SideRef::P1 } else { SideRef::P2 };
         self.p_miss(side(us), usl, side(ts), tsl);
@@ -976,7 +1046,12 @@ impl Battle {
     /// for the move already.
     #[inline]
     pub(crate) fn p_status_fail_fallback(&mut self, side: SideRef, slot: u8) {
-        if !self.plog() || self.protocol.log().is_some_and(|l| l.since_move > 0) {
+        // Protean's type change from onPrepareHit doesn't explain anything.
+        let explained = self.protocol.log().is_some_and(|l| {
+            l.since_move > 1
+                || (l.since_move == 1 && !l.lines.last().is_some_and(|x| x.contains("|typechange|") && x.contains("[from] ability: ")))
+        });
+        if !self.plog() || explained {
             return;
         }
         self.p_try_fail(side, slot);
@@ -1030,7 +1105,7 @@ impl Battle {
         let Some(m) = self.side(side).active_mon(slot as usize) else { return };
         let grass = {
             let (t, n) = m.effective_types();
-            t[..n as usize].contains(&4)
+            t[..n as usize].contains(&4) || m.added_type == 4
         };
         if grass {
             pmon!(self, "-immune", side, slot);
@@ -1082,17 +1157,20 @@ impl Battle {
             pmon!(self, "-immune", side, slot);
             return;
         }
-        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
-            pmon!(self, "-activate", side, slot, "|move: Safeguard");
-            return;
-        }
-        if m.is_grounded() && m.semi_invuln == 0 {
-            if matches!(self.terrain, crate::terrain::Terrain::Misty) {
-                pmon!(self, "-activate", side, slot, "|move: Misty Terrain");
-                return;
-            }
-            if matches!(self.terrain, crate::terrain::Terrain::Electric) && status == Status::Sleep {
-                pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
+        // sweetveil / pastelveil onAllySetStatus: `-block`, naming the holder
+        // (data/abilities.ts).
+        let veil = match status {
+            Status::Sleep => Some((data::ability_id::SWEETVEIL, "Sweet Veil")),
+            Status::Poison | Status::Toxic => Some((data::ability_id::PASTELVEIL, "Pastel Veil")),
+            _ => None,
+        };
+        if let Some((veil, name)) = veil {
+            let holder = (0..self.format().active_count() as u8).find(|&sl| {
+                self.side(side).active_mon(sl as usize).is_some_and(|h| h.is_alive() && h.effective_ability_id() == veil)
+            });
+            if let Some(h) = holder.filter(|&h| !(h == slot && veil == data::ability_id::PASTELVEIL)) {
+                let of = self.p_ident(side, h);
+                pmon!(self, "-block", side, slot, "|ability: {name}|[of] {of}");
                 return;
             }
         }
@@ -1106,8 +1184,28 @@ impl Battle {
             Status::Freeze => ab == a::MAGMAARMOR,
             Status::None => false,
         } || matches!(ab, a::PURIFYINGSALT | a::COMATOSE);
-        if blocks {
+        // leafguard, shieldsdown onSetStatus (data/abilities.ts).
+        let weather_block = (ab == a::LEAFGUARD && matches!(self.effective_weather_for(side, slot), crate::weather::Weather::Sun))
+            || Self::shields_down_shielded(m);
+        if blocks || weather_block {
             pmon!(self, "-immune", side, slot, "|[from] ability: {}", ability_name(ab));
+            return;
+        }
+        // The holder's handlers sort by its speed, ahead of the side's and field's,
+        // which have none (sim/battle.ts resolvePriority).
+        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
+            pmon!(self, "-activate", side, slot, "|move: Safeguard");
+            return;
+        }
+        if m.is_grounded() && m.semi_invuln == 0 {
+            if matches!(self.terrain, crate::terrain::Terrain::Misty) {
+                pmon!(self, "-activate", side, slot, "|move: Misty Terrain");
+                return;
+            }
+            if matches!(self.terrain, crate::terrain::Terrain::Electric) && status == Status::Sleep {
+                pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
+                return;
+            }
         }
     }
 
@@ -1229,12 +1327,21 @@ impl Battle {
         if self.magic_room_turns == 1 {
             self.p_res(27, 6, None);
             let src = self.protocol.log().map(|l| l.magic_room_source.clone()).unwrap_or_default();
+            let src = self.p_current_ident(&src);
             self.p_push(format!("|-fieldend|move: Magic Room|[of] {src}"));
         }
         if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
             self.p_res(27, 7, None);
             let t = terrain_end_name(self.terrain);
             self.p_push(format!("|-fieldend|{t}"));
+            // clearTerrain's TerrainChange event (sim/field.ts): Mimicry.
+            let terrain = std::mem::replace(&mut self.terrain, crate::terrain::Terrain::None);
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() as u8 {
+                    self.apply_mimicry(side, slot);
+                }
+            }
+            self.terrain = terrain;
         }
     }
 
@@ -1388,6 +1495,10 @@ impl Battle {
     #[cold]
     #[inline(never)]
     fn p_item_line_cold(&mut self, tag: &str, side: SideRef, slot: u8, item: u16, suffix: &str) {
+        // ripen onTryEatItem announces itself before the berry goes (data/abilities.ts).
+        if suffix == "|[eat]" && self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN) {
+            pmon!(self, "-activate", side, slot, "|ability: Ripen");
+        }
         pmon!(self, tag, side, slot, "|{}{suffix}", item_name(item));
     }
 
@@ -1477,7 +1588,9 @@ impl Battle {
                         return Some((t.side, t.slot));
                     }
                     if t.side == side {
-                        return Some((t.side, t.slot));
+                        // sim/battle.ts getTarget: adjacentAllyOrSelf falls back to
+                        // the user when the ally fainted.
+                        return Some(if tcode == 3 { (side, slot) } else { (t.side, t.slot) });
                     }
                 }
             }
@@ -1543,7 +1656,7 @@ impl Battle {
         let mut rod: Option<(SideRef, u8, u16)> = None;
         if let Some(t) = display {
             let m = &self.moves()[move_id as usize];
-            if matches!(m.target, 0 | 4 | 10) {
+            if matches!(m.target, 0 | 4 | 10 | 13) {
                 let r = self.resolve_targets(side, slot, move_id, attacker, m, crate::battle::TargetBuf::single(t));
                 if r.len() == 1 {
                     if r[0] != t {
@@ -1562,8 +1675,12 @@ impl Battle {
             pmon!(self, "-curestatus", side, slot, "|frz|[from] move: {}", move_name(move_id));
         }
         // Curse from a non-Ghost targets itself (data/moves.ts curse onModifyMove).
-        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) {
+        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) && attacker.added_type != 13 {
             display = Some((side, slot));
+        }
+        // wonderroom onModifyMove (data/moves.ts) on a move with overrideOffensiveStat.
+        if move_id == data::move_id::BODYPRESS && self.wonder_room_turns > 0 {
+            self.p_push("|-hint|Body Press uses Def boosts when Wonder Room is active.".to_string());
         }
         // struggle onModifyMove, before the `|move|` line (data/moves.ts:18226).
         if move_id == data::move_id::STRUGGLE {
@@ -1588,14 +1705,29 @@ impl Battle {
             }
         }
         let id = self.p_ident(side, slot);
-        let tgt = display.map(|(s, sl)| self.p_ident(s, sl)).unwrap_or_default();
+        // getRandomTarget's null for an adjacentAlly move with no ally reaches
+        // addMove as `null` (sim/battle.ts getRandomTarget, addMove).
+        let tgt = match display {
+            Some((s, sl)) => self.p_ident(s, sl),
+            None if self.moves()[move_id as usize].target == 2 => "null".to_string(),
+            None => String::new(),
+        };
         let locked = attacker.lockin_turns > 0 || attacker.charging_turns > 0;
-        let from = if locked { "|[from] lockedmove" } else { "" };
+        let from = if self.called_from != u16::MAX {
+            format!("|[from] move: {}", move_name(self.called_from))
+        } else if locked {
+            "|[from] lockedmove".to_string()
+        } else if move_id == data::move_id::ROUND && self.round_chain[side as usize][(slot as usize).min(1)] {
+            "|[from] move: Round".to_string()
+        } else {
+            String::new()
+        };
         let line = format!("|move|{id}|{}|{tgt}{from}", move_name(move_id));
         if let Some(l) = self.protocol.log_mut() {
             l.flush_pending_move();
             l.pending_move = Some(line);
             l.move_target = display.map(|(s, sl)| (s as u8, sl));
+            l.last_target = None;
             l.since_move = 0;
             l.cur_user = Some((side as u8, slot));
             l.active_move = move_id;
@@ -1735,7 +1867,9 @@ impl Battle {
         for (i, &(s, sl)) in targets.iter().take(4).enumerate() {
             slots[i] = slot_tag(s, sl);
         }
+        let last = targets.last().map(|&(s, sl)| (s as u8, sl));
         if let Some(l) = self.protocol.log_mut() {
+            l.last_target = last;
             l.window_open();
             if let Some(w) = l.window.as_deref_mut() {
                 w.rank_slots = slots;
@@ -1848,12 +1982,37 @@ impl Battle {
     #[cold]
     #[inline(never)]
     fn p_miss_cold(&mut self, side: SideRef, slot: u8, tside: SideRef, tslot: u8) {
-        let spread = self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
+        let spread = self.status_spread_rolls || self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
         if !spread {
             self.p_attr("[miss]");
         }
         let t = self.p_ident(tside, tslot);
         pmon!(self, "-miss", side, slot, "|{t}");
+    }
+
+    /// The End lines of `old`, an ability just swapped away.
+    pub(crate) fn p_swap_end_lines(&mut self, side: SideRef, slot: u8, old: u16) {
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if old == data::ability_id::FLASHFIRE && m.volatiles.has(crate::pokemon::VolatileKind::FlashFire) {
+            if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                m.volatiles.remove(crate::pokemon::VolatileKind::FlashFire);
+            }
+            pmon!(self, "-end", side, slot, "|ability: Flash Fire|[silent]");
+        } else if old == data::ability_id::SUPREMEOVERLORD && m.supreme_overlord_fallen != 0 && m.supreme_overlord_fallen != u8::MAX {
+            let n = m.supreme_overlord_fallen;
+            pmon!(self, "-end", side, slot, "|fallen{n}|[silent]");
+        }
+    }
+
+    /// A future move's miss: its source may be off the field.
+    pub(crate) fn p_future_miss(&mut self, side: SideRef, idx: u8, tside: SideRef, tslot: u8) {
+        if !self.plog() {
+            return;
+        }
+        self.p_attr("[miss]");
+        let src = self.p_ident_idx(side, idx);
+        let t = self.p_ident(tside, tslot);
+        self.p_push(format!("|-miss|{src}|{t}"));
     }
 
     /// An absorbing ability's boost (Lightning Rod, Storm Drain, Motor

@@ -121,7 +121,7 @@ function flat(messages) {
 	for (const m of messages) {
 		const [kind, ...rest] = m.split('\n');
 		if (kind === 'update') {
-			log.push(...rest.filter(l => l && l !== '|'));
+			log.push(...rest.filter(l => l && l !== '|' && !l.startsWith('|debug|')));
 		} else if (kind === 'sideupdate') {
 			if (rest[1] && rest[1].startsWith('|request|')) requests[rest[0]].push(rest[1]);
 		} else if (kind === 'end') {
@@ -167,6 +167,23 @@ function reproduces(scenario, capturedLog) {
 		const expected = flat(runShowdown(s.input_log));
 		const got = flat(await runEngine(s.input_log));
 		(JSON.stringify(expected) === JSON.stringify(got) ? pass : gaps).push({ ...s, expected });
+	}
+	// PS_SUITE_REPORT=<file>: each gap's first differing line, to group gaps by cause.
+	if (process.env.PS_SUITE_REPORT) {
+		const first = (a, b, kind) => {
+			for (let i = 0; i < Math.max(a.length, b.length); i++) {
+				if (a[i] !== b[i]) return { kind, i, ps: a[i] ?? null, vgc: b[i] ?? null, before: a.slice(Math.max(0, i - 4), i) };
+			}
+			return null;
+		};
+		const rows = [];
+		for (const s of gaps) {
+			const got = flat(await runEngine(s.input_log));
+			const diff = first(s.expected.log, got.log, 'log') || first(s.expected.requests.p1, got.requests.p1, 'p1') ||
+				first(s.expected.requests.p2, got.requests.p2, 'p2') || { kind: 'end', ps: JSON.stringify(s.expected.end), vgc: JSON.stringify(got.end) };
+			rows.push({ game: s.game, format: s.format, input_log: s.input_log, ...diff });
+		}
+		fs.writeFileSync(process.env.PS_SUITE_REPORT, rows.map(x => JSON.stringify(x)).join('\n') + '\n');
 	}
 	fs.writeFileSync(path.join(OUT, 'scenarios.jsonl'), pass.map(x => JSON.stringify(x)).join('\n') + '\n');
 	fs.writeFileSync(path.join(OUT, 'known-gaps.jsonl'), gaps.map(x => JSON.stringify({ game: x.game, format: x.format })).join('\n') + '\n');

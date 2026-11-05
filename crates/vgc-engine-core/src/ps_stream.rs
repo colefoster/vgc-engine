@@ -200,6 +200,12 @@ impl BattleStream {
         self.session.as_ref()
     }
 
+    /// The session, for the save/load differential test.
+    #[doc(hidden)]
+    pub fn session_mut_unchecked(&mut self) -> Option<&mut PsSession> {
+        self.session.as_mut()
+    }
+
     /// PS `battle.inputLog`.
     pub fn input_log(&self) -> &[String] {
         &self.input_log
@@ -214,6 +220,26 @@ impl BattleStream {
             let mut b = s.battle().clone_with_log();
             if let Some(t) = b.rng_mut().ps_mut().and_then(|p| p.take_trace()) {
                 return t.iter().map(|d| d.span).collect();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Each draw's span, op, source line, arguments, raw output, result and move
+    /// context, space-separated, for `tools/protocol/draw-trace.cjs`
+    /// (`VGC_DRAW_SITES=<file>` beside `VGC_DRAW_TRACE`).
+    pub fn draw_sites(&self) -> Vec<String> {
+        #[cfg(feature = "ps-rng")]
+        if let Some(s) = self.session.as_ref() {
+            let mut b = s.battle().clone_with_log();
+            if let Some(t) = b.rng_mut().ps_mut().and_then(|p| p.take_trace()) {
+                return t
+                    .iter()
+                    .map(|d| {
+                        let decision = if d.decision.is_empty() { "-" } else { d.decision };
+                        format!("{} {} {}:{} {} {} {} {} {} {} {} {}", d.span, d.op, d.file, d.line, d.a, d.b, d.raw, d.result, d.actor, d.move_id, d.target, decision)
+                    })
+                    .collect();
             }
         }
         Vec::new()
@@ -700,6 +726,9 @@ pub fn run_simulate_battle(opts: StreamOptions, mut input: impl std::io::Read, m
                 if let Some(path) = std::env::var_os("VGC_DRAW_TRACE") {
                     let spans: Vec<String> = s.draw_spans().iter().map(u32::to_string).collect();
                     let _ = std::fs::write(path, spans.join("\n"));
+                    if let Some(path) = std::env::var_os("VGC_DRAW_SITES") {
+                        let _ = std::fs::write(path, s.draw_sites().join("\n"));
+                    }
                 }
                 return Ok(());
             }

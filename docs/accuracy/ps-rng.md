@@ -161,6 +161,12 @@ target/release/accuracy trace <battle.json>      # aligned PS / engine draw list
 target/release/accuracy psrng <dir> --jsonl out.jsonl
 ```
 
+For a game replayed from an input log, `tools/protocol/draw-trace.cjs` compares
+every draw of Showdown and `vgc sim` (arguments, value, Showdown's caller stack,
+the engine's call site) and says whether the draws part before the first
+differing log line. `--batch <sim_check dir>` groups a whole run; see the top of
+the file.
+
 ## Cost
 
 Measured with `perf_bench`: 5,000 random doubles battles, release, median of

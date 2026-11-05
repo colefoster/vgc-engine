@@ -1,6 +1,6 @@
 //! Scenarios from Showdown's own test suite plus targeted additions, with Showdown's output
 //! recorded by tools/protocol/ps-suite.js. The log, each side's requests and the end record must
-//! match, except `|t:|` timestamps and the end record's input log. A write can group lines into
+//! match, except `|t:|` timestamps, Showdown's `|debug|` lines and the end record's input log. A write can group lines into
 //! messages differently, so messages are compared flat.
 #![cfg(feature = "ps-rng")]
 
@@ -18,7 +18,7 @@ fn flatten(messages: &[String]) -> Value {
         let mut lines = message.trim_end_matches('\n').split('\n');
         match lines.next() {
             Some("update") => {
-                for line in lines.filter(|l| !l.is_empty() && *l != "|") {
+                for line in lines.filter(|l| !l.is_empty() && *l != "|" && !l.starts_with("|debug|")) {
                     log.push(Value::from(if line.starts_with("|t:|") { "|t:|" } else { line }));
                 }
             }
