@@ -4223,7 +4223,12 @@ self.trigger_emergency_exits();
                         let _ = self.rng.ps_random_range("random_target", 0, n as u32);
                     }
                     let pick = self.rng.ps_random_range("random_target", 0, n as u32) as usize;
-                    if scripted {
+                    let tracks = self.moves()[move_id as usize].target != 2
+                        && matches!(
+                            self.side(side).active_mon(actor_slot as usize).map(|u| u.effective_ability_id()),
+                            Some(data::ability_id::STALWART | data::ability_id::PROPELLERTAIL)
+                        );
+                    if scripted || tracks {
                         let foe = side.opposing();
                         let alive = (0..n_active.min(2)).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive()));
                         if let Some(slot) = alive.clone().nth(pick).or(alive.last()) {
@@ -7522,7 +7527,22 @@ self.trigger_emergency_exits();
         let mut ps_pick: Option<Target> = None;
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
-            let pick = self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+            // runMove's getTarget passes `originalTarget`: Stalwart / Propeller Tail
+            // keep the location resolveAction picked while its mon is active
+            // (sim/battle.ts getTarget, sim/battle-queue.ts resolveAction).
+            let (si, sl) = (actor_side as usize, (actor_slot as usize).min(1));
+            let original = self.ps_scripted_pick[si][sl];
+            let tracked = target.is_none()
+                && !called
+                && original != 255
+                && m.target != 14
+                && matches!(attacker.effective_ability_id(), data::ability_id::STALWART | data::ability_id::PROPELLERTAIL)
+                && self.side(actor_side.opposing()).active_mon(original as usize).is_some_and(|d| d.is_alive());
+            let pick = if tracked {
+                Some(Target { side: actor_side.opposing(), slot: original })
+            } else {
+                self.ps_get_target_draw(actor_side, actor_slot, move_id, target)
+            };
             if let Some(l) = self.protocol.log_mut() {
                 l.ps_target_pick = pick.map(|t| (t.side, t.slot));
             }
