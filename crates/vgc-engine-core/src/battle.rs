@@ -8134,6 +8134,12 @@ self.trigger_emergency_exits();
         // para, confusion 33% gate + self-hit damage roll, attract 50% gate)
         // stay in-place inside the extracted method so PsGen5 draw identity
         // is preserved. See `check_pre_move_status`.
+        // Heal Block and Throat Chop's onBeforeMove tie at priority 6 on the holder
+        // (data/moves.ts healblock, throatchop; sim/battle.ts speedSort).
+        #[cfg(feature = "ps-rng")]
+        if !called && self.rng.is_ps() && attacker.heal_block_turns() > 0 && attacker.throat_chop_turns() > 0 {
+            let _ = self.rng.ps_random_range("shuffle", 0, 2);
+        }
         if !called && matches!(
             self.check_pre_move_status(
                 actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
@@ -15481,8 +15487,17 @@ self.trigger_emergency_exits();
         // Wonder Room's and Gravity's onModifyMove tie in useMoveInner's runEvent
         // (data/moves.ts wonderroom, gravity; sim/battle.ts speedSort).
         #[cfg(feature = "ps-rng")]
-        if self.rng.is_ps() && self.wonder_room_turns > 0 && self.gravity_turns > 0 {
-            let _ = self.rng.ps_random_range("shuffle", 0, 2);
+        if self.rng.is_ps() {
+            // A field condition's first runEvent still has the default subOrder 2 and no
+            // tie: its state gets its target only then (sim/battle.ts:909, resolvePriority).
+            if self.wonder_room_turns > 0 && self.gravity_turns > 0 && self.wonder_room_ran {
+                let _ = self.rng.ps_random_range("shuffle", 0, 2);
+            }
+            self.wonder_room_ran = self.wonder_room_turns > 0;
+            // Heal Block and Throat Chop's onModifyMove tie the same way.
+            if attacker.heal_block_turns() > 0 && attacker.throat_chop_turns() > 0 {
+                let _ = self.rng.ps_random_range("shuffle", 0, 2);
+            }
         }
         self.after_move_user = Some((actor_side, actor_slot, self.side(actor_side).active[actor_slot as usize]));
         self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
@@ -15906,6 +15921,21 @@ self.trigger_emergency_exits();
         if self.force_move_gate_ok {
             return PreMoveOutcome::Proceed;
         }
+        // choicelock onBeforeMove, priority 12: a move other than the locked one, picked
+        // while Magic Room hid the item, fails once the item is back; no PP is lost
+        // (data/conditions.ts choicelock).
+        if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
+            if a.locked_move_slot() != 255
+                && a.locked_move_slot() != move_slot
+                && move_id != data::move_id::STRUGGLE
+                && matches!(a.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
+            {
+                self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
+                self.p_attr("[still]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                return PreMoveOutcome::Abort;
+            }
+        }
         // chillyreception's onBeforeMove (priority 100) prints `-prepare`
         // ahead of every other BeforeMove handler (data/moves.ts:2410-2416).
         if move_id == data::move_id::CHILLYRECEPTION {
@@ -15935,21 +15965,6 @@ self.trigger_emergency_exits();
                         if next == 0 {
                             a.status = Status::None;
                             false
-        // choicelock onBeforeMove, priority 12: a move other than the locked one, picked
-        // while Magic Room hid the item, fails once the item is back; no PP is lost
-        // (data/conditions.ts choicelock).
-        if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
-            if a.locked_move_slot() != 255
-                && a.locked_move_slot() != move_slot
-                && move_id != data::move_id::STRUGGLE
-                && matches!(a.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
-            {
-                self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
-                self.p_attr("[still]");
-                pmon!(self, "-fail", actor_side, actor_slot);
-                return PreMoveOutcome::Abort;
-            }
-        }
                         } else {
                             true
                         }
@@ -17037,6 +17052,7 @@ self.trigger_emergency_exits();
             | (1u64 << V::DamagedThisTurn as u8)
             | (1u64 << V::AllySwitch as u8);
         let mut snap = StatusEffectSnapshot {
+            boost_changes: self.boost_changes,
             mons: [[MonEffectSnapshot::default(); 2]; 2],
             sides: [self.p1.conditions, self.p2.conditions],
             active: [[255; 2]; 2],
@@ -17052,7 +17068,6 @@ self.trigger_emergency_exits();
             pending: [
                 self.future_pending.iter().flatten().filter(|f| f.is_some()).count() as u8,
                 self.wish_pending.iter().flatten().filter(|w| w.is_some()).count() as u8,
-            boost_changes: self.boost_changes,
                 self.pending_queue_reorder.is_some() as u8,
                 self.ally_switch_pending.is_some() as u8 | (self.copy_volatiles_next_switch as u8) << 1,
             ],
@@ -21479,6 +21494,7 @@ self.trigger_emergency_exits();
                 // per-mon state to maintain here.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wonder_Room_(move)>.
                 self.wonder_room_turns = if self.wonder_room_turns > 0 { 0 } else { 5 };
+                self.wonder_room_ran = false;
             }
             data::move_id::TAILWIND => {
                 self.p_side_start(actor_side, self.side(actor_side).conditions.tailwind_turns == 0, "move: Tailwind", actor_slot);
@@ -25776,6 +25792,9 @@ mod protect_variant {
 /// See [`Battle::status_effect_snapshot`].
 #[derive(Clone, Copy, PartialEq)]
 struct StatusEffectSnapshot {
+    /// boost() calls that moved a stage: a drop Defiant or White Herb undoes still
+    /// counts as the move doing something (sim/battle-actions.ts runMoveEffects).
+    boost_changes: u32,
     mons: [[MonEffectSnapshot; 2]; 2],
     sides: [crate::side::SideConditions; 2],
     active: [[u8; 2]; 2],
@@ -25792,9 +25811,6 @@ struct MonEffectSnapshot {
     volatiles: u64,
     payloads: u64,
     hp: u16,
-    /// boost() calls that moved a stage: a drop Defiant or White Herb undoes still
-    /// counts as the move doing something (sim/battle-actions.ts runMoveEffects).
-    boost_changes: u32,
     item: u16,
     ability: (u16, bool),
     types: [u8; 2],
