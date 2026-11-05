@@ -11487,6 +11487,15 @@ self.trigger_emergency_exits();
             self.ps_hit_loop_faint_ends();
             self.ps_loop_end_update(side, slot);
             self.ps_loop_hits = 0;
+            // Its faintMessages have run: the caller's own Updates don't see the KOs
+            // (data/mods/champions/scripts.ts:550, sim/battle.ts getAllActive).
+            for sd in [SideRef::P1, SideRef::P2] {
+                for sl in 0..self.format().active_count().min(2) {
+                    if self.side(sd).active_mon(sl).is_some_and(|m| m.current_hp == 0) {
+                        self.ps_action_live &= !(1 << (sd as usize * 2 + sl));
+                    }
+                }
+            }
         }
         // Back in the caller's own hit.
         #[cfg(feature = "ps-rng")]
