@@ -2013,6 +2013,7 @@ pub fn on_damaging_hit(
             let s = battle.p_side_ident(side);
             battle.p_push(format!("|-sidestart|{s}|move: Toxic Spikes"));
         }
+        battle.side_mut(side).conditions.note_hazard(2);
         let layers = &mut battle.side_mut(side).conditions.toxic_spikes_layers;
         if *layers < 2 {
             *layers += 1;

@@ -11627,6 +11627,7 @@ self.trigger_emergency_exits();
             // onAfterHit has no source.hp check, unlike onAfterSubDamage (data/moves.ts).
             if !sheer_force {
                 let opp = actor_side.opposing();
+                self.side_mut(opp).conditions.note_hazard(1);
                 let layers = &mut self.side_mut(opp).conditions.spikes_layers;
                 let added = *layers < 3;
                 if *layers < 3 {
