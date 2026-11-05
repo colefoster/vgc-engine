@@ -8620,6 +8620,19 @@ self.trigger_emergency_exits();
         if (attacker.boosted_stat == 0 && physical_move) || (attacker.boosted_stat == 2 && special_move) {
             atk_chain = crate::damage::chain_modify(atk_chain, 5325, 4096);
         }
+        // Plus / Minus (data/abilities.ts plus, minus onModifySpA): x1.5 with
+        // an ally holding either.
+        if special_move
+            && matches!(attacker.effective_ability_id(), data::ability_id::PLUS | data::ability_id::MINUS)
+            && (0..self.format().active_count()).any(|s| {
+                s != actor_slot as usize
+                    && self.side(actor_side).active_mon(s).is_some_and(|ally| {
+                        ally.is_alive() && matches!(ally.effective_ability_id(), data::ability_id::PLUS | data::ability_id::MINUS)
+                    })
+            })
+        {
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
+        }
         // Hadron Engine: Iron Moth's signature — SpA ×5461/4096 (≈1.333)
         // on special moves while Electric Terrain is up. The ability also
         // sets Electric Terrain on switch-in (`ability::on_switch_in`).
