@@ -2796,6 +2796,10 @@ pub(crate) fn calculate_damage_with_bp(
     }
     if ctx.defender_resist_berry {
         dmg_mod = chain_modify(dmg_mod, 2048, 4096);
+        // ripen onSourceModifyDamage halves it again (data/abilities.ts).
+        if defender.effective_ability_id() == data::ability_id::RIPEN {
+            dmg_mod = chain_modify(dmg_mod, 2048, 4096);
+        }
     }
 
     // Apply the whole ModifyDamage chain in a single pokeRound (PS parity).
