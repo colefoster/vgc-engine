@@ -10359,6 +10359,9 @@ self.trigger_emergency_exits();
                 && fixed_damage.is_none()
                 && self.rng.chance_keyed(3, 10)
             {
+                // ficklebeam onBasePower's message (data/moves.ts).
+                self.p_attr("[anim] Fickle Beam All Out");
+                pmon!(self, "-activate", actor_side, actor_slot, "|move: Fickle Beam");
                 Some((self.moves()[move_id as usize].base_power as u32) * 2)
             } else if move_id == data::move_id::PAYBACK
                 && !matches!(pending_kind[tside as usize][(tslot as usize).min(1)], 1 | 2)
