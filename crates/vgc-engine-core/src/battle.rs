@@ -13736,8 +13736,9 @@ self.trigger_emergency_exits();
                 // A Rage Powder the attacker is powder-immune to returns
                 // nothing and falls through to the next carrier.
                 let powder_immune = {
-                    let s = attacker.species();
-                    let grass_attacker = (0..s.num_types as usize).any(|i| s.types[i] == 4);
+                    // runStatusImmunity('powder') reads the live typing (sim/pokemon.ts).
+                    let (types, nt) = attacker.effective_types();
+                    let grass_attacker = types[..nt as usize].contains(&4);
                     grass_attacker
                         || attacker.item_id == data::item_id::SAFETYGOGGLES
                         || attacker.effective_ability_id() == data::ability_id::OVERCOAT
@@ -16581,9 +16582,9 @@ self.trigger_emergency_exits();
             Some(m) => m,
             None => return false,
         };
-        // Grass-type immunity (existing rule).
-        let s = m.species();
-        if (0..s.num_types as usize).any(|i| s.types[i] == 4) {
+        // getImmunity('powder') reads the live typing (sim/dex.ts getImmunity).
+        let (types, nt) = m.effective_types();
+        if types[..nt as usize].contains(&4) {
             return true;
         }
         // Safety Goggles (held item) and Overcoat (ability) bypass.
