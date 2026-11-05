@@ -52,6 +52,10 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     if m.is_punch && attacker.effective_item_id() == data::item_id::PUNCHINGGLOVE {
         return false;
     }
+    // Long Reach — data/abilities.ts longreach onModifyMove deletes the contact flag.
+    if attacker.effective_ability_id() == data::ability_id::LONGREACH {
+        return false;
+    }
     // Protective Pads — PS `data/items.ts:protectivepads`
     //   onModifyMove(move, pokemon) {
     //     delete move.flags['contact'];
