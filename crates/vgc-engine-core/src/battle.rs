@@ -17745,10 +17745,20 @@ self.trigger_emergency_exits();
         {
             return;
         }
+        // A source off the field (fainted or benched) has no boosts, and its
+        // item and ability do nothing (sim/pokemon.ts ignoringItem,
+        // ignoringAbility: gen 5+ `!isActive`; boosts clear in clearVolatile).
+        let mut src_mon = self.side(src_side).team[src_idx].clone();
+        let src_active = self.side(src_side).active.iter().any(|&a| a as usize == src_idx) && src_mon.is_alive();
+        if !src_active {
+            src_mon.boosts = Default::default();
+            src_mon.item_id = u16::MAX;
+            src_mon.ability_suppressed = true;
+        }
         // trySpreadMoveHit's hitStepTypeImmunity: `-immune` and no rolls
         // (sim/battle-actions.ts:654-664).
         let immune_target = {
-            let attacker = &self.side(src_side).team[src_idx];
+            let attacker = &src_mon;
             let ty = self.moves()[entry.move_id as usize].type_;
             self.side(tside)
                 .active_mon(tslot as usize)
@@ -17783,7 +17793,7 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() {
             let m = &self.moves()[entry.move_id as usize];
             let (immune, acc, crit_stage, crit_immune) = {
-                let attacker = &self.side(src_side).team[src_idx];
+                let attacker = &src_mon;
                 let Some(defender) = self.side(tside).active_mon(tslot as usize) else { return };
                 let immune = crate::damage::effectiveness_for_attack(attacker, entry.move_id, m.type_, defender)
                     .is_immune();
@@ -17818,7 +17828,7 @@ self.trigger_emergency_exits();
 
         let wonder_room = self.wonder_room_turns > 0;
         let dmg = {
-            let attacker = &self.side(src_side).team[src_idx];
+            let attacker = &src_mon;
             let defender = match self.side(tside).active_mon(tslot as usize) {
                 Some(d) => d,
                 None => return,
