@@ -20500,6 +20500,13 @@ self.trigger_emergency_exits();
                     self.apply_sleep_to_target(ts, tslot, true);
                 }
             }
+            data::move_id::SING => {
+                // data/moves.ts sing: `status: 'slp'`, sound (bypasses Substitute).
+                if !self.rolled_accuracy_passed(m) { return; }
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_sleep_to_target(ts, tslot, false);
+                }
+            }
             data::move_id::HYPNOSIS => {
                 // Non-powder: 60% acc, no Grass immunity.
                 if !self.rolled_accuracy_passed(m) { return; }
