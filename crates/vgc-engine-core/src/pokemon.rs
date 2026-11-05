@@ -767,6 +767,11 @@ pub struct Pokemon {
     /// Used by Counter / Mirror Coat / Metal Burst / Bide payout
     /// calculation. Cleared at end of step.
     pub last_damage_taken: u16,
+    /// HP damage of the last hit from a foe this turn: Metal Burst and
+    /// Comeuppance read `getLastDamagedBy(true)`, which skips allies
+    /// (sim/pokemon.ts). `last_damage_taken` also holds an ally's spread hit.
+    #[serde(default)]
+    pub last_foe_damage: u16,
     /// Encoded `(side_byte, slot_byte)` of the most recent *physical*
     /// attacker this turn, and the HP damage it dealt. Counter
     /// (`data/moves.ts:counter`) keys off these specifically — PS tracks
@@ -1145,6 +1150,7 @@ impl Pokemon {
             last_attacker: (255, 255),
             last_attacker_category: 255,
             last_damage_taken: 0,
+            last_foe_damage: 0,
             last_phys_attacker: (255, 255),
             last_phys_damage: 0,
             last_spec_attacker: (255, 255),
