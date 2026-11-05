@@ -454,6 +454,10 @@ pub enum VolatileKind {
     Uproar,
 }
 
+fn no_metronome_move() -> u16 {
+    u16::MAX
+}
+
 fn no_added_type() -> u8 {
     255
 }
@@ -1001,9 +1005,9 @@ pub struct Pokemon {
     pub cud_chew_counter: u8,
     /// Metronome item: the consecutive-use count and the last move counted
     /// (data/items.ts metronome condition's effectState).
-    #[serde(skip)]
+    #[serde(default)]
     pub metronome_count: u8,
-    #[serde(skip)]
+    #[serde(default = "no_metronome_move")]
     pub metronome_move: u16,
     /// Supreme Overlord's `effectState.fallen` (data/abilities.ts:4730-4738):
     /// min(side.totalFainted, 5) latched at the ability's onStart, so allies
@@ -1018,17 +1022,17 @@ pub struct Pokemon {
     #[serde(default)]
     pub used_item_this_turn: bool,
     /// PS `pokemon.ateBerry` (sim/pokemon.ts eatItem), for Belch. Survives switching.
-    #[serde(skip)]
+    #[serde(default)]
     pub ate_berry: bool,
     /// PS `pokemon.addedType` (Trick-or-Treat, Forest's Curse); 255 = none. setType
     /// and switching out clear it.
-    #[serde(skip, default = "no_added_type")]
+    #[serde(default = "no_added_type")]
     pub added_type: u8,
     /// Types changed but not yet shown (Reflect Type off a foe; sim/battle.ts nextTurn).
-    #[serde(skip)]
+    #[serde(default)]
     pub type_unseen: bool,
     /// Slot 3's real move and PP while a called move holds it, `u16::MAX` = none.
-    #[serde(skip, default = "no_borrowed_slot")]
+    #[serde(default = "no_borrowed_slot")]
     pub borrowed_slot: (u16, u8),
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
