@@ -3705,7 +3705,13 @@ self.trigger_emergency_exits();
                     if m.charging_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
-                    if m.lockin_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    // Uproar is a volatile with its own onResidual, not a
+                    // lockedmove (data/moves.ts uproar).
+                    if m.volatiles.has(V::Uproar) {
+                        push(&mut h, (28, 0, spe, 1));
+                    } else if m.lockin_turns > 0 {
+                        push(&mut h, (NONE, 0, spe, 2));
+                    }
                     // The released two-turn move's `twoturnmove` volatile
                     // (duration 2) only expires at this residual
                     // (data/conditions.js:305; the move's own volatile is
