@@ -11777,10 +11777,15 @@ self.trigger_emergency_exits();
             let chip = (d.stats.hp / 8).max(1);
             (chip, busted_id)
         };
-        // Forme-change first (identical base stats — no recompute),
-        // then mark busted and apply the chip.
+        // Forme-change first, then mark busted and apply the chip. The base stats
+        // match, but setSpecies recomputes storedStats, ending a Power Split, and
+        // caches the raw Speed (sim/pokemon.ts setSpecies).
         if let Some(busted_id) = busted_id {
-            self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
+            self.set_forme(ctx.tside, ctx.tslot, busted_id, true);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_reset_speed(ctx.tside, ctx.tslot as usize);
+            }
         }
         if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
             d.disguise_busted = true;
