@@ -454,7 +454,7 @@ pub struct Battle {
     last_move_before: u16,
     /// Item thrown by Fling: its `-enditem` waits for the next Update
     /// (data/moves.ts fling condition onUpdate).
-    #[serde(skip)]
+    #[serde(default)]
     fling_pending: Option<(SideRef, u8, u16)>,
     /// data/moves.ts healingwish slot condition: `[side][slot]`.
     #[serde(default)]
