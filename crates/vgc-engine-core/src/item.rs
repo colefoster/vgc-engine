@@ -179,6 +179,10 @@ pub fn type_resist_berry_fires(
     if move_type != type_code {
         return false;
     }
+    // struggle onModifyMove: `move.type = '???'` (data/moves.ts).
+    if move_id == data::move_id::STRUGGLE {
+        return false;
+    }
     if requires_se {
         use crate::damage::TypeEff;
         let eff = crate::damage::effectiveness_for_move_type(move_id, move_type, defender);
