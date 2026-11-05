@@ -710,15 +710,27 @@ fn effectiveness_base(
             TypeEff::Neutral
         }
     } else {
-        let smackdown_active = defender
-            .volatiles
-            .has(crate::pokemon::VolatileKind::SmackdownGrounded);
+        // A grounded Flying type (Smack Down, Gravity, Ingrain, Iron Ball) takes
+        // Ground moves: runImmunity passes (sim/pokemon.ts) and the chart's
+        // immunity counts as neutral in getEffectiveness (sim/dex.ts).
+        let grounded_flying = move_type == 8 && defender.is_grounded();
+        // Iron Ball's onEffectiveness returns 0 for each of a Flying holder's
+        // types, unless something else grounds it (data/items.ts ironball).
+        if grounded_flying
+            && def_eff_types[..def_eff_num as usize].contains(&9)
+            && defender.effective_item_id() == data::item_id::IRONBALL
+            && !defender.volatiles.has(crate::pokemon::VolatileKind::SmackdownGrounded)
+            && !defender.volatiles.has(crate::pokemon::VolatileKind::GravityGrounded)
+            && !defender.volatiles.has(crate::pokemon::VolatileKind::Ingrain)
+        {
+            return TypeEff::Neutral;
+        }
         let mut weak = 0i32;
         let mut resist = 0i32;
         let mut immune = false;
         for i in 0..def_eff_num as usize {
             let def_type = def_eff_types[i] as usize;
-            if smackdown_active && move_type == 8 && def_type == 9 {
+            if grounded_flying && def_type == 9 {
                 continue;
             }
             match data::TYPE_CHART[def_type][move_type as usize] {
