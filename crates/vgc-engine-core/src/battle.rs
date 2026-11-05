@@ -1301,9 +1301,24 @@ impl Battle {
         if !m.is_alive() || m.terastallized || m.effective_ability_id() != data::ability_id::MIMICRY {
             return;
         }
+        let (old, n_old) = m.effective_types();
         match ty {
             Some(t) => m.set_type_override(t, None),
             None => m.clear_type_override(),
+        }
+        let (new, n_new) = m.effective_types();
+        if old[..n_old as usize] == new[..n_new as usize] {
+            return;
+        }
+        // mimicry onTerrainChange (data/abilities.ts).
+        match ty {
+            Some(t) => {
+                pmon!(self, "-start", side, slot, "|typechange|{}|[from] ability: Mimicry", crate::battle_protocol::type_name(t));
+            }
+            None => {
+                pmon!(self, "-activate", side, slot, "|ability: Mimicry");
+                pmon!(self, "-end", side, slot, "|typechange|[silent]");
+            }
         }
     }
 
