@@ -12434,7 +12434,8 @@ self.trigger_emergency_exits();
                 .map(|a| a.item_id)
                 .unwrap_or(u16::MAX);
             if attacker_item_id_now == data::item_id::BIGROOT {
-                heal = heal * 5324 / 4096;
+                // chainModify([5324, 4096]) rounds (data/items.ts bigroot onTryHeal).
+                heal = (heal * 5324 + 2047) / 4096;
             }
             let heal = heal.min(u16::MAX as u32) as u16;
             // Liquid Ooze — PS `data/abilities.ts:2357`
