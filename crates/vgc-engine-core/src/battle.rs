@@ -20271,6 +20271,20 @@ self.trigger_emergency_exits();
                     self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
                 }
             }
+            data::move_id::TOXICTHREAD => {
+                // data/mods/champions/moves.ts toxicthread: `boosts: {spe: -2}`;
+                // data/moves.ts: `status: 'psn'`. Boosts run first
+                // (sim/battle-actions.ts runMoveEffects).
+                if !self.rolled_accuracy_passed(m) { return; }
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
+                self.apply_boosts(ts, tslot, &[(4, -2)], actor_side, actor_slot);
+                if ts != actor_side {
+                    self.after_foe_drop(ts, tslot, before, true);
+                }
+                self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot);
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
