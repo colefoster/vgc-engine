@@ -19994,6 +19994,9 @@ self.trigger_emergency_exits();
                     .active_mon(partner_slot)
                     .is_some_and(|p| p.is_alive());
                 if !partner_alive {
+                    // allyswitch onHit: NOT_FAIL, with the move named.
+                    pmon!(self, "-fail", actor_side, actor_slot, "|move: Ally Switch");
+                    self.p_attr("[still]");
                     return;
                 }
                 // swapPosition's `|swap|` (sim/battle.ts:1595).
