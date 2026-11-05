@@ -17547,6 +17547,23 @@ self.trigger_emergency_exits();
                     self.p_hit_messages(src_side, 0, tside, tslot, entry.move_id, &attacker, &defender, ps_crit);
                 }
             }
+            // trySpreadMoveHit's TryPrimaryHit: a Substitute takes it, unless the
+            // source's Infiltrator sets `infiltrates` (data/conditions.ts futuremove,
+            // data/moves.ts substitute).
+            let infiltrates = self.side(src_side).team[src_idx].effective_ability_id() == data::ability_id::INFILTRATOR;
+            let sub = self.side(tside).active_mon(tslot as usize).map_or(0, |d| d.substitute_hp());
+            if sub > 0 && !infiltrates {
+                let left = sub.saturating_sub(dmg);
+                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    d.set_substitute_hp(left);
+                }
+                if left == 0 {
+                    pmon!(self, "-end", tside, tslot, "|Substitute");
+                } else {
+                    pmon!(self, "-activate", tside, tslot, "|move: Substitute|[damage]");
+                }
+                return;
+            }
             // A future move no longer removes Endure before it hits
             // (data/conditions.ts futuremove, PS 0ac140354).
             let endured = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
