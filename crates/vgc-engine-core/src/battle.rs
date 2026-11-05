@@ -25323,7 +25323,7 @@ self.trigger_emergency_exits();
                         }
                         // Protect blocks this target (move carries the flag).
                         if fd.respects_protect
-                            && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_protected_this_turn())
+                            && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.protect_stops(m))
                         {
                             continue;
                         }
