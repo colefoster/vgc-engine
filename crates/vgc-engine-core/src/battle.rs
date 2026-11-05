@@ -3973,7 +3973,9 @@ self.trigger_emergency_exits();
         // (sim/side.ts:1086-1091, sim/battle.ts:2660).
         let n_team = self.p1.team.len().min(self.p2.team.len());
         for i in 0..n_team {
-            let key = |m: &Pokemon| crate::order::effective_speed(m, false, crate::weather::Weather::None, crate::terrain::Terrain::None) as i64 & 0x1FFF;
+            // An inactive mon's getStat runs no ModifySpe handlers (sim/battle.ts findEventHandlers
+            // reads target.isActive), so items and abilities don't count here.
+            let key = |m: &Pokemon| m.stats.spe;
             if key(&self.p1.team[i]) == key(&self.p2.team[i]) {
                 let _ = self.rng.ps_random_range("shuffle", 2 * i as u32, 2 * i as u32 + 2);
             }
@@ -12724,14 +12726,30 @@ self.trigger_emergency_exits();
                 .active_mon(actor_slot as usize)
                 .is_some_and(|a| a.is_alive());
             if !sheer_force && user_alive {
+                // onAfterHit: Leech Seed, then each hazard, each with its line; a partial
+                // trap ends silently (data/moves.ts rapidspin, mortalspin).
+                let had_seed = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::LeechSeed));
+                if had_seed && self.plog() {
+                    let of = self.p_ident(actor_side, actor_slot);
+                    let name = crate::battle_protocol::move_name(move_id);
+                    pmon!(self, "-end", actor_side, actor_slot, "|Leech Seed|[from] move: {name}|[of] {of}");
+                }
+                if self.plog() {
+                    let sid = self.p_side_ident(actor_side);
+                    let of = self.p_ident(actor_side, actor_slot);
+                    let name = crate::battle_protocol::move_name(move_id);
+                    let c = &self.side(actor_side).conditions;
+                    let (sp, ts, sr, sw) = (c.spikes_layers != 0, c.toxic_spikes_layers != 0, c.stealth_rock, c.sticky_web);
+                    if sp { self.p_push(format!("|-sideend|{sid}|Spikes|[from] move: {name}|[of] {of}")); }
+                    if ts { self.p_push(format!("|-sideend|{sid}|Toxic Spikes|[from] move: {name}|[of] {of}")); }
+                    if sr { self.p_push(format!("|-sideend|{sid}|Stealth Rock|[from] move: {name}|[of] {of}")); }
+                    if sw { self.p_push(format!("|-sideend|{sid}|Sticky Web|[from] move: {name}|[of] {of}")); }
+                }
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.volatiles.remove(crate::pokemon::VolatileKind::LeechSeed);
                     a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
                 }
                 self.clear_entry_hazards(actor_side);
-                if move_id == data::move_id::RAPIDSPIN {
-                    self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
-                }
             }
         }
 
@@ -24369,6 +24387,8 @@ fn stat_drop_secondary(slug: &str, champions: bool) -> Option<(u8, i8, u8)> {
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Power-Up_Punch_(move)>.
 fn self_boost_secondary(slug: &str) -> Option<(&'static [(u8, i8)], u8)> {
     Some(match slug {
+        // Rapid Spin — `secondary: { chance: 100, self: { boosts: { spe: 1 } } }`.
+        "rapidspin" => (&[(4, 1)], 100),
         // +1 Atk:
         "poweruppunch" => (&[(0, 1)], 100),
         "meteormash" => (&[(0, 1)], 20),
