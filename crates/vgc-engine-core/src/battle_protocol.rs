@@ -1675,7 +1675,7 @@ impl Battle {
             pmon!(self, "-curestatus", side, slot, "|frz|[from] move: {}", move_name(move_id));
         }
         // Curse from a non-Ghost targets itself (data/moves.ts curse onModifyMove).
-        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) {
+        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) && attacker.added_type != 13 {
             display = Some((side, slot));
         }
         // wonderroom onModifyMove (data/moves.ts) on a move with overrideOffensiveStat.

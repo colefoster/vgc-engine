@@ -2574,7 +2574,7 @@ impl Battle {
         match move_id {
             data::move_id::CURSE => {
                 let (types, n) = mon.effective_types();
-                if types[..n as usize].contains(&13) {
+                if types[..n as usize].contains(&13) || mon.added_type == 13 {
                     self.moves()[move_id as usize].target
                 } else {
                     1
@@ -4506,7 +4506,7 @@ self.trigger_emergency_exits();
                 };
                 // Champions gives non-Ghost Curse a self target (no draw).
                 let (types, nt) = mon.effective_types();
-                let ghost = types[..nt as usize].contains(&13); // Ghost type index
+                let ghost = types[..nt as usize].contains(&13) || mon.added_type == 13; // Ghost type index
                 if move_id == data::move_id::CURSE && !ghost {
                     continue;
                 }
@@ -4761,7 +4761,7 @@ self.trigger_emergency_exits();
         let curse = move_id == data::move_id::CURSE;
         if curse {
             let (types, nt) = user.effective_types();
-            if !types[..nt as usize].contains(&13) {
+            if !(types[..nt as usize].contains(&13) || user.added_type == 13) {
                 return None;
             }
         }
@@ -7950,7 +7950,7 @@ self.trigger_emergency_exits();
             // Curse: only resolveAction turns a non-Ghost's into 'self'.
             if called && move_id == data::move_id::CURSE && {
                 let (types, n) = attacker.effective_types();
-                !types[..n as usize].contains(&13)
+                !(types[..n as usize].contains(&13) || attacker.added_type == 13)
             } {
                 let foe = actor_side.opposing();
                 let n_active = self.format().active_count();
@@ -12032,7 +12032,7 @@ self.trigger_emergency_exits();
         // targets the user (data/mods/champions/moves.ts curse onModifyMove).
         let self_curse = move_id == data::move_id::CURSE && {
             let (types, n) = attacker.effective_types();
-            !types[..n as usize].contains(&13)
+            !(types[..n as usize].contains(&13) || attacker.added_type == 13)
         };
         if is_targeting_move(m.target) && !self_curse {
             // Mycelium Might joins the mold-breaker set for Status moves
@@ -17971,7 +17971,7 @@ self.trigger_emergency_exits();
         if mid == data::move_id::CURSE
             && self.side(side).active_mon(slot as usize).is_some_and(|m| {
                 let (types, n) = m.effective_types();
-                !types[..n as usize].contains(&13)
+                !(types[..n as usize].contains(&13) || m.added_type == 13)
             })
         {
             return None;
@@ -20764,7 +20764,7 @@ self.trigger_emergency_exits();
         let self_curse = move_id == data::move_id::CURSE
             && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
                 let (types, n) = u.effective_types();
-                !types[..n as usize].contains(&13)
+                !(types[..n as usize].contains(&13) || u.added_type == 13)
             });
         // Toxic from a Poison type hits through it (hitStepInvulnerabilityEvent).
         let toxic_sure = move_id == data::move_id::TOXIC && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
@@ -25936,7 +25936,7 @@ fn pressure_extra_pp(
     if m.slug == "curse"
         && battle.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
             let (types, n) = u.effective_types();
-            !types[..n as usize].contains(&13)
+            !(types[..n as usize].contains(&13) || u.added_type == 13)
         })
     {
         return 0;
