@@ -20294,6 +20294,22 @@ self.trigger_emergency_exits();
                 for b in t.boosts.iter_mut() { *b = -*b; }
                 pmon!(self, "-invertboost", ts, tslot, "|[from] move: Topsy-Turvy");
             }
+            data::move_id::SPITE => {
+                // data/moves.ts spite onHit: 4 PP off the target's last move.
+                if !self.rolled_accuracy_passed(m) { return; }
+                let Some((ts, tslot)) = opp_target else { return };
+                let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
+                let i = t.last_used_move_slot as usize;
+                let Some(&mid) = t.moves.get(i).filter(|&&x| x != u16::MAX) else { return };
+                let pp = t.pp.get(i).copied().unwrap_or(0);
+                let took = pp.min(4);
+                if took == 0 { return; }
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    t.pp[i] = pp - took;
+                }
+                let name = self.moves()[mid as usize].name;
+                pmon!(self, "-activate", ts, tslot, "|move: Spite|{name}|{took}");
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
