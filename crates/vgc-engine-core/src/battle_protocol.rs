@@ -1262,6 +1262,14 @@ impl Battle {
             self.p_res(27, 7, None);
             let t = terrain_end_name(self.terrain);
             self.p_push(format!("|-fieldend|{t}"));
+            // clearTerrain's TerrainChange event (sim/field.ts): Mimicry.
+            let terrain = std::mem::replace(&mut self.terrain, crate::terrain::Terrain::None);
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() as u8 {
+                    self.apply_mimicry(side, slot);
+                }
+            }
+            self.terrain = terrain;
         }
     }
 
