@@ -13573,7 +13573,11 @@ self.trigger_emergency_exits();
             //   on the holder still being alive AND still on the
             //   field (Red Card might have force-switched the
             //   attacker but the holder is still in slot tslot).
-            if self.side(tside).active_mon(tslot as usize)
+            // afterMoveSecondaryEvent skips AfterMoveSecondary for a move Sheer Force
+            // boosted (sim/battle-actions.ts): Red Card, Eject Button.
+            let sheer_force = crate::damage::move_is_sheer_force_boosted(m)
+                && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force);
+            if !sheer_force && self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive())
             {
                 // forceSwitch runs ahead of AfterMoveSecondary, so Circle Throw has
@@ -13588,7 +13592,7 @@ self.trigger_emergency_exits();
                     );
                 }
             }
-            if self.side(tside).active_mon(tslot as usize)
+            if !sheer_force && self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive())
             {
                 let _ = crate::item::try_consume_eject_button(
