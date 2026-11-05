@@ -12124,7 +12124,12 @@ self.trigger_emergency_exits();
         // No living foe to aim a foe-targeting status move at: useMoveInner
         // fails it with `[notarget]` before any accuracy roll
         // (sim/battle-actions.ts:427-431; getMoveTargets drops fainted mons).
-        if matches!(m.target, 0 | 4 | 6 | 10 | 13) && self.format().active_count() > 1 {
+        // A non-Ghost's Curse is 'self' by now (data/mods/champions/moves.ts:168-171).
+        let self_curse = move_id == data::move_id::CURSE && {
+            let (t, n) = attacker.effective_types();
+            !t[..n as usize].contains(&13)
+        };
+        if !self_curse && matches!(m.target, 0 | 4 | 6 | 10 | 13) && self.format().active_count() > 1 {
             let opp = actor_side.opposing();
             let ally_target = target.is_some_and(|t| {
                 t.side == actor_side && self.side(t.side).active_mon(t.slot as usize).is_some_and(|p| p.is_alive())
