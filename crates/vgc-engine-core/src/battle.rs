@@ -20693,7 +20693,11 @@ self.trigger_emergency_exits();
         if m.target == 2 && self.format().active_count() > 1 {
             let ally = actor_slot ^ 1;
             if self.side(actor_side).active_mon(ally as usize).is_some_and(|t| !t.is_alive()) {
-                self.p_retarget(actor_side, ally);
+                // Only a chosen location names it: a called or Encored move has
+                // getRandomTarget's null (random_4-1424).
+                if target.is_some() {
+                    self.p_retarget(actor_side, ally);
+                }
                 self.p_attr("[notarget]");
                 pmon!(self, "-fail", actor_side, actor_slot);
                 self.ps_status_failed();
