@@ -7654,7 +7654,19 @@ self.trigger_emergency_exits();
             // draws before mustrecharge's onBeforeMove cancels it.
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
-                self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+                // runMove passes originalTarget: Stalwart / Propeller Tail keep
+                // the location's mon if it is active, without a draw
+                // (sim/battle.ts getTarget; the action aims at lastMoveTargetLoc,
+                // sim/side.ts). getActionSpeed passes none, so only this one.
+                let (tracks, loc) = (
+                    matches!(attacker.effective_ability_id(), data::ability_id::STALWART | data::ability_id::PROPELLERTAIL),
+                    dec_target(attacker.last_used_move_target),
+                );
+                let kept = tracks
+                    && loc.is_some_and(|t| self.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive()));
+                if !kept {
+                    self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+                }
             }
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.must_recharge = false;
