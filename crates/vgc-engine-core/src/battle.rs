@@ -17771,9 +17771,10 @@ self.trigger_emergency_exits();
                 .side(source_side)
                 .active_mon(source_slot as usize)
                 .is_some_and(|s| s.effective_ability_id() == data::ability_id::INFILTRATOR);
-        // Safeguard veto — opponent-sourced status only.
-        if source_side != side
-            && !source_has_infiltrator
+        // Safeguard veto: any source but the target itself; only a foe's Infiltrator
+        // gets through (data/moves.ts safeguard onSetStatus).
+        if (source_side != side || (source_slot != u8::MAX && source_slot != slot))
+            && (!source_has_infiltrator || source_side == side)
             && self.side(side).conditions.safeguard_turns > 0
         {
             return;
