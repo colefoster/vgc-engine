@@ -592,8 +592,11 @@ impl Battle {
                 }
                 None => self.p_push("|tie".to_string()),
             }
+            // A user down at the hit loop's resolveFaints ends the battle before
+            // useMoveInner's `[spread]`, which attrLastMove still writes
+            // (sim/battle.ts attrLastMove has no ended check).
+            self.p_close_move_window_cold();
             if let Some(l) = self.protocol.log_mut() {
-                l.window_close();
                 l.ended = true;
             }
         }
