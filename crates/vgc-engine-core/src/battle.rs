@@ -16390,7 +16390,7 @@ self.trigger_emergency_exits();
                 }
             }
             // struggleRecoil: directDamage's `[from] recoil` (sim/battle.ts:2247-2248).
-            self.p_damage(actor_side, actor_slot, "|[from] recoil");
+            self.p_direct_damage(actor_side, actor_slot, "|[from] recoil");
         }
 
         // Attacker item recoil — Life Orb takes 1/10 max HP if the move

@@ -374,13 +374,12 @@ impl Battle {
         }
     }
 
-    /// `-damage` from directDamage (Substitute, Belly Drum, confusion ...), which
-    /// doesn't set hurtThisTurn (sim/battle.ts directDamage, spreadDamage).
+    /// `-damage` from directDamage (Substitute, Belly Drum, Struggle's recoil ...),
+    /// which runs no Damage event (no Focus Band roll) and doesn't set hurtThisTurn
+    /// (sim/battle.ts:2224 directDamage).
     pub(crate) fn p_direct_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
-        let hurt = self.side(side).active_mon(slot as usize).is_some_and(|m| m.hurt_this_turn);
-        self.p_damage(side, slot, suffix);
-        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-            m.hurt_this_turn = hurt;
+        if self.plog() {
+            self.p_damage_cold(side, slot, suffix);
         }
     }
 
