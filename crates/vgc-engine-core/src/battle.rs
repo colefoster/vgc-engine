@@ -1032,6 +1032,8 @@ impl Battle {
             ps_commit_teras: ([(0, 0); 4], 0),
         };
         if let Some((opts, format_id, picks)) = proto {
+            // The switch-ins and the first request below read the format's rules.
+            b.champions |= crate::format_rules::is_champions_format(format_id);
             b.p_init(opts, format_id);
             if let Some(picks) = picks {
                 b.p_apply_team_picks(picks);
