@@ -11653,6 +11653,36 @@ self.trigger_emergency_exits();
                                 self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                                 return;
                             }
+                            // onTryHit of the healing and boosting absorbers on a
+                            // Status move: Thunder Wave, Soak, Sand Attack,
+                            // Will-O-Wisp (data/abilities.ts voltabsorb ...).
+                            Some(ab @ (data::ability_id::VOLTABSORB | data::ability_id::WATERABSORB | data::ability_id::DRYSKIN | data::ability_id::EARTHEATER))
+                                if m.type_ == match ab {
+                                    data::ability_id::VOLTABSORB => 3,
+                                    data::ability_id::EARTHEATER => 8,
+                                    _ => 2,
+                                } =>
+                            {
+                                let before = self.side(tside).active_mon(tslot as usize).map_or(0, |d| d.current_hp);
+                                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                                    if !d.volatiles.has(crate::pokemon::VolatileKind::HealBlock) {
+                                        let quarter = (d.stats.hp as u32 / 4).max(1) as u16;
+                                        d.current_hp = (d.current_hp + quarter).min(d.stats.hp);
+                                    }
+                                }
+                                self.p_absorb_heal(tside, tslot, ab, before, actor_side, actor_slot);
+                                return;
+                            }
+                            Some(data::ability_id::MOTORDRIVE) if m.type_ == 3 => {
+                                self.p_absorb_boost_fx(tside, tslot, data::ability_id::MOTORDRIVE, 4, 1);
+                                self.apply_boosts(tside, tslot, &[(4, 1)], tside, tslot);
+                                return;
+                            }
+                            Some(data::ability_id::WELLBAKEDBODY) if m.type_ == 1 => {
+                                self.p_absorb_boost_fx(tside, tslot, data::ability_id::WELLBAKEDBODY, 1, 2);
+                                self.apply_boosts(tside, tslot, &[(1, 2)], tside, tslot);
+                                return;
+                            }
                             // Flash Fire onTryHit absorbs a Fire Status move
                             // (Will-O-Wisp) and starts the flashfire boost
                             // (data/abilities.ts flashfire).
