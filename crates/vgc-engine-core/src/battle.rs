@@ -4306,7 +4306,10 @@ self.trigger_emergency_exits();
                 {
                     let charge_move = self.side(side).active_mon(actor_slot as usize).and_then(|m| {
                         let id = *m.moves.get(move_slot as usize)?;
+                        // A recharging mon's action is 'recharge', whatever its
+                        // first move slot holds.
                         (m.is_alive()
+                            && !m.must_recharge
                             && matches!(id, data::move_id::BEAKBLAST | data::move_id::FOCUSPUNCH | data::move_id::SHELLTRAP))
                         .then_some(id)
                     });
