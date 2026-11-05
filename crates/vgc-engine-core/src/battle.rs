@@ -3219,16 +3219,31 @@ self.trigger_emergency_exits();
                 });
                 if disguised {
                     pmon!(self, "-activate", actor_side, actor_slot, "|ability: Disguise");
-                } else if let Some(m) = self
-                    .side_mut(actor_side)
-                    .active_mon_mut(actor_slot as usize)
-                {
-                    m.current_hp = m.current_hp.saturating_sub(dmg);
-                    if m.current_hp == 0 {
-                        m.fainted = true;
+                } else {
+                    // this.damage with an effect whose effectType is 'Move': the Damage
+                    // event's Sturdy, Focus Sash and Focus Band all see it, and it sets
+                    // hurtThisTurn (data/conditions.ts:193-194).
+                    let (cur, max, sturdy) = self.side(actor_side).active_mon(actor_slot as usize).map_or((0, 0, false), |m| {
+                        (m.current_hp, m.stats.hp, m.effective_ability_id() == data::ability_id::STURDY)
+                    });
+                    let mut capped = dmg;
+                    if sturdy && cur == max && capped >= cur {
+                        capped = cur - 1;
+                        pmon!(self, "-ability", actor_side, actor_slot, "|Sturdy");
+                    }
+                    let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                    let capped = crate::item::on_before_damage(self, actor_side, actor_slot, capped, &mut rng).unwrap_or(capped);
+                    self.rng = rng;
+                    if let Some(m) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        m.current_hp = m.current_hp.saturating_sub(capped);
+                        if m.current_hp == 0 {
+                            m.fainted = true;
+                        }
+                        m.hurt_this_turn = m.current_hp > 0;
                     }
                 }
-                // battle.damage's 'confused' case (sim/battle.ts:2150).
+                // battle.damage's 'confused' case (sim/battle.ts:2150). The Focus Band roll
+                // is on_before_damage's, so this line rolls nothing more.
                 self.p_direct_damage(actor_side, actor_slot, "|[from] confusion");
                 if disguised {
                     self.disguise_bust_at(actor_side, actor_slot);
