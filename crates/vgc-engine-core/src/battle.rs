@@ -7831,6 +7831,11 @@ self.trigger_emergency_exits();
                     a.semi_invuln = 0;
                 }
             }
+            // charge onMoveAborted: an Electric move that never ran ends it too
+            // (data/moves.ts charge).
+            if m.type_ == 3 && move_id != data::move_id::CHARGE {
+                self.end_charge(actor_side, actor_slot);
+            }
             return;
         }
         // A wake-up or thaw in BeforeMove (Guts, Flare Boost read the live status).
