@@ -12839,6 +12839,11 @@ self.trigger_emergency_exits();
             self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, m, 1, Some((ctx.tside, ctx.tslot)));
         }
         let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
+        // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops precede secondaries, on any
+        // hit (data/moves.ts outrage, data/conditions.ts lockedmove onStart / onRestart).
+        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH | data::move_id::RAGINGFURY) {
+            self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
+        }
         self.p_tag(crate::protocol::step::SECONDARY, ctx.tside, ctx.tslot);
         if decision != crate::secondary::SecondaryProcDecision::Skip {
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
