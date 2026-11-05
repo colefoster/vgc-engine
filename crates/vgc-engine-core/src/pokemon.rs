@@ -1324,10 +1324,9 @@ impl Pokemon {
         if self.effective_ability_id() == data::ability_id::SUPERLUCK {
             s = s.saturating_add(1);
         }
-        let item = if self.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[self.item_id as usize].slug
+        let item = match self.effective_item_id() {
+            u16::MAX => "",
+            id => data::ITEMS[id as usize].slug,
         };
         match item {
             "scopelens" | "razorclaw" => s = s.saturating_add(1),
