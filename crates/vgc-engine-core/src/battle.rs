@@ -25440,6 +25440,19 @@ self.trigger_emergency_exits();
                     } else {
                         boosts
                     };
+                    // Howl's ally: TryHit runs for every target before the user's boost
+                    // (sim/battle-actions.ts hitStepTryHitEvent; data/abilities.ts soundproof,
+                    // goodasgold, Mold Breaker aside).
+                    let howl_ally_blocked = move_id == data::move_id::HOWL
+                        && self.format().active_count() >= 2
+                        && !self.move_breaks_mold(actor_side, actor_slot)
+                        && self.side(actor_side).active_mon((actor_slot ^ 1) as usize).is_some_and(|p| {
+                            p.is_alive() && matches!(p.effective_ability_id(), data::ability_id::SOUNDPROOF | data::ability_id::GOODASGOLD)
+                        });
+                    if howl_ally_blocked {
+                        let ab = self.side(actor_side).active_mon((actor_slot ^ 1) as usize).map_or(0, |p| p.effective_ability_id());
+                        pmon!(self, "-immune", actor_side, actor_slot ^ 1, "|[from] ability: {}", crate::battle_protocol::ability_name(ab));
+                    }
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
                     // Charge's volatileStatus (data/moves.ts charge; onRestart
                     // keeps it).
@@ -25489,7 +25502,9 @@ self.trigger_emergency_exits();
                             let ally_alive = self.side(actor_side)
                                 .active_mon(ally_slot as usize)
                                 .is_some_and(|p| p.is_alive());
-                            if ally_alive {
+                            if ally_alive && howl_ally_blocked {
+                                self.p_attr(&format!("[spread] p{}{}", actor_side as u8 + 1, if actor_slot == 0 { 'a' } else { 'b' }));
+                            } else if ally_alive {
                                 self.apply_boosts(actor_side, ally_slot, &[(0, 1)], actor_side, actor_slot);
                                 // Howl's targets are the side's actives in slot
                                 // order, as a spread (sim/battle-actions.ts:618).
