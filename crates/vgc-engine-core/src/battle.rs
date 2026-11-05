@@ -562,6 +562,10 @@ pub struct Battle {
     /// `order::action_order` rolls them itself.
     #[serde(skip)]
     pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
+    /// A Stall holder that Mega Evolves this turn: FractionalPriority ran in
+    /// resolveAction, before the megaEvo action (sim/battle-queue.ts:249), and sticks.
+    #[serde(skip)]
+    pub(crate) mega_keeps_stall: [[bool; 2]; 2],
     /// Move slot each active queued this turn (`[side][slot]`, 255 = no
     /// move). With `pending_kind` it answers PS `queue.willMove(target)`
     /// for Upper Hand's priority check.
@@ -1004,6 +1008,7 @@ impl Battle {
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
+            mega_keeps_stall: [[false; 2]; 2],
             queued_move_slot: [[255; 2]; 2],
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
@@ -5213,6 +5218,13 @@ self.trigger_emergency_exits();
         //     a mon that Mega-Evolves into higher Speed moves accordingly.
         //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
         let any_mega = megas.1 > 0;
+        self.mega_keeps_stall = [[false; 2]; 2];
+        for &(side, slot) in &megas.0[..megas.1] {
+            self.mega_keeps_stall[side as usize][(slot as usize).min(1)] = self
+                .side(side)
+                .active_mon(slot as usize)
+                .is_some_and(|m| m.effective_ability_id() == data::ability_id::STALL);
+        }
         self.apply_megas(megas);
         // The megaEvo action's runAction ends with eachEvent('Update')
         // (sim/battle.ts:2861): a berry already in range is eaten now.
