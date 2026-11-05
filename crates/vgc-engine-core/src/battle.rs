@@ -751,6 +751,13 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_charge_volatile: [u8; 2],
+    /// `ps-rng` only: active slots (bit per slot, per side) whose queued
+    /// 'recharge' action Champions Encore replaced this turn
+    /// (data/mods/champions/moves.ts encore, queue.changeAction). `mustrecharge`
+    /// still stops the move, but its target draws are the new move's.
+    #[cfg(feature = "ps-rng")]
+    #[serde(default)]
+    pub(crate) ps_recharge_changed: [u8; 2],
     /// `ps-rng` only: team indices (bit per index, per side) of fainted
     /// actives whose status checkFainted set to 'fnt' at the end of an
     /// earlier turn (sim/battle.js:2066-2073): no status residual handler.
@@ -974,6 +981,8 @@ impl Battle {
             ps_twoturn_release: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_charge_volatile: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_recharge_changed: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_status_fnt: [0; 2],
             #[cfg(feature = "ps-rng")]
@@ -4452,7 +4461,7 @@ self.trigger_emergency_exits();
         // (data/conditions.ts mustrecharge onLockMove), not in the dex: its
         // undefined target never validates (sim/battle.ts validTargetLoc), so
         // getTarget always falls to getRandomTarget -> randomFoe.
-        if user.must_recharge {
+        if user.must_recharge && self.ps_recharge_changed[side as usize] & (1 << slot) == 0 {
             let foe = side.opposing();
             let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count();
             if n > 0 && n_active > 1 {
@@ -5285,6 +5294,7 @@ self.trigger_emergency_exits();
             {
                 self.ps_twoturn_release = [0; 2];
                 self.ps_charge_volatile = [0; 2];
+                self.ps_recharge_changed = [0; 2];
             }
             let hp_before = self.active_hp_snapshot();
             // The residual action opens with `|` (sim/battle.ts:2812).
@@ -16706,6 +16716,10 @@ self.trigger_emergency_exits();
                     m.consume_item();
                 }
             }
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.must_recharge) {
+            self.ps_recharge_changed[ts as usize] |= 1 << tslot;
         }
         let target = self.random_target_for(ts, tslot, mid);
         // resolveAction then runs getActionSpeed -> getTarget
