@@ -378,6 +378,15 @@ impl Battle {
     /// `faintQueue`, sim/battle.ts:2108-2142).
     #[inline(always)]
     pub(crate) fn p_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        // Focus Band's onDamage rolls on every damage event, and only then checks for a
+        // lethal move hit (data/items.ts focusband). Move hits roll in item::on_before_damage.
+        #[cfg(feature = "ps-rng")]
+        if !suffix.is_empty()
+            && self.rng.is_ps()
+            && self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_item_id() == vgc_engine_data::item_id::FOCUSBAND)
+        {
+            let _ = self.rng.ps_random_range("focusband", 0, 10);
+        }
         if self.plog() {
             self.p_damage_cold(side, slot, suffix);
         }
