@@ -23744,6 +23744,18 @@ self.trigger_emergency_exits();
                     pmon!(self, "-fail", actor_side, actor_slot, "|slp|[from] Uproar{msg}");
                     return;
                 }
+                // data/abilities.ts sweetveil onAllySetStatus.
+                let veil = (0..self.format().active_count() as u8).find(|&sl| {
+                    self.side(actor_side).active_mon(sl as usize).is_some_and(|t| t.is_alive() && t.effective_ability_id() == data::ability_id::SWEETVEIL)
+                });
+                if let Some(h) = veil {
+                    if self.plog() {
+                        let of = self.p_ident(actor_side, h);
+                        pmon!(self, "-block", actor_side, actor_slot, "|ability: Sweet Veil|[of] {of}");
+                    }
+                    self.ps_status_failed();
+                    return;
+                }
                 // onHit's setStatus('slp'): SetStatus vetoes fail the move, except
                 // Sweet Veil's `null` (data/abilities.ts, data/moves.ts terrains).
                 if shielded {
@@ -23762,18 +23774,6 @@ self.trigger_emergency_exits();
                 if ability == "purifyingsalt"
                     || (ability == "leafguard" && matches!(self.effective_weather(), crate::weather::Weather::Sun))
                 {
-                    return;
-                }
-                // data/abilities.ts sweetveil onAllySetStatus.
-                let veil = (0..self.format().active_count() as u8).find(|&sl| {
-                    self.side(actor_side).active_mon(sl as usize).is_some_and(|t| t.is_alive() && t.effective_ability_id() == data::ability_id::SWEETVEIL)
-                });
-                if let Some(h) = veil {
-                    if self.plog() {
-                        let of = self.p_ident(actor_side, h);
-                        pmon!(self, "-block", actor_side, actor_slot, "|ability: Sweet Veil|[of] {of}");
-                    }
-                    self.ps_status_failed();
                     return;
                 }
                 // conditions.ts slp onStart draws its duration even for Rest,
