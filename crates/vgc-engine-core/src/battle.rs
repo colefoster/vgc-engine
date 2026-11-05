@@ -18071,6 +18071,10 @@ self.trigger_emergency_exits();
         self.p_status_line(side, slot, status, fx);
         // PR-EOT3: status_dot bit reflects the newly-applied status.
         self.sync_status_dot_bit(side, slot);
+        // lumberry onAfterSetStatus eats at once (data/items.ts).
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_item_id() == data::item_id::LUMBERRY) {
+            crate::item::on_update_cures(self, side, slot);
+        }
         // Status-cure berries (Cheri / Chesto / Pecha / Rawst / Aspear) —
         // PS data/items.ts `<berry>` carry `onUpdate(pokemon)`:
         //   if (pokemon.status === '<id>') pokemon.eatItem();
