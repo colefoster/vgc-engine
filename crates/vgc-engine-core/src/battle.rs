@@ -20357,6 +20357,21 @@ self.trigger_emergency_exits();
                     pmon!(self, "-activate", actor_side, actor_slot, "|move: Power Split|[of] {of}");
                 }
             }
+            data::move_id::POWERTRICK => {
+                // data/moves.ts powertrick condition: swap stored Atk and Def;
+                // a second use ends it. clearVolatile recomputes stats on switch.
+                use crate::pokemon::VolatileKind as V;
+                let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) else { return };
+                let on = a.volatiles.has(V::PowerTrick);
+                std::mem::swap(&mut a.stats.atk, &mut a.stats.def);
+                if on {
+                    a.volatiles.remove(V::PowerTrick);
+                    pmon!(self, "-end", actor_side, actor_slot, "|Power Trick");
+                } else {
+                    let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::PowerTrick, turns_remaining: 0, payload: 0 });
+                    pmon!(self, "-start", actor_side, actor_slot, "|Power Trick");
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
