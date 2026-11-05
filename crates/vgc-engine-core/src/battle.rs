@@ -562,6 +562,12 @@ pub struct Battle {
     /// `order::action_order` rolls them itself.
     #[serde(skip)]
     pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
+    /// Count of boost() calls that moved a stage, for the status-move snapshot.
+    #[serde(skip)]
+    pub(crate) boost_changes: u32,
+    /// Wonder Room's onModifyMove has run since it started.
+    #[serde(default)]
+    pub(crate) wonder_room_ran: bool,
     /// A Magic Bounce copy of a spread move is running: it can't bounce again
     /// (move.hasBounced, data/abilities.ts:2441).
     #[serde(skip)]
@@ -1012,6 +1018,8 @@ impl Battle {
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
+            boost_changes: 0,
+            wonder_room_ran: false,
             status_bounced: false,
             mega_keeps_stall: [[false; 2]; 2],
             queued_move_slot: [[255; 2]; 2],
@@ -2387,6 +2395,9 @@ impl Battle {
         for (c, &(idx, delta)) in capped.iter_mut().zip(deltas) {
             let cur = boosts_before.map_or(0, |b| b[idx as usize]);
             *c = (idx, (cur + delta).clamp(-6, 6) - cur);
+        }
+        if capped.iter().take(deltas.len()).any(|&(_, c)| c != 0) {
+            self.boost_changes = self.boost_changes.wrapping_add(1);
         }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             let mut changed = false;
@@ -17041,6 +17052,7 @@ self.trigger_emergency_exits();
             pending: [
                 self.future_pending.iter().flatten().filter(|f| f.is_some()).count() as u8,
                 self.wish_pending.iter().flatten().filter(|w| w.is_some()).count() as u8,
+            boost_changes: self.boost_changes,
                 self.pending_queue_reorder.is_some() as u8,
                 self.ally_switch_pending.is_some() as u8 | (self.copy_volatiles_next_switch as u8) << 1,
             ],
@@ -25780,6 +25792,9 @@ struct MonEffectSnapshot {
     volatiles: u64,
     payloads: u64,
     hp: u16,
+    /// boost() calls that moved a stage: a drop Defiant or White Herb undoes still
+    /// counts as the move doing something (sim/battle-actions.ts runMoveEffects).
+    boost_changes: u32,
     item: u16,
     ability: (u16, bool),
     types: [u8; 2],
