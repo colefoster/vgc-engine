@@ -2290,6 +2290,7 @@ impl Battle {
             if !is_holder {
                 continue;
             }
+            let before = self.side(opp).active_mon(slot as usize).map(|m| m.boosts);
             if let Some(m) = self.side_mut(opp).active_mon_mut(slot as usize) {
                 for &(idx, delta) in deltas {
                     if delta > 0 {
@@ -2297,6 +2298,18 @@ impl Battle {
                         *stage = (*stage + delta).clamp(-6, 6);
                     }
                 }
+            }
+            // onFoeAfterBoost's boost(): `-ability|Opportunist|boost`, then its stats.
+            if let Some(before) = before.filter(|_| self.plog()) {
+                let mut rises = [(0u8, 0i8); 7];
+                let mut k = 0;
+                for &(idx, delta) in deltas {
+                    if delta > 0 && k < 7 {
+                        rises[k] = (idx, delta);
+                        k += 1;
+                    }
+                }
+                self.p_boost_lines(opp, slot, &rises[..k], before, crate::protocol::BoostFx::AbilitySelf(data::ability_id::OPPORTUNIST));
             }
         }
     }
