@@ -16461,6 +16461,7 @@ self.trigger_emergency_exits();
         }
         if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
             t.ability_override = ability;
+            t.protean_used = false;
         }
         if old == data::ability_id::NEUTRALIZINGGAS || ability == data::ability_id::NEUTRALIZINGGAS {
             crate::ability::recompute_neutralizing_gas(self);
@@ -22949,9 +22950,11 @@ self.trigger_emergency_exits();
                             .unwrap_or(u16::MAX);
                         if let Some(s) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                             s.ability_override = target_eff_id;
+                            s.protean_used = false;
                         }
                         if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                             t.ability_override = source_eff_id;
+                            t.protean_used = false;
                         }
                         // battle.skillSwap's `-activate` (sim/battle.ts:1325-1332).
                         if self.plog() {
@@ -23017,6 +23020,7 @@ self.trigger_emergency_exits();
                             let old_id = self.side(actor_side).active_mon(actor_slot as usize).map_or(u16::MAX, |s| s.effective_ability_id());
                             if let Some(s) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                                 s.ability_override = target_eff_id;
+                                s.protean_used = false;
                             }
                             // setAbility's `-ability|user|new|old|[from] move:
                             // Role Play|[of] target` (sim/pokemon.ts setAbility).

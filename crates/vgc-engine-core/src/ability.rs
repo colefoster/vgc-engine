@@ -1058,6 +1058,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(new_id) = found {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.ability_override = new_id;
+                    m.protean_used = false;
                 }
                 // trace onUpdate (data/abilities.ts:5135-5160).
                 if battle.plog() {
@@ -2590,6 +2591,7 @@ pub fn on_damaging_hit(
                     .active_mon_mut(attacker_slot as usize)
                 {
                     a.ability_override = rep;
+                    a.protean_used = false;
                 }
                 // setAbility from Mummy / Lingering Aroma (sim/pokemon.ts:1928-1931).
                 if battle.plog() {
@@ -2766,12 +2768,14 @@ pub fn on_damaging_hit(
                 .active_mon_mut(attacker_slot as usize)
             {
                 a.ability_override = target_id;
+                a.protean_used = false;
             }
             if let Some(t) = battle
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
                 t.ability_override = attacker_id;
+                t.protean_used = false;
             }
             // battle.skillSwap(source = attacker, target = holder)
             // (sim/battle.ts:1325-1332).
