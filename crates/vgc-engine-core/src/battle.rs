@@ -14404,7 +14404,7 @@ self.trigger_emergency_exits();
         attacker: &crate::pokemon::Pokemon,
         m: &data::MoveDef,
         any_damage_dealt: u16,
-        attacker_item_id: u16,
+        _attacker_item_id: u16,
         damaging: bool,
     ) {
         // Self effects run in spreadMoveHit's selfDrops step (before the
@@ -16555,7 +16555,7 @@ self.trigger_emergency_exits();
         // `onUpdate` runs immediately). Lum Berry covers ANY non-volatile
         // status the same way (separate PR). Berry is consumed on cure.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cheri_Berry> etc.
-        cure_status_berry_if_matching(self, side, slot);
+        // Eaten at the next Update (item::on_update_cures).
 
         // Synchronize — PS `data/abilities.ts:synchronize` `onAfterSetStatus`:
         // when an OPPONENT inflicts a status on the holder, the same status is
@@ -19633,8 +19633,6 @@ self.trigger_emergency_exits();
                         self.champions_encore_requeue((actor_side, actor_slot), move_id, (ts, tslot), last, pending_kind);
                     }
                 }
-                // Mental Herb cures Encore (PS onUpdate).
-                crate::item::try_consume_mental_herb(self, ts, tslot);
             }
             data::move_id::TAUNT => {
                 // Taunt — PS data/moves.ts:taunt, volatileStatus 'taunt',
@@ -23939,40 +23937,6 @@ fn is_type_immune_to_status((types, n): ([u8; 2], u8), status: Status) -> bool {
 ///
 /// Used for the gen-6+ "sound bypasses Substitute" rule and (when
 /// implemented) the Soundproof / Throat Spray / Punk Rock hooks.
-/// Cure a status-cure berry's matching status (or any status for Lum).
-/// Called from `try_set_status` immediately after the status is applied
-/// (PS's `onUpdate` runs the same tick). Consumes the berry on cure.
-fn cure_status_berry_if_matching(b: &mut Battle, side: SideRef, slot: u8) {
-    let (item_id, status) = match b.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.item_id, m.status),
-        _ => return,
-    };
-    let cures = match item_id {
-        data::item_id::CHERIBERRY => matches!(status, Status::Paralysis),
-        data::item_id::CHESTOBERRY => matches!(status, Status::Sleep),
-        data::item_id::PECHABERRY => matches!(status, Status::Poison | Status::Toxic),
-        data::item_id::RAWSTBERRY => matches!(status, Status::Burn),
-        data::item_id::ASPEARBERRY => matches!(status, Status::Freeze),
-        data::item_id::LUMBERRY => !matches!(status, Status::None),
-        _ => false,
-    };
-    if !cures {
-        return;
-    }
-    // Opposing Unnerve suppresses the status-cure Berry eat.
-    if !crate::item::can_eat_berry(b, side, item_id) {
-        return;
-    }
-    if let Some(m) = b.side_mut(side).active_mon_mut(slot as usize) {
-        m.status = Status::None;
-        m.set_toxic_counter(0);
-        m.set_sleep_turns(0);
-        m.consume_item();
-    }
-    // PR-EOT3: status cleared by berry — clear the DOT bit (if it was set).
-    b.sync_status_dot_bit(side, slot);
-}
-
 pub(crate) fn is_sound_move(slug: &str) -> bool {
     matches!(
         slug,
