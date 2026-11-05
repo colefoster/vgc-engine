@@ -25681,8 +25681,8 @@ fn apply_move_secondary(
     // hazard is an onAfterHit), which PS still rolls: one random(100), no
     // effect (data/moves.ts stoneaxe/ceaselessedge, sim/battle-actions.ts:
     // 1133 secondaries). Draws only.
-    // Eerie Spell / Sparkling Aria / Spirit Shackle / Syrup Bomb: a 100%
-    // secondary whose effect the engine does not model; PS still rolls.
+    // Eerie Spell / Sparkling Aria / Spirit Shackle: a 100% secondary, which
+    // rolls even when its effect has nothing to do.
     #[cfg(feature = "ps-rng")]
     if rng.is_ps()
         && matches!(
@@ -25691,6 +25691,20 @@ fn apply_move_secondary(
         )
     {
         let _ = rng.percent_1_100();
+        // eeriespell secondary onHit: 3 PP off the target's last move (data/moves.ts).
+        if move_slug == "eeriespell" {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                let i = t.last_used_move_slot as usize;
+                if t.is_alive() && i < t.moves.len() && t.moves[i] != u16::MAX {
+                    let took = t.pp[i].min(3);
+                    if took > 0 {
+                        t.pp[i] -= took;
+                        let name = crate::battle_protocol::move_name(t.moves[i]);
+                        pmon!(battle, "-activate", target_side, target_slot, "|move: Eerie Spell|{name}|{took}");
+                    }
+                }
+            }
+        }
     }
     // Spirit Shackle — PS data/moves.ts:17629 secondary (chance 100) onHit:
     // `if (source.isActive) target.addVolatile('trapped', source, move,
