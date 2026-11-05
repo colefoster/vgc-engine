@@ -15492,7 +15492,10 @@ self.trigger_emergency_exits();
                 let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
                 match mon {
                     Some(a) => {
-                        let next = a.sleep_turns().saturating_sub(1);
+                        // data/conditions.ts slp onBeforeMove: Early Bird takes
+                        // one more off `time`.
+                        let bird = u8::from(a.effective_ability_id() == data::ability_id::EARLYBIRD);
+                        let next = a.sleep_turns().saturating_sub(1 + bird);
                         a.set_sleep_turns(next);
                         if next == 0 {
                             a.status = Status::None;
