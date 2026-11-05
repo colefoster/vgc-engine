@@ -1596,6 +1596,7 @@ impl Battle {
             l.flush_pending_move();
             l.pending_move = Some(line);
             l.move_target = display.map(|(s, sl)| (s as u8, sl));
+            l.last_target = None;
             l.since_move = 0;
             l.cur_user = Some((side as u8, slot));
             l.active_move = move_id;
@@ -1735,7 +1736,9 @@ impl Battle {
         for (i, &(s, sl)) in targets.iter().take(4).enumerate() {
             slots[i] = slot_tag(s, sl);
         }
+        let last = targets.last().map(|&(s, sl)| (s as u8, sl));
         if let Some(l) = self.protocol.log_mut() {
+            l.last_target = last;
             l.window_open();
             if let Some(w) = l.window.as_deref_mut() {
                 w.rank_slots = slots;

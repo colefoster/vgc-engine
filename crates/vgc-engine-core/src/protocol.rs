@@ -349,6 +349,8 @@ pub struct ProtocolLog {
     pub(crate) ee_announced: u8,
     /// The running move's `|move|` target (side, slot).
     pub(crate) move_target: Option<(u8, u8)>,
+    /// The last of the move's targets in Showdown's order, once they are known.
+    pub(crate) last_target: Option<(u8, u8)>,
     /// The last residual handler ended by duration: fieldEvent `continue`s
     /// past its faintMessages (sim/battle.ts:515-521).
     /// The residual's modelled handler order (protocol_residual.rs).
@@ -557,6 +559,7 @@ impl ProtocolLog {
             last_faint: None,
             ee_announced: 0,
             move_target: None,
+            last_target: None,
             res_plan: None,
             res_hold_faints: false,
             oracle_shuffles: Vec::new(),
