@@ -503,6 +503,8 @@ pub(crate) mod step {
     pub const TRY_IMMUNE: u8 = 4;
     pub const ACCURACY: u8 = 5;
     pub const BREAK_PROTECT: u8 = 6;
+    // TryPrimaryHit: a Substitute takes its hit before getSpreadDamage (data/moves.ts substitute).
+    pub const SUB_HIT: u8 = 7;
     pub const CALC: u8 = 8;
     pub const DAMAGE: u8 = 10;
     pub const EFFECTS: u8 = 11;
