@@ -20410,6 +20410,15 @@ self.trigger_emergency_exits();
                 let n = self.format().active_count() as u8;
                 for s in [SideRef::P1, SideRef::P2] {
                     for slot in 0..n {
+                        // perishsong onHitField: Invulnerability's `-miss` first.
+                        if self.side(s).active_mon(slot as usize).is_some_and(|mon| mon.is_alive() && mon.semi_invuln != 0) {
+                            if self.plog() {
+                                let id = self.p_ident(s, slot);
+                                pmon!(self, "-miss", actor_side, actor_slot, "|{id}");
+                            }
+                            perish_result = true;
+                            continue;
+                        }
                         let immune = match self.side(s).active_mon(slot as usize) {
                             Some(mon) if mon.is_alive() => {
                                 let is_source = s == actor_side && slot == actor_slot;
@@ -21164,7 +21173,10 @@ self.trigger_emergency_exits();
                     let Some(t) = self.side(s2).active_mon(sl as usize) else { continue };
                     if !t.is_alive() { continue; }
                     if t.semi_invuln != 0 {
-                        self.p_miss(actor_side, actor_slot, s2, sl);
+                        if self.plog() {
+                            let id = self.p_ident(s2, sl);
+                            pmon!(self, "-miss", actor_side, actor_slot, "|{id}");
+                        }
                     } else if t.effective_ability_id() == data::ability_id::GOODASGOLD
                         && !breaks_mold
                         && (s2, sl) != (actor_side, actor_slot)
