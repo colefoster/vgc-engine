@@ -11371,9 +11371,10 @@ self.trigger_emergency_exits();
             && (self.status_move_result(actor_side, actor_slot, m, target, before, false)
                 == crate::pokemon::MoveResult::Succeeded
                 // Effects the snapshot cannot see: a stat swap, a called
-                // move, a pending drag, and a heal that fails with NOT_FAIL
-                // (data/moves.js healpulse / floralhealing).
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing")
+                // move, a pending drag, a heal that fails with NOT_FAIL
+                // (data/moves.js healpulse / floralhealing), and Parting Shot,
+                // whose onHit returns nothing even if no stage moved.
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "partingshot")
                 || (matches!(m.slug, "roar" | "whirlwind")
                     && self.force_switch_flags.iter().flatten().any(|&f| f)))
         {
@@ -15754,6 +15755,10 @@ self.trigger_emergency_exits();
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
             // No effect of their own to fail (Splash onTryHit, Haze onHitField).
             "splash" | "celebrate" | "holdhands" | "haze" => true,
+            // onHit returns nothing, so hitting a target at -6/-6 still counts
+            // (data/moves.ts partingshot; runMoveEffects' didSomething).
+            #[cfg(feature = "ps-rng")]
+            "partingshot" if !self.ps_status_missed => true,
             _ => self.status_effect_snapshot() != *before,
         };
         if ok { MoveResult::Succeeded } else { MoveResult::Failed }
