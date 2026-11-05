@@ -14410,6 +14410,7 @@ self.trigger_emergency_exits();
         m: &data::MoveDef,
         attacker: &Pokemon,
         target: Option<Target>,
+        pressure_target: Option<Target>,
         skip_pp_deduct: bool,
     ) {
         // 3. PP cost — ticked even on miss / immunity (PS behavior).
@@ -14455,7 +14456,7 @@ self.trigger_emergency_exits();
         let pressure_extra = if skip_pp_deduct {
             0
         } else {
-            pressure_extra_pp(self, actor_side, actor_slot, m, target)
+            pressure_extra_pp(self, actor_side, actor_slot, m, pressure_target)
         };
         if !skip_pp_deduct {
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -25015,6 +25016,16 @@ fn pressure_extra_pp(
             .is_some_and(|mon| mon.is_alive() && mon.effective_ability_id() == data::ability_id::PRESSURE)
     };
     if !(0..active_n).any(is_pressure_foe) {
+        return 0;
+    }
+    // A non-Ghost Curse targets the user by the time getMoveTargets runs
+    // (data/mods/champions/moves.ts curse onModifyMove).
+    if m.slug == "curse"
+        && battle.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
+            let (types, n) = u.effective_types();
+            !types[..n as usize].contains(&13)
+        })
+    {
         return 0;
     }
     let count_all = || (0..active_n).filter(|&s| is_pressure_foe(s)).count() as u8;
