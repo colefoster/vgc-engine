@@ -133,7 +133,7 @@ pub(crate) fn blocks_opposing_stat_drop_for(
     match (ab, stat_idx) {
         (data::ability_id::HYPERCUTTER, 0) => true, // Atk
         (data::ability_id::BIGPECKS, 1) => true,    // Def
-        (data::ability_id::KEENEYE, 5) => true,     // Acc
+        (data::ability_id::KEENEYE | data::ability_id::ILLUMINATE, 5) => true,     // Acc
         _ => false,
     }
 }
