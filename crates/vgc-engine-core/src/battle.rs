@@ -21563,7 +21563,14 @@ self.trigger_emergency_exits();
                 if let Some((ts, tslot)) = opp_target {
                     // Evasion drop unless the target hides behind a Sub.
                     let sub_blocks = self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot);
-                    if !sub_blocks {
+                    // Clear Body and kin delete the drop (boost returns null,
+                    // so the move's `success` stays false).
+                    let drop_blocked = ts != actor_side
+                        && !sub_blocks
+                        && self.side(ts).active_mon(tslot as usize).is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, 6));
+                    if drop_blocked {
+                        self.p_drop_blocked(ts, tslot, &[6]);
+                    } else if !sub_blocks {
                         let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(ts, tslot, &[(6, -1)], actor_side, actor_slot);
                         if ts != actor_side {
