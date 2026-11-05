@@ -1004,6 +1004,13 @@ fn main() {
             .find(|fx| fx.forme == slug.as_str() && fx.atk != 0)
             .map_or(bs.atk, |fx| fx.atk as u32);
         let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
+        // The dex dump predates these Champions Megas' weights (data/pokedex.ts).
+        let weight_dg = match slug.as_str() {
+            "eelektrossmega" => 1800,
+            "drampamega" => 2405,
+            "tatsugiricurlymega" | "tatsugiridroopymega" | "tatsugiristretchymega" => 240,
+            _ => weight_dg,
+        };
         let is_nfe = !s.evos.is_empty();
         // PS `species.gender`: "M"/"F"/"N" are fixed; absent ⇒ ratio'd
         // (rolled per individual). Unknown values fall back to Random.
