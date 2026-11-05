@@ -772,6 +772,11 @@ pub struct Pokemon {
     /// (sim/pokemon.ts). `last_damage_taken` also holds an ally's spread hit.
     #[serde(default)]
     pub last_foe_damage: u16,
+    /// PS `hurtThisTurn` read as a truth value: spreadDamage set it to the HP
+    /// left after any damage, recoil and Life Orb included (sim/battle.ts
+    /// spreadDamage). Assurance reads it (data/moves.ts assurance).
+    #[serde(default)]
+    pub hurt_this_turn: bool,
     /// Encoded `(side_byte, slot_byte)` of the most recent *physical*
     /// attacker this turn, and the HP damage it dealt. Counter
     /// (`data/moves.ts:counter`) keys off these specifically — PS tracks
@@ -1147,6 +1152,7 @@ impl Pokemon {
             last_attacker_category: 255,
             last_damage_taken: 0,
             last_foe_damage: 0,
+            hurt_this_turn: false,
             last_phys_attacker: (255, 255),
             last_phys_damage: 0,
             last_spec_attacker: (255, 255),

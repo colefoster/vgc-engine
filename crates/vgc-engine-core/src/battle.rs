@@ -4873,10 +4873,11 @@ self.trigger_emergency_exits();
         #[cfg(not(feature = "ps-rng"))]
         let ps = false;
         self.quick_frac = Some([[false; 2]; 2]);
-        // PS nextTurn clears usedItemThisTurn from turn 2 on (sim/battle.ts:1676-1677).
+        // PS nextTurn clears usedItemThisTurn and hurtThisTurn from turn 2 on (sim/battle.ts:1676-1677).
         if self.turn != 0 {
             for m in self.p1.team.iter_mut().chain(self.p2.team.iter_mut()) {
                 m.used_item_this_turn = false;
+                m.hurt_this_turn = false;
             }
         }
         if ps {
@@ -6384,6 +6385,7 @@ self.trigger_emergency_exits();
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
             incoming.last_foe_damage = 0;
+            incoming.hurt_this_turn = false;
             incoming.last_phys_attacker = (255, 255);
             incoming.last_phys_damage = 0;
             incoming.last_spec_attacker = (255, 255);
@@ -9125,6 +9127,7 @@ self.trigger_emergency_exits();
                     // assurance; focuspunch condition onHit).
                     if capped > 0 {
                         d.set_damaged_this_turn(true);
+                        d.hurt_this_turn = d.current_hp > 0;
                     }
                     if capped > 0 && tside != actor_side {
                         let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
@@ -13229,6 +13232,7 @@ self.trigger_emergency_exits();
             // hurtThisTurn): an ally's hit counts too.
             if app.effective_dmg > 0 {
                 t.set_damaged_this_turn(true);
+                t.hurt_this_turn = t.current_hp > 0;
             }
             if app.effective_dmg > 0 && cross_side {
                 // Record attacker for Counter / Mirror Coat /
@@ -14193,6 +14197,10 @@ self.trigger_emergency_exits();
                 inp.parental_bond_hit = hit_idx == 1 && data::MOVES[inv.move_id as usize].multihit_min == 0;
                 let bp_ov = if ramped {
                     Some(inv.base_power * (hit_idx + 1))
+                } else if inv.move_id == data::move_id::ASSURANCE && !defender.hurt_this_turn {
+                    // The first hit of Parental Bond set hurtThisTurn; `defender`
+                    // is the snapshot from before it (data/moves.ts assurance).
+                    Some(inv.base_power * 2)
                 } else {
                     None
                 };

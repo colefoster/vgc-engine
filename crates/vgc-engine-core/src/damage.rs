@@ -1059,7 +1059,7 @@ pub(crate) fn calculate_damage_with_bp(
         (m.type_, bp)
     } else if move_id == data::move_id::ASSURANCE {
         // PS data/moves.ts assurance basePowerCallback: `target.hurtThisTurn`.
-        let bp = m.base_power as u32 * if defender.damaged_this_turn() { 2 } else { 1 };
+        let bp = m.base_power as u32 * if defender.hurt_this_turn { 2 } else { 1 };
         (m.type_, bp)
     } else if move_id == data::move_id::VENOSHOCK {
         // PS data/moves.ts venoshock onBasePower: doubled against psn / tox.
