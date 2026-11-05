@@ -3678,6 +3678,8 @@ self.trigger_emergency_exits();
                     if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.lockin_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    // A used Gem's `gem` volatile (duration 1, data/conditions.ts gem).
+                    if m.used_item_this_turn && m.consumed_item == data::item_id::NORMALGEM { push(&mut h, (NONE, 0, spe, 2)); }
                     // The released two-turn move's `twoturnmove` volatile
                     // (duration 2) only expires at this residual
                     // (data/conditions.js:305; the move's own volatile is
