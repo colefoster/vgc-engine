@@ -24886,7 +24886,9 @@ fn sleep_talk_excluded(slug: &str) -> bool {
     matches!(
         slug,
         // nosleeptalk flag:
-        "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
+        // flags.recharge fail too (data/moves.ts instruct onHit).
+        "hyperbeam" | "gigaimpact" | "blastburn" | "hydrocannon" | "frenzyplant" | "rockwrecker" | "roaroftime" | "prismaticlaser" | "eternabeam"
+            | "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
             | "chatter" | "combattorque" | "copycat" | "dynamaxcannon"
             | "focuspunch" | "freezeshock" | "geomancy" | "holdhands"
             | "iceburn" | "magicaltorque" | "mefirst" | "metronome"
@@ -25562,7 +25564,9 @@ fn dec_target(enc: u8) -> Option<Target> {
 fn move_fails_instruct(slug: &str) -> bool {
     matches!(
         slug,
-        "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
+        // flags.recharge fail too (data/moves.ts instruct onHit).
+        "hyperbeam" | "gigaimpact" | "blastburn" | "hydrocannon" | "frenzyplant" | "rockwrecker" | "roaroftime" | "prismaticlaser" | "eternabeam"
+            | "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
             | "bounce" | "celebrate" | "chatter" | "combattorque" | "copycat"
             | "dig" | "dive" | "dynamaxcannon" | "fly" | "focuspunch"
             | "freezeshock" | "geomancy" | "holdhands" | "iceball" | "iceburn"
