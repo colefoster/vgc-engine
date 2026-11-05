@@ -36302,7 +36302,8 @@ mod tests {
             {"species":"garchomp","level":50,"ability":"eelevate","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
         ]"#;
         let p2_json = r#"[
-            {"species":"magikarp","level":50,"ability":"swiftswim","nature":"hardy","moves":["splash","tackle","flail","bounce"]}
+            {"species":"magikarp","level":50,"ability":"swiftswim","nature":"hardy","moves":["splash","tackle","flail","bounce"]},
+            {"species":"magikarp","level":50,"ability":"swiftswim","nature":"hardy","moves":["splash"]}
         ]"#;
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
@@ -48777,7 +48778,8 @@ mod tests {
             {"species":"ironvaliant","level":50,"ability":"beastboost","item":"choicespecs","nature":"timid","moves":["moonblast","psyshock","aurasphere","thunderbolt"],"evs":{"spa":252,"spe":252,"hp":4}}
         ]"#;
         let p2_json = r#"[
-            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"magikarp","level":50,"ability":"swiftswim","nature":"hardy","moves":["splash"]}
         ]"#;
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
