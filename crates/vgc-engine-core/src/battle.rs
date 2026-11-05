@@ -20181,8 +20181,11 @@ self.trigger_emergency_exits();
         if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::PartialTrap) {
             return;
         }
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
+        // fieldEvent runs the handlers by speed, so a source this residual KOs is gone for
+        // a slower holder's check (data/conditions.ts:238, sim/battle.ts fieldEvent).
+        let (order, k) = self.residual_speed_order();
+        for &(side, slot) in &order[..k] {
+            {
                 let (chip, magic_guard, expires, src) = match self
                     .side(side)
                     .active_mon(slot as usize)
