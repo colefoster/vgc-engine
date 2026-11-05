@@ -168,8 +168,15 @@ impl Battle {
                 // handlers are skipped after the sort (sim/battle.ts:512-514).
                 let skip = self.p_faint_logged(side, idx);
                 let mon = |order: u8, sub: u8| ResId::Mon(s, slot, order, sub);
+                // Its status handler stays on the list until checkFainted sets
+                // 'fnt' (sim/battle.js:2066-2073), at the end of the turn's last
+                // action: it takes part in the sort, then is skipped.
+                #[cfg(feature = "ps-rng")]
+                let fnt = !m.is_alive() && (idx as usize) < 8 && self.ps_status_fnt[side as usize] & (1 << idx) != 0;
+                #[cfg(not(feature = "ps-rng"))]
+                let fnt = skip;
                 match m.status {
-                    _ if skip => {}
+                    _ if fnt => {}
                     Status::Burn => push(&mut e, (10, 0, spe, 0), mon(10, 0), false, skip),
                     Status::Poison | Status::Toxic => push(&mut e, (9, 0, spe, 0), mon(9, 0), false, skip),
                     _ => {}
