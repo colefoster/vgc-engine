@@ -20390,6 +20390,22 @@ self.trigger_emergency_exits();
                     a.set_type_override(first, second);
                 }
             }
+            data::move_id::LOCKON => {
+                // data/moves.ts lockon onTryHit + onHit: the user's next move
+                // at the target can't miss for two turns.
+                use crate::pokemon::VolatileKind as V;
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.volatiles.has(V::LockOn)) { return; }
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                let payload = (ts as u8 as u32) << 1 | tslot as u32;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::LockOn, turns_remaining: 2, payload });
+                }
+                if self.plog() {
+                    let of = self.p_ident(ts, tslot);
+                    pmon!(self, "-activate", actor_side, actor_slot, "|move: Lock-On|[of] {of}");
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
