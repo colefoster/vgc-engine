@@ -11057,6 +11057,9 @@ self.trigger_emergency_exits();
                 return;
             }
         }
+        // The caller can move slots mid-move (Copycat into Ally Switch): the restore
+        // below follows the mon.
+        let caller_idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255) as usize;
         let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
         let saved = (mon.moves[3], mon.pp[3], mon.last_used_move_slot, mon.last_used_move_target, mon.moves_used);
         mon.moves[3] = called;
@@ -11103,7 +11106,7 @@ self.trigger_emergency_exits();
         }
         self.called_from = outer;
         self.called_ran = true;
-        if let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) {
+        if let Some(mon) = self.side_mut(side).team.get_mut(caller_idx) {
             mon.last_used_move_slot = saved.2;
             // twoturnmove onStart: a called charge move keeps its target's location
             // for the release (data/conditions.ts twoturnmove).
