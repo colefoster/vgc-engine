@@ -10587,7 +10587,6 @@ self.trigger_emergency_exits();
         }
 
         self.apply_after_hit_hazards(actor_side, actor_slot, move_id, m, any_damage_dealt);
-        self.apply_partial_trap(actor_side, actor_slot, move_id, m, any_damage_dealt, hit_target);
         self.apply_self_effects(
             actor_side,
             actor_slot,
@@ -12266,6 +12265,12 @@ self.trigger_emergency_exits();
         // (Sheer Force ablation + target faint + sub absorption);
         // per-secondary vetoes / draws live inside
         // `apply_secondary_effect`.
+        // The move's volatile lands in runMoveEffects, before the secondaries
+        // (sim/battle-actions.ts spreadMoveHit): a partial trap's duration draw
+        // precedes them, the DamagingHit rolls and the hit's Update.
+        if !hit_sub && effective_dmg > 0 && alive_post {
+            self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, m, 1, Some((ctx.tside, ctx.tslot)));
+        }
         let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
         self.p_tag(crate::protocol::step::SECONDARY, ctx.tside, ctx.tslot);
         if decision != crate::secondary::SecondaryProcDecision::Skip {
