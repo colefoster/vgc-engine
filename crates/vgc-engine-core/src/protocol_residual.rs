@@ -220,7 +220,14 @@ impl Battle {
                         let order = order as i64;
                         push(&mut e, (order, 0, spe, 2), mon(order.min(255) as u8, 2), ends, false);
                     }
-                    for on in [m.charging_turns > 0, m.semi_invuln != 0, m.must_recharge, m.lockin_turns > 0] {
+                    // Uproar is a volatile with its own onResidual, not a
+                    // lockedmove (data/moves.ts uproar).
+                    let uproar = m.volatiles.has(V::Uproar);
+                    if uproar {
+                        let ends = m.volatiles.get(V::Uproar).is_some_and(|v| v.payload <= 1);
+                        push(&mut e, (28, 0, spe, 1), mon(28, 1), ends, false);
+                    }
+                    for on in [m.charging_turns > 0, m.semi_invuln != 0, m.must_recharge, m.lockin_turns > 0 && !uproar] {
                         if on {
                             push(&mut e, (NONE, 0, spe, 2), mon(255, 2), false, false);
                         }
