@@ -1809,6 +1809,15 @@ impl Pokemon {
         });
     }
 
+    /// Whether the active Protect volatile stops `m`. King's Shield, Obstruct,
+    /// Burning Bulwark and Silk Trap (variants 3, 4, 5, 6) call
+    /// checkMoveBypassesProtect with blockStatus false, so status moves pass
+    /// (sim/battle.ts:1082, data/moves.ts kingsshield).
+    #[inline]
+    pub fn protect_stops(&self, m: &data::MoveDef) -> bool {
+        self.is_protected_this_turn() && (m.category != 2 || !matches!(self.protect_variant(), 3..=6))
+    }
+
     /// Which protect-family move laid the active Protect volatile (0 = plain
     /// Protect/Detect/no side effect). Reads the volatile payload.
     #[inline]
