@@ -11574,7 +11574,7 @@ self.trigger_emergency_exits();
                 // Effects the snapshot cannot see: a stat swap, a called
                 // move, a pending drag, and a heal that fails with NOT_FAIL
                 // (data/moves.js healpulse / floralhealing).
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing")
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "psychup")
                 || (matches!(m.slug, "roar" | "whirlwind")
                     && self.force_switch_flags.iter().flatten().any(|&f| f)))
         {
