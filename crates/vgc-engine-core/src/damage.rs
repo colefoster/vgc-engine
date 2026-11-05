@@ -1601,6 +1601,18 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
+    // Dry Skin — PS data/abilities.ts dryskin onSourceBasePower: Fire moves
+    // chainModify(1.25) the base power. Flagged `breakable: 1`.
+    if move_type == 1
+        && defender.effective_ability_id() == data::ability_id::DRYSKIN
+        && !matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        )
+    {
+        bp_mod = chain_modify(bp_mod, 5120, 4096);
+    }
+
     // Iron Fist — PS `data/abilities.ts:ironfist` `onBasePower`
     // returns `chainModify([4915, 4096])` (≈×1.2) on moves with
     // `flags.punch`. Iron Hands (top-25 corpus, niche but seen) /
@@ -2400,12 +2412,6 @@ pub(crate) fn calculate_damage_with_bp(
     // mathematically equivalent — base-damage is linear in A. PokeRound
     // 5120/4096 = 1.25 exactly.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
-    if move_type == 1
-        && !attacker_breaks_mold_for_offense
-        && defender.effective_ability_id() == data::ability_id::DRYSKIN
-    {
-        a = (a * 5120 / 4096).max(1);
-    }
 
     let level = attacker.level as u32;
     // base = floor( floor( floor(2L/5+2) * BP * A / D ) / 50 ) + 2
