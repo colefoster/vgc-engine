@@ -2175,6 +2175,11 @@ pub(crate) fn calculate_damage_with_bp(
     // Mold Breaker bypasses. Companion burn-DOT half lives in battle.rs.
     // Bronzong / Numel-Camerupt signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
+    // ModifyDef and ModifySpD follow the stat read, not the category: Psyshock runs
+    // ModifyDef (sim/battle-actions.ts getDamage, overrideDefensiveStat).
+    let reads_def_stat = physical
+        || matches!(move_id, data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD);
+
     let attacker_breaks_mold_for_offense = matches!(
         attacker.effective_ability_id(),
         data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
@@ -2394,7 +2399,7 @@ pub(crate) fn calculate_damage_with_bp(
     // read). Flagged `breakable: 1` → Mold Breaker bypasses. Milotic
     // signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Marvel_Scale_(Ability)>.
-    if physical
+    if reads_def_stat
         && defender.effective_ability_id() == data::ability_id::MARVELSCALE
         && !matches!(defender.status, crate::pokemon::Status::None)
         && !attacker_breaks_mold_for_offense
@@ -2409,7 +2414,7 @@ pub(crate) fn calculate_damage_with_bp(
     // moves only (PS hook is `onModifyDef`, the physical defensive read).
     // Flagged `breakable: 1` → Mold Breaker bypasses. Furfrou signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fur_Coat_(Ability)>.
-    if physical
+    if reads_def_stat
         && defender.effective_ability_id() == data::ability_id::FURCOAT
         && !attacker_breaks_mold_for_offense
     {
@@ -2418,7 +2423,7 @@ pub(crate) fn calculate_damage_with_bp(
 
     // Grass Pelt — PS data/abilities.ts grasspelt onModifyDef: chainModify(1.5) in
     // Grassy Terrain, whoever is grounded. Flagged `breakable: 1`.
-    if physical
+    if reads_def_stat
         && defender.effective_ability_id() == data::ability_id::GRASSPELT
         && matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
         && !attacker_breaks_mold_for_offense
