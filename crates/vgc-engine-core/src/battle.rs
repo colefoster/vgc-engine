@@ -8240,8 +8240,7 @@ self.trigger_emergency_exits();
         //     and weather-skip arms (Sun for Solar Beam, Rain for Electro
         //     Shot) collapse to a single-turn move that falls through to
         //     normal PP deduction + damage. See `apply_charge_turn`.
-        self.last_move_before = self.last_move_any;
-        self.last_move_any = move_id;
+        self.note_last_move(move_id);
         let skip_pp_deduct = match self.apply_charge_turn(
             actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
         ) {
@@ -11352,6 +11351,13 @@ self.trigger_emergency_exits();
         self.rng = rng;
         // eatItem's AfterUseItem (sim/pokemon.ts): Unburden, Symbiosis.
         crate::ability::on_item_consumed(self, side, slot);
+    }
+
+    /// battle.lastMove (sim/battle.ts:384): the move whose useMove ran, even if its Try
+    /// or TryMove then failed. A move stopped in BeforeMove never gets here.
+    fn note_last_move(&mut self, move_id: u16) {
+        self.last_move_before = self.last_move_any;
+        self.last_move_any = move_id;
     }
 
     /// sim/battle-actions.ts useMove from a calling move: the called move runs in
@@ -15387,6 +15393,7 @@ self.trigger_emergency_exits();
                     mon.last_used_move_target = enc_target(target);
                     mon.lock_choice(move_slot);
                 }
+                self.note_last_move(move_id);
                 return MoveIdentityOutcome::Abort;
             }
         }
@@ -15411,6 +15418,7 @@ self.trigger_emergency_exits();
                 mon.last_used_move_target = enc_target(target);
                 mon.lock_choice(move_slot);
             }
+            self.note_last_move(move_id);
             return MoveIdentityOutcome::Abort;
         }
 
@@ -15461,6 +15469,7 @@ self.trigger_emergency_exits();
                     mon.last_used_move_target = enc_target(target);
                     mon.lock_choice(move_slot);
                 }
+                self.note_last_move(move_id);
                 return MoveIdentityOutcome::Abort;
             }
         }
@@ -15489,6 +15498,7 @@ self.trigger_emergency_exits();
                     mon.last_used_move_target = enc_target(target);
                     mon.lock_choice(move_slot);
                 }
+                self.note_last_move(move_id);
                 return MoveIdentityOutcome::Abort;
             }
         }
@@ -15599,6 +15609,7 @@ self.trigger_emergency_exits();
                 mon.last_used_move_target = enc_target(target);
                 mon.lock_choice(move_slot);
             }
+            self.note_last_move(move_id);
             return MoveIdentityOutcome::Abort;
         }
 
