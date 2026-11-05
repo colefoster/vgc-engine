@@ -8933,8 +8933,12 @@ self.trigger_emergency_exits();
                     if d.current_hp == 0 {
                         d.fainted = true;
                     }
-                    if capped > 0 && tside != actor_side {
+                    // spreadDamage's hurtThisTurn, an ally's hit included (data/moves.ts
+                    // assurance; focuspunch condition onHit).
+                    if capped > 0 {
                         d.set_damaged_this_turn(true);
+                    }
+                    if capped > 0 && tside != actor_side {
                         let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
                         d.last_attacker = (aside_byte, actor_slot as u8);
                         d.last_attacker_category = m.category;
@@ -12766,13 +12770,12 @@ self.trigger_emergency_exits();
             // computed from the target's remaining HP, not the overkill.
             result.damage_dealt = app.effective_dmg.min(t.current_hp);
             t.current_hp = t.current_hp.saturating_sub(app.effective_dmg);
-            // Mark this target as "damaged this turn" so
-            // Avalanche / Revenge / Counter (when wired) see
-            // a true source. Cross-side gate: opp-vs-self
-            // damage is the only case; self-targeted damaging
-            // moves never go through this branch (status path).
-            if app.effective_dmg > 0 && cross_side {
+            // Mark this target as "damaged this turn" (spreadDamage's
+            // hurtThisTurn): an ally's hit counts too.
+            if app.effective_dmg > 0 {
                 t.set_damaged_this_turn(true);
+            }
+            if app.effective_dmg > 0 && cross_side {
                 // Record attacker for Counter / Mirror Coat /
                 // Stamina / Anger Point / Cotton Down /
                 // Berserk etc. Side byte: 0=P1, 1=P2.
