@@ -50,7 +50,7 @@ fn holder_ref((side, slot): (SideRef, u8)) -> crate::rng::SlotRef {
 }
 
 pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
-    mon.ability_id == data::ability_id::MAGICGUARD
+    mon.effective_ability_id() == data::ability_id::MAGICGUARD
 }
 
 /// Rock Head — PS `data/abilities.ts:rockhead` `onDamage`:
@@ -61,7 +61,7 @@ pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
 /// users. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Rock_Head_(Ability)>.
 pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
-    mon.ability_id == data::ability_id::ROCKHEAD
+    mon.effective_ability_id() == data::ability_id::ROCKHEAD
 }
 
 /// Ability Shield — PS `data/items.ts:abilityshield` (a5df8274,
@@ -2589,7 +2589,7 @@ pub fn on_damaging_hit(
     // or Covert Cloak, and rolls even when the hit knocked the target out
     // (trySetStatus then fails).
     let poison_touch_blocked = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|t| {
-        t.ability_id == data::ability_id::SHIELDDUST || t.item_id == data::item_id::COVERTCLOAK
+        t.effective_ability_id() == data::ability_id::SHIELDDUST || t.effective_item_id() == data::item_id::COVERTCLOAK
     });
     if attacker_ability_id == data::ability_id::POISONTOUCH
         && move_makes_contact_from_attacker
@@ -2779,7 +2779,7 @@ pub fn on_damaging_hit(
 pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
     // Unburden — latch on the mon that just lost its item.
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        if m.is_alive() && m.ability_id == data::ability_id::UNBURDEN {
+        if m.is_alive() && m.effective_ability_id() == data::ability_id::UNBURDEN {
             m.unburden_active = true;
         }
     }
@@ -2813,7 +2813,7 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(p) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
                 p.item_id = u16::MAX;
                 p.sync_can_mega_evolve();
-                if p.ability_id == data::ability_id::UNBURDEN {
+                if p.effective_ability_id() == data::ability_id::UNBURDEN {
                     p.unburden_active = true;
                 }
             }
