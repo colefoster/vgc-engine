@@ -19119,15 +19119,25 @@ self.trigger_emergency_exits();
                 }
             }
             self.p_damage(tside, tslot, "");
-            // The hit runs DamagingHit like any other: Innards Out, Cursed Body and
-            // Electromorphosis react, when the source is on the field to be named
-            // (sim/battle-actions.ts spreadMoveHit).
-            if let Some(src_slot) = self.side(src_side).active.iter().take(self.format().active_count()).position(|&x| x as usize == src_idx) {
-                if self.side(src_side).active_mon(src_slot).is_some_and(|a| a.is_alive()) {
-                    let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                    crate::ability::on_damaging_hit(self, tside, tslot, entry.move_id, src_side, src_slot as u8, &mut rng, false);
-                    self.rng = rng;
-                }
+            // Anger Point's onHit, in runMoveEffects (data/abilities.ts angerpoint).
+            if ps_crit && self.side(tside).active_mon(tslot as usize).is_some_and(|t| {
+                t.is_alive() && t.effective_ability_id() == data::ability_id::ANGERPOINT && t.boosts[0] < 6
+            }) {
+                self.p_boost_fx(crate::protocol::BoostFx::Silent);
+                pmon!(self, "-setboost", tside, tslot, "|atk|6|[from] ability: Anger Point");
+                self.apply_boosts(tside, tslot, &[(0, 12)], tside, tslot);
+            }
+            // The hit runs DamagingHit like any other: Innards Out, Air Balloon, Weak Armor.
+            // A source off the field is passed as an empty slot: the holder's handlers still
+            // run, and nothing lands on it (sim/battle-actions.ts spreadMoveHit).
+            let src_slot = self.side(src_side).active.iter().take(self.format().active_count()).position(|&x| x as usize == src_idx)
+                .filter(|&sl| self.side(src_side).active_mon(sl).is_some_and(|a| a.is_alive()))
+                .map_or(255u8, |sl| sl as u8);
+            self.damaging_hit_event(tside, tslot, src_side, src_slot, entry.move_id, &src_mon, ps_crit, false, capped, capped, capped);
+            // Red Card's AfterMoveSecondary (data/items.ts:5176): Eject Button excludes
+            // future moves (data/items.ts ejectbutton), Pickpocket needs contact.
+            if src_slot != 255 {
+                let _ = crate::item::try_consume_red_card(self, tside, tslot, src_side, src_slot);
             }
         }
     }
