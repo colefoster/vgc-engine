@@ -1317,7 +1317,7 @@ pub(crate) fn calculate_damage_with_bp(
         // `source.statsLoweredThisTurn` — 75 → 150.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Lash_Out_(move)>.
         (m.type_, (m.base_power as u32) * 2)
-    } else if move_id == data::move_id::HEX && !matches!(defender.status, Status::None) {
+    } else if matches!(move_id, data::move_id::HEX | data::move_id::INFERNALPARADE) && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
         // Comatose ability (treats holder as Sleep) deferred.
