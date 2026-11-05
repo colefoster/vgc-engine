@@ -226,9 +226,11 @@ pub fn effective_speed(
         chain(8192);
     }
     // Choice Scarf: ×1.5 to final speed.
-    if mon.item_id == data::item_id::CHOICESCARF {
+    // effective_item_id: the item's onModifySpe doesn't run under Magic Room.
+    let item = mon.effective_item_id();
+    if item == data::item_id::CHOICESCARF {
         chain(6144);
-    } else if mon.item_id == data::item_id::IRONBALL {
+    } else if item == data::item_id::IRONBALL {
         // Iron Ball — PS `data/items.ts:ironball` `onModifySpe`:
         //   `return this.chainModify(0.5);`
         // Halves the holder's speed unconditionally. Bulbapedia:
