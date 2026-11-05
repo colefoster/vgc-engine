@@ -12504,8 +12504,10 @@ self.trigger_emergency_exits();
                     if t.effective_item_id() == data::item_id::IRONBALL || t.volatiles.has(V::Ingrain) || gravity {
                         applies = false;
                     }
-                    if matches!(t.semi_invuln, 1 | 3) {
+                    // Fly and Bounce (semi_invuln_code_for).
+                    if matches!(t.semi_invuln, 3 | 4) {
                         applies = true;
+                        cancel = true;
                         t.semi_invuln = 0;
                         t.charging_turns = 0;
                         t.charging_move_slot = 255;
@@ -20439,11 +20441,25 @@ self.trigger_emergency_exits();
                     let n = self.format().active_count() as u8;
                     for side in [SideRef::P1, SideRef::P2] {
                         for s in 0..n {
-                            if let Some(mon) =
-                                self.side_mut(side).active_mon_mut(s as usize)
-                            {
-                                mon.volatiles.remove(crate::pokemon::VolatileKind::MagnetRise);
-                                mon.volatiles.remove(crate::pokemon::VolatileKind::Telekinesis);
+                            // gravity onFieldStart: Fly and Bounce end and their queued
+                            // move is cancelled; Magnet Rise and Telekinesis end
+                            // (data/moves.ts gravity condition).
+                            let mut applies = false;
+                            let mut cancel = false;
+                            if let Some(mon) = self.side_mut(side).active_mon_mut(s as usize) {
+                                if matches!(mon.semi_invuln, 3 | 4) {
+                                    applies = true;
+                                    cancel = true;
+                                    mon.semi_invuln = 0;
+                                    mon.charging_turns = 0;
+                                    mon.charging_move_slot = 255;
+                                }
+                                for v in [crate::pokemon::VolatileKind::MagnetRise, crate::pokemon::VolatileKind::Telekinesis] {
+                                    if mon.volatiles.has(v) {
+                                        applies = true;
+                                        mon.volatiles.remove(v);
+                                    }
+                                }
                                 let _ = mon.volatiles.add(crate::pokemon::Volatile {
                                     kind: crate::pokemon::VolatileKind::GravityGrounded,
                                     turns_remaining: 0,
