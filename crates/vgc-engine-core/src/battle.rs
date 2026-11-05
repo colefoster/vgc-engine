@@ -8193,6 +8193,7 @@ self.trigger_emergency_exits();
             // selfdestruct 'always': battle.faint(pokemon) queues the user
             // before the hit (sim/battle-actions.ts useMoveInner).
             self.p_queue_faint_if_down(actor_side, actor_slot);
+            self.ps_note_hit_ko(actor_side, actor_slot);
         }
         // Resolve target redirection (Follow Me / Rage Powder, Lightning
         // Rod / Storm Drain). Pure read of self — no RNG draws here. Spread
