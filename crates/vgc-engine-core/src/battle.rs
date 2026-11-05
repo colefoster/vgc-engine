@@ -12130,6 +12130,11 @@ self.trigger_emergency_exits();
             // down, sim/battle.ts:2332).
             dmg = ((dmg as u32 * 1024 + 2047) / 4096).max(1) as _;
         }
+        // An earlier hit of this move may have broken it (removeVolatile: a later
+        // hit lands, data/moves.ts substitute onTryPrimaryHit).
+        if let Some(sub) = self.side(ctx.tside).active_mon(ctx.tslot as usize).map(|d| d.substitute_hp()) {
+            ctx.defender.set_substitute_hp(sub);
+        }
         // A Substitute's whole hit runs in TryPrimaryHit, before the other targets' steps.
         let sub_takes_hit = ctx.defender.substitute_hp() > 0 && !is_sound_move(ctx.move_def.slug) && !ctx.attacker_infiltrates;
         if sub_takes_hit {
