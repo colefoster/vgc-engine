@@ -20274,6 +20274,30 @@ self.trigger_emergency_exits();
                     self.after_foe_drop(ts, tslot, before, true);
                 }
             }
+            data::move_id::SWALLOW => {
+                // data/moves.ts swallow onTry + onHit.
+                use crate::pokemon::VolatileKind as V;
+                let Some(state) = self.side(actor_side).active_mon(actor_slot as usize)
+                    .and_then(|a| a.volatiles.get(V::Stockpile).map(|v| v.payload)) else { return };
+                let layers = (state & 3).max(1) as u32;
+                let healed = if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let max = a.stats.hp as u32;
+                    let amount = match layers { 1 => (max * 1024 + 2047) / 4096, 2 => (max * 2048 + 2047) / 4096, _ => max };
+                    let before = a.current_hp;
+                    if !a.is_heal_blocked() {
+                        a.current_hp = (a.current_hp as u32 + amount).min(max) as u16;
+                    }
+                    a.current_hp != before
+                } else {
+                    false
+                };
+                if healed {
+                    self.p_heal(actor_side, actor_slot, "");
+                } else {
+                    pmon!(self, "-fail", actor_side, actor_slot, "|heal");
+                }
+                self.end_stockpile(actor_side, actor_slot);
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
