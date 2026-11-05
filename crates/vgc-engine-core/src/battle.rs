@@ -13194,7 +13194,9 @@ self.trigger_emergency_exits();
                     && self.has_eligible_bench(ts)
                     && self.can_be_dragged_out(ts, tslot, breaks_mold)
                 {
-                    self.force_switch_random(ts, tslot);
+                    // forceSwitchFlag: runAction drags it in after the action's
+                    // Updates (sim/battle.ts runAction).
+                    self.force_switch_flags[ts as usize][(tslot as usize).min(1)] = true;
                 }
             }
         }
