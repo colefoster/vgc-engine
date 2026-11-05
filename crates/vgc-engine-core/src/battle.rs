@@ -14806,6 +14806,9 @@ self.trigger_emergency_exits();
         // The Update after the hit step: Attract ends once its source fainted
         // (data/moves.ts attract onUpdate), before AfterMoveSecondarySelf.
         self.attract_update();
+        // AfterMoveSecondarySelf reads the item held now: Pickpocket or Magician may
+        // have moved it during the hit (data/items.ts lifeorb, shellbell).
+        let attacker_item_id = self.side(actor_side).active_mon(actor_slot as usize).map_or(u16::MAX, |a| a.effective_item_id());
         if attacker_item_id == data::item_id::LIFEORB && (any_damage_dealt > 0 || self.disguise_hit_this_move) {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
             // gates the whole `AfterMoveSecondarySelf` step on
@@ -14864,11 +14867,12 @@ self.trigger_emergency_exits();
                 }
             }
             if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.current_hp != hp_before) {
-                // heal(..., source = the move's target): `[of]` it.
+                // heal(..., source = the move's target), the last of a spread
+                // move's targets (sim/battle-actions.ts useMoveInner): `[of]` it.
                 let of = self
                     .protocol
                     .log()
-                    .and_then(|l| l.move_target)
+                    .and_then(|l| l.last_target.or(l.move_target))
                     .filter(|&(s, sl)| (s, sl) != (actor_side as u8, actor_slot))
                     .map(|(s, sl)| format!("|[of] {}", self.p_ident(if s == 0 { SideRef::P1 } else { SideRef::P2 }, sl)))
                     .unwrap_or_default();
