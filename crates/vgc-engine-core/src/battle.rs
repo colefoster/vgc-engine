@@ -20264,6 +20264,16 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::SPICYEXTRACT => {
+                // data/moves.ts spicyextract: `boosts: {atk: 2, def: -2}`.
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
+                self.apply_boosts(ts, tslot, &[(0, 2), (1, -2)], actor_side, actor_slot);
+                if ts != actor_side {
+                    self.after_foe_drop(ts, tslot, before, true);
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
