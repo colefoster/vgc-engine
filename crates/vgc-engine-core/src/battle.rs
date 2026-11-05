@@ -10874,6 +10874,29 @@ self.trigger_emergency_exits();
             damaging,
         );
 
+        // sparklingaria onAfterMove: the targets it hit lose a burn; alone, only one
+        // its 100% secondary reached (Shield Dust and Covert Cloak stop that)
+        // (data/moves.ts sparklingaria).
+        if move_id == data::move_id::SPARKLINGARIA
+            && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive() && a.effective_ability_id() != data::ability_id::SHEERFORCE)
+        {
+            let many = targets.len() > 1;
+            for &(ts, tsl) in targets.iter() {
+                let cure = self.side(ts).active_mon(tsl as usize).is_some_and(|t| {
+                    t.is_alive()
+                        && t.status == Status::Burn
+                        && !t.is_protected_this_turn()
+                        && (many || (t.effective_ability_id() != data::ability_id::SHIELDDUST && t.effective_item_id() != data::item_id::COVERTCLOAK))
+                });
+                if cure && (ts, tsl) != (actor_side, actor_slot) {
+                    pmon!(self, "-curestatus", ts, tsl, "|brn|[msg]");
+                    if let Some(t) = self.side_mut(ts).active_mon_mut(tsl as usize) {
+                        t.status = Status::None;
+                    }
+                    self.sync_status_dot_bit(ts, tsl);
+                }
+            }
+        }
         self.apply_post_move_effects(
             actor_side,
             actor_slot,
