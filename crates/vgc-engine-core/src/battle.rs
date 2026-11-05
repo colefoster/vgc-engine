@@ -4877,6 +4877,7 @@ self.trigger_emergency_exits();
                 m.last_attacker = (255, 255);
                 m.last_attacker_category = 255;
                 m.last_damage_taken = 0;
+                m.last_foe_damage = 0;
                 m.last_phys_attacker = (255, 255);
                 m.last_phys_damage = 0;
                 m.last_spec_attacker = (255, 255);
@@ -6330,6 +6331,7 @@ self.trigger_emergency_exits();
             incoming.last_attacker = (255, 255);
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
+            incoming.last_foe_damage = 0;
             incoming.last_phys_attacker = (255, 255);
             incoming.last_phys_damage = 0;
             incoming.last_spec_attacker = (255, 255);
@@ -8182,7 +8184,7 @@ self.trigger_emergency_exits();
             let ((src_side_byte, src_slot), dmg) = match move_id {
                 data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
                 data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
-                _ => (attacker.last_attacker, attacker.last_damage_taken),
+                _ => (attacker.last_attacker, attacker.last_foe_damage),
             };
             if dmg == 0 {
                 self.p_try_fail(actor_side, actor_slot);
@@ -9048,6 +9050,7 @@ self.trigger_emergency_exits();
                         d.last_attacker = (aside_byte, actor_slot as u8);
                         d.last_attacker_category = m.category;
                         d.last_damage_taken = capped;
+                        d.last_foe_damage = capped;
                         // Per-category attribution for Counter / Mirror Coat.
                         if m.category == 0 {
                             d.last_phys_attacker = (aside_byte, actor_slot as u8);
@@ -9830,7 +9833,7 @@ self.trigger_emergency_exits();
                 // recent hit of EITHER category this turn. Scripted-target /
                 // fail gate above guarantees `last_damage_taken > 0` here.
                 data::move_id::METALBURST | data::move_id::COMEUPPANCE => {
-                    Some(((attacker.last_damage_taken as u32 * 3 / 2).max(1)).min(u16::MAX as u32) as u16)
+                    Some(((attacker.last_foe_damage as u32 * 3 / 2).max(1)).min(u16::MAX as u32) as u16)
                 }
                 _ => None,
             };
@@ -13152,6 +13155,7 @@ self.trigger_emergency_exits();
                 t.last_attacker = (aside_byte, app.attacker_slot);
                 t.last_attacker_category = app.move_category;
                 t.last_damage_taken = app.effective_dmg;
+                t.last_foe_damage = app.effective_dmg;
                 // Per-category attribution for Counter / Mirror Coat.
                 if app.move_category == 0 {
                     t.last_phys_attacker = (aside_byte, app.attacker_slot);

@@ -49,3 +49,19 @@ fn a_stat_modifier_applies_to_the_boosted_stat() {
     let m = crate::damage::chain_modify(4096, 3, 2);
     assert_eq!(crate::damage::apply_modifier(crate::damage::apply_boost(103, -6), m), 37);
 }
+
+#[test]
+fn metal_burst_ignores_an_allys_spread_hit() {
+    // data/moves.ts metalburst damageCallback: getLastDamagedBy(true) filters
+    // out same-side attackers (sim/pokemon.ts). The foe's hit sets the damage.
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["metalburst"]},{"species":"garchomp","level":50,"moves":["earthquake"],"nature":"timid"}]"#,
+        r#"[{"species":"jolteon","level":50,"nature":"timid","moves":["quickattack"]},{"species":"blissey","level":50,"moves":["splash"]}]"#,
+        3,
+    );
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    let snorlax = &b.p1.team[0];
+    assert!(snorlax.last_foe_damage > 0 && snorlax.last_foe_damage != snorlax.last_damage_taken);
+    let dealt = b.p2.team[0].stats.hp - b.p2.team[0].current_hp;
+    assert!(b.p2.team[0].fainted || dealt == snorlax.last_foe_damage * 3 / 2 + b.p2.team[0].stats.hp - b.p2.team[0].stats.hp);
+}
