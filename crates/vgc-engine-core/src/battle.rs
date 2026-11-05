@@ -24811,7 +24811,11 @@ self.trigger_emergency_exits();
                     }
                     if n_t > 1 {
                         if n_ok == 0 {
-                            self.p_attr("[still]");
+                            // A missed ally leaves the failed heal's `[still]` alone:
+                            // the hit loop's result is the one target's.
+                            if missed.is_none() {
+                                self.p_attr("[still]");
+                            }
                             slots.clear();
                         }
                         self.p_attr(&format!("[spread] {}", slots.join(",")));
