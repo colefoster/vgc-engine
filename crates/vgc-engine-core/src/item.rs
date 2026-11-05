@@ -103,17 +103,11 @@ pub fn try_consume_type_resist_berry(
     // eatItem's `[eat]` (sim/pokemon.ts:1783), then the berry's
     // onSourceModifyDamage `[weaken]` (data/items.ts occaberry et al.).
     battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[eat]");
+    // eatItem's runEvent('EatItem'), ahead of onEat's return (sim/pokemon.ts eatItem,
+    // data/abilities.ts cheekpouch).
+    on_eat_item_event(battle, target_side, target_slot, item_id, None);
     battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[weaken]");
     maybe_on_item_consumed(battle, target_side, target_slot, item_id);
-    // Cud Chew's onEatItem schedules the re-eat for this berry too
-    // (data/abilities.ts:742-750); its onEat does nothing.
-    let in_residual = battle.in_residual;
-    if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        if m.effective_ability_id() == data::ability_id::CUDCHEW {
-            m.cud_chew_berry = item_id;
-            m.cud_chew_counter = if in_residual { 1 } else { 2 };
-        }
-    }
     true
 }
 
