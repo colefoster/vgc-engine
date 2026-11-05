@@ -17851,10 +17851,12 @@ self.trigger_emergency_exits();
                                 // Overcoat — PS `data/abilities.ts:overcoat`
                                 // same `onImmunity` block. Bulbapedia:
                                 // <https://bulbapedia.bulbagarden.net/wiki/Safety_Goggles>.
+                                // Dig and Dive's conditions onImmunity too (data/moves.ts dig, dive).
                                 if matches!(m.effective_ability_id(),
                                     data::ability_id::SANDFORCE | data::ability_id::SANDRUSH
                                         | data::ability_id::SANDVEIL | data::ability_id::OVERCOAT)
                                     || m.item_id == data::item_id::SAFETYGOGGLES
+                                    || matches!(m.semi_invuln, 1 | 2)
                                 {
                                     true
                                 } else {
