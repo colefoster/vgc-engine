@@ -15921,6 +15921,21 @@ self.trigger_emergency_exits();
                         if next == 0 {
                             a.status = Status::None;
                             false
+        // choicelock onBeforeMove, priority 12: a move other than the locked one, picked
+        // while Magic Room hid the item, fails once the item is back; no PP is lost
+        // (data/conditions.ts choicelock).
+        if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
+            if a.locked_move_slot() != 255
+                && a.locked_move_slot() != move_slot
+                && move_id != data::move_id::STRUGGLE
+                && matches!(a.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
+            {
+                self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
+                self.p_attr("[still]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                return PreMoveOutcome::Abort;
+            }
+        }
                         } else {
                             true
                         }
