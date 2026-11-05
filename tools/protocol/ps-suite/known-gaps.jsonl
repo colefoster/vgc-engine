@@ -79,7 +79,6 @@
 {"game":"Protosynthesis should take stat stages and no other modifiers into account when determining the best stat","format":"gen9customgame"}
 {"game":"Protosynthesis should not activate while Desolate Land is active","format":"gen9customgame"}
 {"game":"Protosynthesis should not activate while the user is Transformed","format":"gen9customgame"}
-{"game":"Ripen should double healing from Berries","format":"gen9customgame"}
 {"game":"Shield Dust should only prevent Sparkling Aria from curing burn if there is only one target","format":"gen9doublescustomgame"}
 {"game":"Soul-Heart should activate on each individual KO","format":"gen9doublescustomgame"}
 {"game":"Steely Spirit should stack with itself","format":"gen9doublescustomgame"}
@@ -100,7 +99,6 @@
 {"game":"Champions moves Rapid Spin should remove hazards when the user faints from Rocky Helmet","format":"gen9championscustomgame"}
 {"game":"Eject Pack should not switch out the user if the user acquired the Eject Pack after the stat drop occurred","format":"gen9customgame"}
 {"game":"Lum Berry should cure Poison and confusion after Poison Puppeteer activation","format":"gen9customgame"}
-{"game":"Red Card should not trigger if the target should be KOed from Destiny Bond and also not crash the client","format":"gen9doublescustomgame"}
 {"game":"White Herb should activate after Abilities that boost stats on KOs","format":"gen9customgame"}
 {"game":"White Herb should activate before Opportunist during switch-ins","format":"gen9doublescustomgame"}
 {"game":"Fainted forme regression [Hackmons] should be able to revert between different mega evolutions","format":"gen9customgame"}
@@ -133,7 +131,6 @@
 {"game":"Future Sight should target particular slots in Doubles","format":"gen9doublescustomgame"}
 {"game":"Heal Bell should not heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Heal Bell with Mold Breaker should heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
-{"game":"Healing Wish should heal an ally fully after Ally Switch","format":"gen9doublescustomgame"}
 {"game":"Ice Spinner should not remove Terrains if the user faints from Rocky Helmet","format":"gen9customgame"}
 {"game":"Knock Off should not remove correctly held mega stones","format":"gen9customgame"}
 {"game":"Pollen Puff should not heal a Pokemon if they have natural type immunity to Pollen Puff","format":"gen9doublescustomgame"}
