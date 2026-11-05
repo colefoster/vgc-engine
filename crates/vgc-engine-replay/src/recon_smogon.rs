@@ -588,7 +588,7 @@ mod tests {
                 &StatSpread { hp: 252, atk: 0, def: 0, spa: 0, spd: 252, spe: 4 }, def_nat);
             let def = mk(data::SPECIES.iter().position(|s| s.slug == "snorlax").unwrap() as u16, 50, def_stats);
             let mid = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
-            let ctx = |roll: u8| DamageContext {
+            let ctx = |roll: u8| DamageContext { ssa_physical: false,
                 crit: false, roll, is_spread: false,
                 weather: vgc_engine_core::weather::Weather::None,
                 defender_has_reflect: false, defender_has_light_screen: false,
