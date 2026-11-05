@@ -52,6 +52,10 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     if m.is_punch && attacker.effective_item_id() == data::item_id::PUNCHINGGLOVE {
         return false;
     }
+    // Long Reach — data/abilities.ts longreach onModifyMove deletes the contact flag.
+    if attacker.effective_ability_id() == data::ability_id::LONGREACH {
+        return false;
+    }
     // Protective Pads — PS `data/items.ts:protectivepads`
     //   onModifyMove(move, pokemon) {
     //     delete move.flags['contact'];
@@ -710,15 +714,27 @@ fn effectiveness_base(
             TypeEff::Neutral
         }
     } else {
-        let smackdown_active = defender
-            .volatiles
-            .has(crate::pokemon::VolatileKind::SmackdownGrounded);
+        // A grounded Flying type (Smack Down, Gravity, Ingrain, Iron Ball) takes
+        // Ground moves: runImmunity passes (sim/pokemon.ts) and the chart's
+        // immunity counts as neutral in getEffectiveness (sim/dex.ts).
+        let grounded_flying = move_type == 8 && defender.is_grounded();
+        // Iron Ball's onEffectiveness returns 0 for each of a Flying holder's
+        // types, unless something else grounds it (data/items.ts ironball).
+        if grounded_flying
+            && def_eff_types[..def_eff_num as usize].contains(&9)
+            && defender.effective_item_id() == data::item_id::IRONBALL
+            && !defender.volatiles.has(crate::pokemon::VolatileKind::SmackdownGrounded)
+            && !defender.volatiles.has(crate::pokemon::VolatileKind::GravityGrounded)
+            && !defender.volatiles.has(crate::pokemon::VolatileKind::Ingrain)
+        {
+            return TypeEff::Neutral;
+        }
         let mut weak = 0i32;
         let mut resist = 0i32;
         let mut immune = false;
         for i in 0..def_eff_num as usize {
             let def_type = def_eff_types[i] as usize;
-            if smackdown_active && move_type == 8 && def_type == 9 {
+            if grounded_flying && def_type == 9 {
                 continue;
             }
             match data::TYPE_CHART[def_type][move_type as usize] {
@@ -1589,6 +1605,18 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
+    // Dry Skin — PS data/abilities.ts dryskin onSourceBasePower: Fire moves
+    // chainModify(1.25) the base power. Flagged `breakable: 1`.
+    if move_type == 1
+        && defender.effective_ability_id() == data::ability_id::DRYSKIN
+        && !matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        )
+    {
+        bp_mod = chain_modify(bp_mod, 5120, 4096);
+    }
+
     // Iron Fist — PS `data/abilities.ts:ironfist` `onBasePower`
     // returns `chainModify([4915, 4096])` (≈×1.2) on moves with
     // `flags.punch`. Iron Hands (top-25 corpus, niche but seen) /
@@ -2150,6 +2178,26 @@ pub(crate) fn calculate_damage_with_bp(
     let eff_def_stage = def_policy.project(def_stage);
     let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
     let mut d = apply_boost(def_stat, eff_def_stage).max(1);
+    // Sandstorm's onModifySpD and Snow's onModifyDef, priority 10
+    // (data/conditions.ts sandstorm, snowscape): on the staged stat, for the
+    // types the mon has now. Mega Sol makes the attacker's weather reads 'sunnyday'
+    // (sim/pokemon.ts effectiveWeather).
+    {
+        let reads_def = physical
+            || matches!(move_id, data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD);
+        let (eff_types, eff_num) = defender.effective_types();
+        let has = |t: u8| eff_types[..eff_num as usize].contains(&t);
+        let mega_sol = attacker.effective_ability_id() == data::ability_id::MEGASOL;
+        let weather_buff = !mega_sol
+            && match ctx.weather {
+                crate::weather::Weather::Sand => !reads_def && has(12),
+                crate::weather::Weather::Snow => reads_def && has(5),
+                _ => false,
+            };
+        if weather_buff {
+            d = (d * 6144 / 4096).max(1);
+        }
+    }
 
     // Defeatist — PS `data/abilities.ts:873`:
     //   onModifyAtk(atk, pokemon) {
@@ -2316,6 +2364,16 @@ pub(crate) fn calculate_damage_with_bp(
         d = (d * 2).max(1);
     }
 
+    // Grass Pelt — PS data/abilities.ts grasspelt onModifyDef: chainModify(1.5) in
+    // Grassy Terrain, whoever is grounded. Flagged `breakable: 1`.
+    if physical
+        && defender.effective_ability_id() == data::ability_id::GRASSPELT
+        && matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
+        && !attacker_breaks_mold_for_offense
+    {
+        d = (d * 6144 / 4096).max(1);
+    }
+
     // Heatproof — PS data/abilities.ts:heatproof onSourceModifyAtk /
     // onSourceModifySpA: chainModify(0.5) on Fire moves. PS applies
     // this AFTER the stage boost (the chain runs on the post-stage stat
@@ -2358,12 +2416,6 @@ pub(crate) fn calculate_damage_with_bp(
     // mathematically equivalent — base-damage is linear in A. PokeRound
     // 5120/4096 = 1.25 exactly.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
-    if move_type == 1
-        && !attacker_breaks_mold_for_offense
-        && defender.effective_ability_id() == data::ability_id::DRYSKIN
-    {
-        a = (a * 5120 / 4096).max(1);
-    }
 
     let level = attacker.level as u32;
     // base = floor( floor( floor(2L/5+2) * BP * A / D ) / 50 ) + 2

@@ -270,6 +270,7 @@ impl PsSession {
         }
         let mut p = Parser::new(&self.reqs[i], side, self.ended);
         let res = p.choose(input);
+        let partial_done = res.is_err() && p.done();
         let ans = p.answer();
         let text = p.choice_text(&self.base);
         let cant_undo = p.cant_undo;
@@ -283,10 +284,14 @@ impl PsSession {
         }
         match res {
             Err(()) => {
-                // Side.choose cleared the old choice before failing.
+                // Side.choose cleared the old choice before failing, but the
+                // parts parsed before the error stay in `side.choice`. If they
+                // fill the side, allChoicesDone counts it on the other side's
+                // next successful choice (sim/battle.ts Battle.choose,
+                // allChoicesDone; sim/side.ts isChoiceDone).
                 if was_open {
-                    self.answered[i] = None;
-                    self.choice_text[i] = None;
+                    self.answered[i] = partial_done.then_some(ans);
+                    self.choice_text[i] = partial_done.then_some(text);
                     self.cant_undo[i] = cant_undo;
                 }
                 self.side_out(i, out)
@@ -951,31 +956,21 @@ impl<'a> Parser<'a> {
         if mv.really_disabled {
             // chooseMove's disabled branch (sim/side.ts:731-760): the request
             // gets this move marked disabled with an (empty) disabledSource.
+            // emitChoiceError says [Unavailable choice] and resends it only
+            // if that changed the request (sim/side.ts:531-534).
             let m = name.clone();
+            let doubles = self.req.n_active >= 2;
+            let mut updated = false;
             if let Some(Some(a)) = self.req.active.get_mut(index) {
-                if a.maybe_locked {
-                    a.maybe_locked = false;
-                }
-                if a.maybe_disabled && self.req.n_active >= 2 {
-                    a.maybe_disabled = false;
-                    for x in a.moves.iter_mut() {
-                        if x.really_disabled {
-                            x.disabled = true;
-                        }
-                    }
-                }
-                if a.moves.iter().all(|x| x.disabled || x.id == "struggle") {
-                    if a.can_mega == Some(true) {
-                        a.can_mega = Some(false);
-                    }
-                    a.can_tera = None;
-                }
+                updated = update_disabled_request(a, doubles);
                 if let Some(x) = a.moves.get_mut(mi) {
+                    updated |= !x.disabled || !x.disabled_source_sent;
                     x.disabled = true;
                     x.disabled_source_sent = true;
                 }
             }
-            return self.unavailable(format!("Can't move: {m}'s {move_name} is disabled"));
+            let msg = format!("Can't move: {m}'s {move_name} is disabled");
+            return if updated { self.unavailable(msg) } else { self.err(msg) };
         }
         let mega = event == "mega";
         if mega && request.can_mega != Some(true) {

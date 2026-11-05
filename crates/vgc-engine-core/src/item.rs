@@ -966,6 +966,7 @@ pub fn on_attacker_contact_hit(
                     a.fainted = true;
                 }
             }
+            battle.ps_note_hit_ko(attacker_side, attacker_slot);
             if battle.plog() {
                 let of = battle.p_ident(target_side, target_slot);
                 // onDamagingHitOrder: 2 (data/items.ts rockyhelmet).
@@ -1221,6 +1222,7 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                battle.ps_note_hit_ko(attacker_side, attacker_slot);
             }
         }
     }
@@ -1255,6 +1257,7 @@ pub fn on_damaging_hit(
                 a.fainted = true;
             }
         }
+        battle.ps_note_hit_ko(attacker_side, attacker_slot);
     }
 }
 
@@ -1286,7 +1289,6 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // which waits for the end of a running move action
     // (`Battle::white_herb_after_move`). Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/White_Herb>.
-    try_consume_white_herb(battle, side, slot);
     // Mental Herb cleans up Encore / Taunt / etc carried across a switch.
     try_consume_mental_herb(battle, side, slot);
     // Terrain seeds — fire if the matching terrain is active when the
@@ -1300,6 +1302,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Room Service — PS `onStart`: consume for -1 Spe if Trick Room is
     // already active when the holder switches in.
     try_consume_room_service(battle, side, slot);
+    // After the priority -1 seeds and Room Service.
+    try_consume_white_herb(battle, side, slot);
     // HP-threshold berries (Sitrus et al. onUpdate) in runSwitch's Update.
     let mut rng = std::mem::replace(battle.rng_mut(), crate::rng::Rng::Splitmix(0));
     on_after_damage(battle, side, slot, &mut rng);

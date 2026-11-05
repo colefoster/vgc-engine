@@ -389,6 +389,11 @@ pub struct Battle {
     /// `accuracy::effective_accuracy` in `rolled_accuracy_passed`.
     #[serde(skip)]
     status_acc_pair: Option<(SideRef, u8, SideRef, u8)>,
+    /// A spread status move rolling accuracy: PS `move.spreadHit`, so a miss
+    /// names this roll's target and adds no `[miss]` (hitStepAccuracy,
+    /// sim/battle-actions.ts). Log only.
+    #[serde(skip)]
+    pub(crate) status_spread_rolls: bool,
     #[serde(skip)]
     status_pending_kind: [[u8; 2]; 2],
     /// The status move in progress stops at a target's Substitute: no `bypasssub`
@@ -770,6 +775,13 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_charge_volatile: [u8; 2],
+    /// `ps-rng` only: active slots (bit per slot, per side) whose queued
+    /// 'recharge' action Champions Encore replaced this turn
+    /// (data/mods/champions/moves.ts encore, queue.changeAction). `mustrecharge`
+    /// still stops the move, but its target draws are the new move's.
+    #[cfg(feature = "ps-rng")]
+    #[serde(default)]
+    pub(crate) ps_recharge_changed: [u8; 2],
     /// `ps-rng` only: team indices (bit per index, per side) of fainted
     /// actives whose status checkFainted set to 'fnt' at the end of an
     /// earlier turn (sim/battle.js:2066-2073): no status residual handler.
@@ -918,6 +930,7 @@ impl Battle {
             status_sure_hit: false,
             status_acc_boost: 0,
             status_acc_pair: None,
+            status_spread_rolls: false,
             status_pending_kind: [[0; 2]; 2],
             status_sub_blocks: false,
             called_from: u16::MAX,
@@ -1000,6 +1013,8 @@ impl Battle {
             #[cfg(feature = "ps-rng")]
             ps_charge_volatile: [0; 2],
             #[cfg(feature = "ps-rng")]
+            ps_recharge_changed: [0; 2],
+            #[cfg(feature = "ps-rng")]
             ps_status_fnt: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_move_used: false,
@@ -1072,6 +1087,7 @@ impl Battle {
     /// data/items.ts onSwitchInPriority), as in `apply_replacement_switches`.
     pub(crate) fn run_lead_switch_ins(&mut self, order: ([(SideRef, u8); 4], usize)) {
         let (mut leads, k) = order;
+        let speed_order = leads;
         // Abilities' own onSwitchInPriority first (stable in Speed).
         leads[..k].sort_by_key(|&(s, sl)| {
             -(self.side(s).active_mon(sl as usize).map_or(0, |m| crate::ability::switch_in_priority(m.effective_ability_id())) as i32)
@@ -1086,8 +1102,15 @@ impl Battle {
         for &(side, slot) in &leads[..k] {
             self.shields_down_update(side, slot);
         }
-        for &(side, slot) in &leads[..k] {
+        // The items' onStart (priority -1 seeds, Room Service), then White Herb's
+        // onAnySwitchIn at -2 (data/items.ts).
+        self.defer_white_herb = true;
+        for &(side, slot) in &speed_order[..k] {
             crate::item::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        for &(side, slot) in &speed_order[..k] {
+            crate::item::try_consume_white_herb(self, side, slot);
         }
     }
 
@@ -3276,6 +3299,28 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], op);
     }
 
+    /// `ps-rng` only: runSwitch's `speedSort(getAllActive(true))`, which sets
+    /// `speedOrder`, the order every SwitchIn handler of equal priority runs in
+    /// (sim/battle-actions.ts:233-237, resolvePriority, sim/battle.ts:1016-1020).
+    #[cfg(feature = "ps-rng")]
+    fn ps_run_switch_order(&mut self) -> ([(SideRef, u8); 4], usize) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 4];
+        let mut items = [(SideRef::P1, 0u8); 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                if let Some(k) = self.ps_speed(side, slot) {
+                    keys[n] = -k;
+                    items[n] = (side, slot as u8);
+                    n += 1;
+                }
+            }
+        }
+        crate::order::ps_speed_sort(&mut keys[..n], &mut items[..n], |a, b| self.rng.ps_random_range("shuffle", a, b));
+        (items, n)
+    }
+
     /// `ps-rng` only: the weather's `eachEvent('Weather')` speed sort, as
     /// [`Battle::ps_active_ties`], with its draws handed to the protocol
     /// log's weather order (protocol_residual.rs).
@@ -3348,6 +3393,19 @@ self.trigger_emergency_exits();
         }
         keys[..n].sort_unstable_by(|a, b| b.cmp(a));
         let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
+    /// A contact punisher (onDamagingHit) took the user to 0 HP inside the hit,
+    /// before the hit loop's faintMessages (data/mods/champions/scripts.ts:550).
+    /// A windowed move draws its hit Update only after Life Orb, so it can't
+    /// tell this KO from Life Orb's by the HP then.
+    pub(crate) fn ps_note_hit_ko(&mut self, side: SideRef, slot: u8) {
+        #[cfg(feature = "ps-rng")]
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp == 0) {
+            self.ps_hit_dead |= 1 << (side as usize * 2 + slot as usize);
+        }
+        #[cfg(not(feature = "ps-rng"))]
+        let _ = (side, slot);
     }
 
     /// `ps-rng` only: the hit loop's closing `eachEvent('Update')`
@@ -3718,8 +3776,13 @@ self.trigger_emergency_exits();
                     if m.charging_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
-                    if m.lockin_turns > 0 && !m.volatiles.has(V::Uproar) { push(&mut h, (NONE, 0, spe, 2)); }
-                    if m.volatiles.has(V::Uproar) { push(&mut h, (28, 0, spe, 1)); }
+                    // Uproar is a volatile with its own onResidual, not a
+                    // lockedmove (data/moves.ts uproar).
+                    if m.volatiles.has(V::Uproar) {
+                        push(&mut h, (28, 0, spe, 1));
+                    } else if m.lockin_turns > 0 {
+                        push(&mut h, (NONE, 0, spe, 2));
+                    }
                     // A used Gem's `gem` volatile (duration 1, data/conditions.ts gem).
                     if m.used_item_this_turn && m.consumed_item == data::item_id::NORMALGEM { push(&mut h, (NONE, 0, spe, 2)); }
                     // The released two-turn move's `twoturnmove` volatile
@@ -4468,7 +4531,7 @@ self.trigger_emergency_exits();
         // (data/conditions.ts mustrecharge onLockMove), not in the dex: its
         // undefined target never validates (sim/battle.ts validTargetLoc), so
         // getTarget always falls to getRandomTarget -> randomFoe.
-        if user.must_recharge {
+        if user.must_recharge && self.ps_recharge_changed[side as usize] & (1 << slot) == 0 {
             let foe = side.opposing();
             let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count();
             if n > 0 && n_active > 1 {
@@ -5156,25 +5219,21 @@ self.trigger_emergency_exits();
         }
         self.white_herb_move_defer = true;
         self.snapshot_hp_before_action(action.side, action.actor_slot, action.choice);
-        // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
-        // iff any action ordered AFTER the current one this turn is a
-        // move/switch/instaswitch/shift. PS shifts the current action
-        // off the queue BEFORE running it, so `willAct()` only sees
-        // later actions. Stall moves (Protect family / Endure / etc.)
-        // gate their success+RNG draw on this — if no later action
-        // will act, the stall move FAILS and does NOT draw. We mirror
-        // by scanning the remainder of `order` for a still-alive Move
-        // action (switches in our engine already ran up-front, so the
-        // only "later acting" actions at move-resolution time are
-        // moves).
+        // PS `Battle.queue.willAct()` (sim/battle-queue.ts:315): true iff any
+        // action after the current one this turn is a move/switch/instaswitch/
+        // shift. PS shifts the current action off the queue BEFORE running it,
+        // so `willAct()` only sees later actions. Stall moves (Protect family /
+        // Endure / etc.) gate their success+RNG draw on this — if no later
+        // action will act, the stall move FAILS and does NOT draw. A fainted
+        // mon's action stays queued and counts (faintMessages doesn't cancel
+        // it); only switchIn's cancelAction removes an action, for a mon that
+        // left the field (sim/battle-actions.ts switchIn). Switches in our
+        // engine already ran up-front, so later actions are moves.
         let will_act = order[idx + 1..].iter().any(|a| {
             matches!(
                 a.choice,
                 Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. }
-            ) && self
-                    .side(a.side)
-                    .active_mon(a.actor_slot as usize)
-                    .is_some_and(|m| m.is_alive())
+            ) && !self.replaced_mid_turn[a.side as usize][(a.actor_slot as usize).min(1)]
         });
         // Mark this actor as having consumed their queued action
         // BEFORE resolving — so Sucker Punch's `willMove(target)`
@@ -5236,9 +5295,12 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() && self.ps_loop_hits > 0 {
             if windowed {
+                // Drawn after the whole move resolved, Life Orb included, so
+                // only a user KO'd inside the hit stays marked: it is `fainted`
+                // by the closing Update (ps_note_hit_ko).
+                let dead = self.ps_hit_dead;
                 self.ps_hit_update();
-                // Drawn after the whole move resolved, Life Orb included.
-                self.ps_hit_dead = 0;
+                self.ps_hit_dead = dead;
             }
             self.ps_hit_loop_faint_ends();
             self.ps_loop_end_update(action.side, action.actor_slot);
@@ -5305,6 +5367,7 @@ self.trigger_emergency_exits();
             {
                 self.ps_twoturn_release = [0; 2];
                 self.ps_charge_volatile = [0; 2];
+                self.ps_recharge_changed = [0; 2];
             }
             let hp_before = self.active_hp_snapshot();
             // The residual action opens with `|` (sim/battle.ts:2812).
@@ -5958,6 +6021,7 @@ self.trigger_emergency_exits();
                 m.set_switched_in_this_turn(false);
             }
         }
+        let mut speed_order = ([(SideRef::P1, 0u8); 4], 0usize);
         // Each instaswitch's switchIn queues its runSwitch with insertChoice,
         // which draws when it ties an already-queued runSwitch on Speed
         // (sim/battle-queue.ts insertChoice, sim/battle-actions.ts:155);
@@ -5989,7 +6053,7 @@ self.trigger_emergency_exits();
                 len += 1;
             }
             self.ps_active_ties(false, "shuffle");
-            self.ps_active_ties(true, "shuffle");
+            speed_order = self.ps_run_switch_order();
         }
         // That last instaswitch's Update runs before any runSwitch, so HP
         // berries eat while the entering Unnerve holders have not started.
@@ -6002,21 +6066,44 @@ self.trigger_emergency_exits();
             self.rng = rng;
         }
         self.unnerve_unstarted = 0;
-        for e in &mut entered[..n] {
-            let tw = self.side(e.1).conditions.tailwind_turns > 0;
-            e.0 = self
-                .side(e.1)
-                .active_mon(e.2 as usize)
-                .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
-                .unwrap_or(0);
-        }
-        // Under Trick Room PS's speed is `10000 - spe` (sim/pokemon.ts:641
-        // getActionSpeed), so the slower replacement's onStart runs first
-        // (Torkoal's Drought before Pelipper's Drizzle -> rain stays).
-        if self.trick_room_turns > 0 {
-            entered[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        if speed_order.1 > 0 {
+            let (order, len) = speed_order;
+            entered[..n].sort_by_key(|e| order[..len].iter().position(|o| *o == (e.1, e.2)));
         } else {
-            entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            for e in &mut entered[..n] {
+                let tw = self.side(e.1).conditions.tailwind_turns > 0;
+                e.0 = self
+                    .side(e.1)
+                    .active_mon(e.2 as usize)
+                    .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
+                    .unwrap_or(0);
+            }
+            // Under Trick Room PS's speed is `10000 - spe` (sim/pokemon.ts:641
+            // getActionSpeed), so the slower replacement's onStart runs first
+            // (Torkoal's Drought before Pelipper's Drizzle -> rain stays).
+            if self.trick_room_turns > 0 {
+                entered[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            } else {
+                entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            }
+            let mut len = 0;
+            for e in &entered[..n] {
+                speed_order.0[len] = (e.1, e.2);
+                len += 1;
+            }
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() as u8 {
+                    if len < 4 && !speed_order.0[..len].contains(&(side, slot)) {
+                        speed_order.0[len] = (side, slot);
+                        len += 1;
+                    }
+                }
+            }
+            speed_order.1 = len;
+        }
+        let mut item_order = [(SideRef::P1, 0u8); 4];
+        for (o, e) in item_order.iter_mut().zip(&entered[..n]) {
+            *o = (e.1, e.2);
         }
         // Handlers sort by priority before Speed: abilities (0) all run
         // before the item handlers (seeds / Booster Energy / Room Service
@@ -6042,16 +6129,16 @@ self.trigger_emergency_exits();
         for &(_, side, slot) in &entered[..n] {
             self.shields_down_update(side, slot);
         }
-        // White Herb's onAnySwitchIn also fires for a holder already in.
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..self.format().active_count() as u8 {
-                if !entered[..n].iter().any(|e| e.1 == side && e.2 == slot) {
-                    crate::item::try_consume_white_herb(self, side, slot);
-                }
-            }
-        }
-        for &(_, side, slot) in &entered[..n] {
+        // The items' onStart (priority -1 seeds, Room Service), then White Herb's
+        // onAnySwitchIn at -2, which fires for a holder already in as well
+        // (data/items.ts).
+        self.defer_white_herb = true;
+        for &(side, slot) in &item_order[..n] {
             crate::item::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        for &(side, slot) in &speed_order.0[..speed_order.1] {
+            crate::item::try_consume_white_herb(self, side, slot);
         }
         // runSwitch's own eachEvent('Update').
         #[cfg(feature = "ps-rng")]
@@ -6354,6 +6441,11 @@ self.trigger_emergency_exits();
                 if let Some(v) = sub {
                     s.team[team_index as usize].volatiles.add(v);
                 }
+            }
+            // clearVolatile zeroes the leaver's boosts (sim/pokemon.ts): a delayed
+            // Future Sight from the bench reads them at the hit.
+            if outgoing_idx != team_index as usize {
+                s.team[outgoing_idx].boosts = [0; 7];
             }
         } else {
             return false;
@@ -7639,6 +7731,10 @@ self.trigger_emergency_exits();
             }
             return;
         }
+        // A wake-up or thaw in BeforeMove (Guts, Flare Boost read the live status).
+        if let Some(live) = self.side(actor_side).active_mon(actor_slot as usize) {
+            attacker.status = live.status;
+        }
         #[cfg(feature = "ps-rng")]
         {
             self.ps_move_used = true;
@@ -8200,6 +8296,17 @@ self.trigger_emergency_exits();
             pmon!(self, "-fail", actor_side, actor_slot);
             return;
         }
+        // A spread move whose target isn't among its targets names the last of
+        // them: Earthquake with no foes left hits the ally
+        // (getMoveTargets' retargetLastMove, sim/pokemon.ts:830-838).
+        if matches!(m.target, 5 | 6) {
+            let named = self.protocol.log().and_then(|l| l.move_target);
+            if !targets.iter().any(|&(s, sl)| named == Some((s as u8, sl))) {
+                if let Some(&(s, sl)) = targets.last() {
+                    self.p_retarget(s, sl);
+                }
+            }
+        }
         // Explosion / Self-Destruct / Misty Explosion (`selfdestruct:
         // 'always'`): the user faints before the hit, whatever the hit does
         // (sim/battle-actions.ts:500). The damage calc reads the snapshot.
@@ -8211,6 +8318,7 @@ self.trigger_emergency_exits();
             // selfdestruct 'always': battle.faint(pokemon) queues the user
             // before the hit (sim/battle-actions.ts useMoveInner).
             self.p_queue_faint_if_down(actor_side, actor_slot);
+            self.ps_note_hit_ko(actor_side, actor_slot);
         }
         // Resolve target redirection (Follow Me / Rage Powder, Lightning
         // Rod / Storm Drain). Pure read of self — no RNG draws here. Spread
@@ -8943,8 +9051,12 @@ self.trigger_emergency_exits();
                         d.fainted = true;
                     }
                     d.lost_focus |= capped > 0;
-                    if capped > 0 && tside != actor_side {
+                    // spreadDamage's hurtThisTurn, an ally's hit included (data/moves.ts
+                    // assurance; focuspunch condition onHit).
+                    if capped > 0 {
                         d.set_damaged_this_turn(true);
+                    }
+                    if capped > 0 && tside != actor_side {
                         let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
                         d.last_attacker = (aside_byte, actor_slot as u8);
                         d.last_attacker_category = m.category;
@@ -9878,54 +9990,6 @@ self.trigger_emergency_exits();
             {
                 def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
             }
-            // Sandstorm — Rock-type defenders get ×1.5 SpD while Sand
-            // is the active weather. PS `data/conditions.ts:sandstorm`
-            // `onModifySpD` priority 10:
-            //   if (pokemon.hasType('Rock') && pokemon.effectiveWeather() === 'sandstorm')
-            //     return this.modify(spd, 1.5);
-            // Applied to the defender's *effective* types (post-Tera) so
-            // a Tera-Rock mon also gets the boost; PS reads `hasType`
-            // which follows the same convention.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>.
-            // Mega Sol (Champions): while the attacker has it, PS
-            // `Pokemon.effectiveWeather` (sim/pokemon.ts) reports 'sunnyday'
-            // for Weather-sourced reads, so neither boost below applies.
-            let mega_sol_attacker =
-                attacker.effective_ability_id() == data::ability_id::MEGASOL;
-            if matches!(self.effective_weather(), crate::weather::Weather::Sand)
-                && m.category == 1
-                && !mega_sol_attacker
-            {
-                let (eff_types, eff_num) = defender.effective_types();
-                let is_rock = (0..eff_num as usize).any(|i| eff_types[i] == 12);
-                if is_rock {
-                    def_stats_ovr.spd =
-                        ((def_stats_ovr.spd as u32 * 3 / 2)
-                            .min(u16::MAX as u32)) as u16;
-                }
-            }
-            // Snow (gen 9) — Ice-type defenders get ×1.5 Def while Snowscape
-            // is the active weather. PS `data/conditions.ts:706` snowscape
-            // `onModifyDef` priority 10:
-            //   if (pokemon.hasType('Ice') && pokemon.effectiveWeather() === 'snowscape')
-            //     return this.modify(def, 1.5);
-            // Every Def read (onModifyDef): a physical move's, and a special
-            // move that hits Def (Psyshock / Psystrike / Secret Sword).
-            // Mirrors the Sandstorm Rock-SpD boost above; uses effective
-            // (post-Tera) types like PS hasType. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
-            if matches!(self.effective_weather(), crate::weather::Weather::Snow)
-                && m.category != 2
-                && !mega_sol_attacker
-            {
-                let (eff_types, eff_num) = defender.effective_types();
-                let is_ice = (0..eff_num as usize).any(|i| eff_types[i] == 5);
-                if is_ice {
-                    def_stats_ovr.def =
-                        ((def_stats_ovr.def as u32 * 3 / 2)
-                            .min(u16::MAX as u32)) as u16;
-                }
-            }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
             if defender.boosted_stat == 1 && m.category == 0 {
@@ -10102,6 +10166,15 @@ self.trigger_emergency_exits();
                     if self.plog() {
                         pmon!(self, "-enditem", actor_side, actor_slot, "|Normal Gem|[from] gem|[move] {}", m.name);
                     }
+                    // addVolatile('gem'), duration 1 (data/conditions.ts gem,
+                    // data/items.ts normalgem): in the residual's sort.
+                    #[cfg(feature = "ps-rng")]
+                    {
+                        let i = self.side(actor_side).active[actor_slot as usize] as usize;
+                        if i < 8 {
+                            self.ps_charge_volatile[actor_side as usize] |= 1 << i;
+                        }
+                    }
                     crate::ability::on_item_consumed(self, actor_side, actor_slot);
                 }
             }
@@ -10120,9 +10193,16 @@ self.trigger_emergency_exits();
                     && self.pursuit_intercepting,
                 ally_power_spot, ally_battery, steely_spirit_holders,
                 defender_friend_guarded,
-                // Analytic ×1.3: the attacker moves last iff no later action
-                // this turn is a move by a live mon (PS queue.willMove scan).
-                attacker_moves_last: !will_act,
+                // Analytic ×1.3: no other active mon will still move this turn
+                // (data/abilities.ts analytic: queue.willMove, null if fainted).
+                attacker_moves_last: ![SideRef::P1, SideRef::P2].into_iter().any(|sd| {
+                    (0..2usize).any(|sl| {
+                        matches!(pending_kind[sd as usize][sl], 1 | 2)
+                            && !(sd == actor_side && sl == actor_slot as usize)
+                            && !self.replaced_mid_turn[sd as usize][sl]
+                            && self.side(sd).active_mon(sl).is_some_and(|m| m.is_alive())
+                    })
+                }),
                 champions: self.champions,
                 // A resist berry's onSourceModifyDamage returns early on a hit its
                 // holder's Substitute takes (data/items.ts chopleberry et al.).
@@ -10751,7 +10831,38 @@ self.trigger_emergency_exits();
             actor_slot: slot,
             choice: Choice::Move { actor_slot: slot, move_slot: 3, target: None },
         };
-        self.resolve_move_with_pending(action, pending_kind, true);
+        // The called move runs the same hit steps: a spread or self-drop move's
+        // draws come in PS's step order.
+        #[cfg(feature = "ps-rng")]
+        let windowed = {
+            let inline = std::mem::replace(&mut self.ps_inline_hit_updates, false);
+            let w = self.ps_spread_window(action, pending_kind, true);
+            self.ps_inline_hit_updates = if w { false } else { inline };
+            w
+        };
+        #[cfg(not(feature = "ps-rng"))]
+        let windowed = false;
+        if !windowed {
+            self.resolve_move_with_pending(action, pending_kind, true);
+        }
+        // The called move's useMove runs its own hit loop, closing Update
+        // included (data/mods/champions/scripts.ts:575), inside the caller's hit.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && self.ps_loop_hits > 0 {
+            if windowed {
+                let dead = self.ps_hit_dead;
+                self.ps_hit_update();
+                self.ps_hit_dead = dead;
+            }
+            self.ps_hit_loop_faint_ends();
+            self.ps_loop_end_update(side, slot);
+            self.ps_loop_hits = 0;
+        }
+        // Back in the caller's own hit.
+        #[cfg(feature = "ps-rng")]
+        if windowed {
+            self.ps_inline_hit_updates = true;
+        }
         self.called_from = outer;
         self.called_ran = true;
         if let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -11680,9 +11791,12 @@ self.trigger_emergency_exits();
                 // data/mods/champions/scripts.ts hitStepMoveHitLoop).
                 || self.ps_status_sub_null
                 // Effects the snapshot cannot see: a stat swap, a called
-                // move, a pending drag, and a heal that fails with NOT_FAIL
-                // (data/moves.js healpulse / floralhealing).
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "psychup")
+                // move, a pending drag, a heal that fails with NOT_FAIL
+                // (data/moves.js healpulse / floralhealing, and the weather
+                // heals at full HP), and the moves whose onHit returns nothing
+                // even if it changed nothing.
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis" | "swallow"
+                    | "partingshot" | "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit")
                 || (matches!(m.slug, "roar" | "whirlwind")
                     && self.force_switch_flags.iter().flatten().any(|&f| f)))
         {
@@ -11967,10 +12081,15 @@ self.trigger_emergency_exits();
             let chip = (d.stats.hp / 8).max(1);
             (chip, busted_id)
         };
-        // Forme-change first (identical base stats — no recompute),
-        // then mark busted and apply the chip.
+        // Forme-change first, then mark busted and apply the chip. The base stats
+        // match, but setSpecies recomputes storedStats, ending a Power Split, and
+        // caches the raw Speed (sim/pokemon.ts setSpecies).
         if let Some(busted_id) = busted_id {
-            self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
+            self.set_forme(ctx.tside, ctx.tslot, busted_id, true);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_reset_speed(ctx.tside, ctx.tslot as usize);
+            }
         }
         if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
             d.disguise_busted = true;
@@ -12342,6 +12461,11 @@ self.trigger_emergency_exits();
             // down, sim/battle.ts:2332).
             dmg = ((dmg as u32 * 1024 + 2047) / 4096).max(1) as _;
         }
+        // An earlier hit of this move may have broken it (removeVolatile: a later
+        // hit lands, data/moves.ts substitute onTryPrimaryHit).
+        if let Some(sub) = self.side(ctx.tside).active_mon(ctx.tslot as usize).map(|d| d.substitute_hp()) {
+            ctx.defender.set_substitute_hp(sub);
+        }
         // A Substitute's whole hit runs in TryPrimaryHit, before the other targets' steps.
         let sub_takes_hit = ctx.defender.substitute_hp() > 0 && !is_sound_move(ctx.move_def.slug) && !ctx.attacker_infiltrates;
         if sub_takes_hit {
@@ -12504,6 +12628,12 @@ self.trigger_emergency_exits();
         // (Sheer Force ablation + target faint + sub absorption);
         // per-secondary vetoes / draws live inside
         // `apply_secondary_effect`.
+        // The move's volatile lands in runMoveEffects, before the secondaries
+        // (sim/battle-actions.ts spreadMoveHit): a partial trap's duration draw
+        // precedes them, the DamagingHit rolls and the hit's Update.
+        if !hit_sub && effective_dmg > 0 && alive_post {
+            self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, m, 1, Some((ctx.tside, ctx.tslot)));
+        }
         let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
         self.p_tag(crate::protocol::step::SECONDARY, ctx.tside, ctx.tslot);
         if decision != crate::secondary::SecondaryProcDecision::Skip {
@@ -12602,6 +12732,7 @@ self.trigger_emergency_exits();
                         }
                     }
                 }
+                self.ps_note_hit_ko(ctx.actor_side, ctx.actor_slot);
                 if self.plog() {
                     let of = self.p_ident(ctx.tside, ctx.tslot);
                     self.p_sub(1);
@@ -13021,18 +13152,17 @@ self.trigger_emergency_exits();
             // computed from the target's remaining HP, not the overkill.
             result.damage_dealt = app.effective_dmg.min(t.current_hp);
             t.current_hp = t.current_hp.saturating_sub(app.effective_dmg);
-            // Mark this target as "damaged this turn" so
-            // Avalanche / Revenge / Counter (when wired) see
-            // a true source. Cross-side gate: opp-vs-self
-            // damage is the only case; self-targeted damaging
-            // moves never go through this branch (status path).
             t.lost_focus |= app.effective_dmg > 0;
             // Berserk reads an ally's spread hit too (sim/pokemon.ts getLastAttackedBy).
             if app.effective_dmg > 0 && !cross_side {
                 t.last_damage_taken = app.effective_dmg;
             }
-            if app.effective_dmg > 0 && cross_side {
+            // Mark this target as "damaged this turn" (spreadDamage's
+            // hurtThisTurn): an ally's hit counts too.
+            if app.effective_dmg > 0 {
                 t.set_damaged_this_turn(true);
+            }
+            if app.effective_dmg > 0 && cross_side {
                 // Record attacker for Counter / Mirror Coat /
                 // Stamina / Anger Point / Cotton Down /
                 // Berserk etc. Side byte: 0=P1, 1=P2.
@@ -13928,6 +14058,12 @@ self.trigger_emergency_exits();
                 pipeline.current = raw;
                 pipeline.current
             } else {
+                // getDamage rolls whatever Shell Armor's CriticalHit then says
+                // (sim/battle-actions.ts), as on the first hit.
+                #[cfg(feature = "ps-rng")]
+                if inv.crit_immune && self.force_crit.is_none() && self.rng.is_ps() {
+                    let _ = self.rng.crit_with_stage(inv.crit_stage);
+                }
                 let hc = if inv.crit_immune {
                     false
                 } else if let Some(v) = self.force_crit {
@@ -13958,6 +14094,15 @@ self.trigger_emergency_exits();
             if hit_idx == 0 {
                 inv.base_hit_dmg
             } else {
+                #[cfg(feature = "ps-rng")]
+                if inv.crit_immune
+                    && inv.fixed_dmg_snapshot.is_none()
+                    && inv.move_id != data::move_id::SURGINGSTRIKES
+                    && self.force_crit.is_none()
+                    && self.rng.is_ps()
+                {
+                    let _ = self.rng.crit_with_stage(inv.crit_stage);
+                }
                 let hc = if inv.fixed_dmg_snapshot.is_some() || inv.crit_immune {
                     false
                 } else if inv.move_id == data::move_id::SURGINGSTRIKES {
@@ -16033,9 +16178,19 @@ self.trigger_emergency_exits();
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
             // No effect of their own to fail (Splash onTryHit, Haze onHitField).
             "splash" | "celebrate" | "holdhands" | "haze" => true,
+            // onHit returns nothing, so hitting a target at -6/-6 still counts
+            // (data/moves.ts partingshot; runMoveEffects' didSomething).
+            #[cfg(feature = "ps-rng")]
+            "partingshot" if !self.ps_status_missed => true,
+            // onHit copies the stages, even all zero, and returns nothing.
+            "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit" => true,
             _ => self.status_effect_snapshot() != *before,
         };
         if ok { MoveResult::Succeeded } else { MoveResult::Failed }
+    }
+
+    pub(crate) fn status_acc_pair(&self) -> Option<(SideRef, u8, SideRef, u8)> {
+        self.status_acc_pair
     }
 
     /// Whether a foe's Protect blocks every target of a status move
@@ -16188,7 +16343,7 @@ self.trigger_emergency_exits();
     /// Safety Goggles — PS `data/items.ts:safetygoggles`:
     ///   `onTryHit(pokemon, source, move) { if (move.flags['powder']) return null; }`
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Safety_Goggles>.
-    fn target_is_powder_immune(&self, side: SideRef, slot: u8) -> bool {
+    pub(crate) fn target_is_powder_immune(&self, side: SideRef, slot: u8) -> bool {
         let m = match self.side(side).active_mon(slot as usize) {
             Some(m) => m,
             None => return false,
@@ -16821,6 +16976,10 @@ self.trigger_emergency_exits();
     /// the encored move when it landed (`champions_encore_requeue`), so the
     /// slots match here and nothing is drawn twice.
     fn encore_override(&mut self, side: SideRef, slot: u8, move_slot: u8, target: Option<Target>) -> (u8, Option<Target>) {
+        // Champions removes onOverrideAction (data/mods/champions/moves.ts encore).
+        if self.champions {
+            return (move_slot, target);
+        }
         let Some(m) = self.side(side).active_mon(slot as usize) else { return (move_slot, target) };
         let enc = m.encored_move_slot();
         if !m.is_alive() || m.encore_turns() == 0 || enc == 255 || enc == move_slot
@@ -16882,6 +17041,10 @@ self.trigger_emergency_exits();
                     m.consume_item();
                 }
             }
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.must_recharge) {
+            self.ps_recharge_changed[ts as usize] |= 1 << tslot;
         }
         let target = self.random_target_for(ts, tslot, mid);
         // resolveAction then runs getActionSpeed -> getTarget
@@ -17694,9 +17857,12 @@ self.trigger_emergency_exits();
                     ally_power_spot: false,
                     ally_battery: false,
                     steely_spirit_holders: 0,
-                    // Delayed Future Sight / Doom Desire hit — no Friend Guard
-                    // ally check (slot-condition resolution).
-                    defender_friend_guarded: false,
+                    // Friend Guard's onAnyModifyDamage applies to any move hit
+                    // (data/abilities.ts friendguard).
+                    defender_friend_guarded: (0..self.format().active_count()).any(|s| {
+                        s != tslot as usize
+                            && self.side(tside).active_mon(s).is_some_and(|ally| ally.is_alive() && ally.effective_ability_id() == data::ability_id::FRIENDGUARD)
+                    }),
                     // The delayed hit has no live attacker in the turn queue;
                     // Analytic does not apply.
                     attacker_moves_last: false,
@@ -17713,6 +17879,23 @@ self.trigger_emergency_exits();
                     self.p_hit_messages(src_side, 0, tside, tslot, entry.move_id, &attacker, &defender, ps_crit);
                 }
             }
+            // trySpreadMoveHit's TryPrimaryHit: a Substitute takes it, unless the
+            // source's Infiltrator sets `infiltrates` (data/conditions.ts futuremove,
+            // data/moves.ts substitute).
+            let infiltrates = self.side(src_side).team[src_idx].effective_ability_id() == data::ability_id::INFILTRATOR;
+            let sub = self.side(tside).active_mon(tslot as usize).map_or(0, |d| d.substitute_hp());
+            if sub > 0 && !infiltrates {
+                let left = sub.saturating_sub(dmg);
+                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    d.set_substitute_hp(left);
+                }
+                if left == 0 {
+                    pmon!(self, "-end", tside, tslot, "|Substitute");
+                } else {
+                    pmon!(self, "-activate", tside, tslot, "|move: Substitute|[damage]");
+                }
+                return;
+            }
             // A future move no longer removes Endure before it hits
             // (data/conditions.ts futuremove, PS 0ac140354).
             let endured = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
@@ -17721,8 +17904,13 @@ self.trigger_emergency_exits();
             if endured {
                 pmon!(self, "-activate", tside, tslot, "|move: Endure");
             }
+            let capped = if endured { self.side(tside).active_mon(tslot as usize).map_or(0, |d| d.current_hp - 1) } else { dmg };
+            // spreadDamage's onDamage: Focus Band, Focus Sash (data/items.ts).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            let capped = crate::item::on_before_damage(self, tside, tslot, capped, &mut rng).unwrap_or(capped);
+            self.rng = rng;
             if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                let dealt = if endured { d.current_hp - 1 } else { dmg };
+                let dealt = capped;
                 d.current_hp = d.current_hp.saturating_sub(dealt);
                 if d.current_hp == 0 {
                     d.fainted = true;
@@ -23737,6 +23925,7 @@ self.trigger_emergency_exits();
                             .active_mon(actor_slot as usize)
                             .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
                         let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                        self.status_spread_rolls = ntgt > 1;
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                             let Some(t) = self.side(ts).active_mon(tslot as usize) else { continue };
                             // hitStepInvulnerabilityEvent, then hitStepTryHitEvent's Protect:
@@ -23769,12 +23958,14 @@ self.trigger_emergency_exits();
                             acc_hit[i] = self.rolled_accuracy_passed(m);
                             any_hit |= acc_hit[i];
                         }
+                        self.status_spread_rolls = false;
                         #[cfg(feature = "ps-rng")]
                         {
                             self.ps_status_missed = any_rolled && !any_hit;
                         }
                         let _ = (any_rolled, any_hit);
                     }
+                    let mut any_moved = false;
                     for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
                         if !acc_hit[i] {
                             continue;
@@ -23816,6 +24007,7 @@ self.trigger_emergency_exits();
                         if k > 0 {
                             let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                             self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
+                            any_moved |= self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.boosts != before);
                             if ts != actor_side {
                                 self.after_foe_drop(ts, tslot, before, true);
                             } else {
@@ -23826,11 +24018,14 @@ self.trigger_emergency_exits();
                         }
                     }
                     // A spread status move's `[spread]` (sim/battle-actions.ts:617-618).
+                    // A boost that moves nothing is a false hit; if every hit is,
+                    // the loop's `damage.fill(false)` empties the list
+                    // (data/mods/champions/scripts.ts hitStepMoveHitLoop).
                     if self.plog() && ntgt > 1 {
                         let mut attr = String::from("[spread] ");
                         let mut first = true;
                         for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
-                            if acc_hit[i] {
+                            if acc_hit[i] && any_moved {
                                 if !first {
                                     attr.push(',');
                                 }
@@ -25123,9 +25318,10 @@ fn apply_secondary_effect(
 /// this move, which isn't filtered by the target's Shield Dust or Covert Cloak.
 fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8, attacker_side: SideRef, attacker_slot: u8, move_slug: &str) -> bool {
     let Some(a) = battle.side(attacker_side).active_mon(attacker_slot as usize) else { return false };
-    let source = a.is_alive()
-        && (a.effective_ability_id() == data::ability_id::STENCH
-            || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG));
+    // onModifyMove ran before the hit: a user that self-destructed still rolls
+    // (data/abilities.ts stench, data/items.ts kingsrock).
+    let source = a.effective_ability_id() == data::ability_id::STENCH
+        || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG);
     let category = data::MOVES.iter().find(|mv| mv.slug == move_slug).map_or(2, |mv| mv.category);
     let breaks_mold = matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
     let filtered = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|d| {
