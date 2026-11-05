@@ -21124,15 +21124,25 @@ self.trigger_emergency_exits();
             data::move_id::TEATIME => {
                 // data/moves.ts teatime onHitField.
                 let n = self.format().active_count() as u8;
-                let _ = n;
-                let (order, k) = self.actives_by_speed();
+                // getAllActive's order, and each mon's TryHit (Good as Gold).
                 let mut eat = [(SideRef::P1, 0u8); 4];
                 let mut e = 0;
-                for &(s2, sl) in &order[..k] {
+                let breaks_mold = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                    matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE)
+                });
+                for (s2, sl) in [(SideRef::P1, 0u8), (SideRef::P1, 1), (SideRef::P2, 0), (SideRef::P2, 1)] {
+                    if sl >= n {
+                        continue;
+                    }
                     let Some(t) = self.side(s2).active_mon(sl as usize) else { continue };
                     if !t.is_alive() { continue; }
                     if t.semi_invuln != 0 {
                         self.p_miss(actor_side, actor_slot, s2, sl);
+                    } else if t.effective_ability_id() == data::ability_id::GOODASGOLD
+                        && !breaks_mold
+                        && (s2, sl) != (actor_side, actor_slot)
+                    {
+                        pmon!(self, "-immune", s2, sl, "|[from] ability: Good as Gold");
                     } else if t.item_id != u16::MAX && data::ITEMS[t.item_id as usize].is_berry {
                         eat[e] = (s2, sl);
                         e += 1;
