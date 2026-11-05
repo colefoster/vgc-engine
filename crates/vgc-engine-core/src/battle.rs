@@ -20310,6 +20310,33 @@ self.trigger_emergency_exits();
                     self.eat_item_forced(actor_side, actor_slot);
                 }
             }
+            data::move_id::TEATIME => {
+                // data/moves.ts teatime onHitField.
+                let n = self.format().active_count() as u8;
+                let _ = n;
+                let (order, k) = self.actives_by_speed();
+                let mut eat = [(SideRef::P1, 0u8); 4];
+                let mut e = 0;
+                for &(s2, sl) in &order[..k] {
+                    let Some(t) = self.side(s2).active_mon(sl as usize) else { continue };
+                    if !t.is_alive() { continue; }
+                    if t.semi_invuln != 0 {
+                        self.p_miss(actor_side, actor_slot, s2, sl);
+                    } else if t.item_id != u16::MAX && data::ITEMS[t.item_id as usize].is_berry {
+                        eat[e] = (s2, sl);
+                        e += 1;
+                    }
+                }
+                plog!(self, "|-fieldactivate|move: Teatime");
+                if e == 0 {
+                    pmon!(self, "-fail", actor_side, actor_slot, "|move: Teatime");
+                    self.p_attr("[still]");
+                    return;
+                }
+                for &(s2, sl) in &eat[..e] {
+                    self.eat_item_forced(s2, sl);
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
