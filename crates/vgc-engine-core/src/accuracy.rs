@@ -156,6 +156,18 @@ pub(crate) fn effective_accuracy(
         eff_acc = (eff_acc * 4915 / 4096).min(100);
         consumed_micle = true;
     }
+    // Compound Eyes (data/abilities.ts compoundeyes onSourceModifyAccuracy).
+    if attacker.effective_ability_id() == data::ability_id::COMPOUNDEYES {
+        eff_acc = (eff_acc * 5325 + 2048 - 1) / 4096;
+    }
+    // Victory Star, the user's or its partner's (data/abilities.ts victorystar onAnyModifyAccuracy).
+    let n_active = battle.format().active_count();
+    let stars = (0..n_active).filter(|&sl| {
+        battle.side(actor_side).active_mon(sl).is_some_and(|x| x.is_alive() && x.effective_ability_id() == data::ability_id::VICTORYSTAR)
+    }).count();
+    for _ in 0..stars {
+        eff_acc = (eff_acc * 4506 + 2048 - 1) / 4096;
+    }
     // Hustle — physical-only.
     if attacker.effective_ability_id() == data::ability_id::HUSTLE && m.category == 0 {
         eff_acc = eff_acc * 3277 / 4096;
