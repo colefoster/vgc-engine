@@ -1767,7 +1767,12 @@ pub(crate) fn calculate_damage_with_bp(
     // via `m.recoil_num > 0`; crash damage (Jump Kick / High Jump
     // Kick miss penalty) is not modelled yet, so skipped.
     // Emboar / Staraptor / Pawmot use this.
-    if m.recoil_num > 0
+    // data/abilities.ts reckless: `move.recoil || move.hasCrashDamage`.
+    if (m.recoil_num > 0
+        || matches!(
+            move_id,
+            data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK | data::move_id::AXEKICK | data::move_id::SUPERCELLSLAM
+        ))
         && attacker.effective_ability_id() != u16::MAX
         && attacker.effective_ability_id() == data::ability_id::RECKLESS
     {
