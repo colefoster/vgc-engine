@@ -18211,6 +18211,14 @@ self.trigger_emergency_exits();
         {
             return;
         }
+        // hitStepInvulnerabilityEvent: a target in Fly or Phantom Force dodges, and
+        // `[miss]` lands on the last move line (sim/battle-actions.ts).
+        if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.semi_invuln != 0 && d.effective_ability_id() != data::ability_id::NOGUARD)
+            && self.side(src_side).team[src_idx].effective_ability_id() != data::ability_id::NOGUARD
+        {
+            self.p_future_miss(src_side, src_idx as u8, tside, tslot);
+            return;
+        }
         // trySpreadMoveHit's hitStepTypeImmunity: `-immune` and no rolls
         // (sim/battle-actions.ts:654-664).
         let immune_target = {
@@ -18268,6 +18276,7 @@ self.trigger_emergency_exits();
             if !immune {
                 self.rng.set_decision(RngDecision::Accuracy);
                 if self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
+                    self.p_future_miss(src_side, src_idx as u8, tside, tslot);
                     return;
                 }
                 self.rng.set_decision(RngDecision::Crit);
