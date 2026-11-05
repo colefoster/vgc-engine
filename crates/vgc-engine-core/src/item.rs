@@ -1820,6 +1820,11 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
     };
     if item_id == data::item_id::LEFTOVERS {
         let before = battle.side(side).active_mon(slot as usize).map_or(0, |m| m.current_hp);
+        // ripen onTryHeal announces itself for Leftovers without doubling it
+        // (data/abilities.ts).
+        if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN) {
+            pmon!(battle, "-activate", side, slot, "|ability: Ripen");
+        }
         // Heal 1/16 max HP, capped at max. Heal Block vetoes the recovery
         // (PS Heal Block `onTryHeal`).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
