@@ -22004,6 +22004,9 @@ self.trigger_emergency_exits();
                 if !is_ghost {
                     // Non-Ghost: self-target Atk +1 / Def +1 / Spe −1.
                     // PS key order: spe, atk, def (data/moves.ts curse self.boosts).
+                    let stuck = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                        a.boosts[4] <= -6 && a.boosts[0] >= 6 && a.boosts[1] >= 6
+                    });
                     self.apply_boosts(
                         actor_side,
                         actor_slot,
@@ -22011,6 +22014,9 @@ self.trigger_emergency_exits();
                         actor_side,
                         actor_slot,
                     );
+                    if stuck {
+                        self.p_try_fail(actor_side, actor_slot);
+                    }
                     // Mirror Herb on a foe copies the Atk/Def rise; White Herb
                     // / Eject Pack react to the Spe drop — mirror the
                     // self-boost site's item handling.
