@@ -13168,6 +13168,16 @@ self.trigger_emergency_exits();
                 }
             }
             self.rng = rng;
+        } else if sheer_force_stripped(self, ctx.actor_side, ctx.actor_slot, m.slug) {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            rng.set_decision(RngDecision::Secondary);
+            if !hit_sub {
+                apply_flinch_item_secondary(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
+            } else if adds_flinch_secondary(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug) {
+                // A Substitute's null target still rolls (sim/battle-actions.ts secondaries).
+                let _ = rng.percent_1_100();
+            }
+            self.rng = rng;
         }
 
         if ctx.move_id == data::move_id::FLING {
@@ -26254,7 +26264,14 @@ fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8,
         d.effective_item_id() == data::item_id::COVERTCLOAK
             || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
     });
-    source && category != 2 && !filtered && flinch_chance(move_slug, battle.champions).is_none()
+    source && category != 2 && !filtered && (sheer_force_stripped(battle, attacker_side, attacker_slot, move_slug) || flinch_chance(move_slug, battle.champions).is_none())
+}
+
+/// Sheer Force deleted the move's own secondaries, a flinch among them, so
+/// King's Rock's onModifyMove (priority -1, after it) finds none to dedupe.
+fn sheer_force_stripped(battle: &Battle, attacker_side: SideRef, attacker_slot: u8, move_slug: &str) -> bool {
+    battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force)
+        && data::MOVES.iter().find(|mv| mv.slug == move_slug).is_some_and(crate::damage::move_is_sheer_force_boosted)
 }
 
 fn apply_move_secondary(
@@ -26774,7 +26791,7 @@ fn apply_flinch_item_secondary(
             .unwrap_or(2);
         // category: 0 Physical, 1 Special, 2 Status. Skip Status moves and
         // moves that already roll a flinch (PS's dedupe guard).
-        if move_category != 2 && flinch_chance(move_slug, battle.champions).is_none() {
+        if move_category != 2 {
             // PS appends King's Rock's flinch at onModifyMovePriority -1, and
             // Serene Grace (-2) runs after, so its doubling DOES apply to the
             // appended 10% flinch. `sg` is a no-op without Serene Grace.
