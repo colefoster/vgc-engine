@@ -13156,7 +13156,7 @@ self.trigger_emergency_exits();
                 // the KO'd target or the Substitute's `null`). Draws only.
                 // King's Rock's appended flinch rolls the same way.
                 #[cfg(feature = "ps-rng")]
-                let flinch_roll = rng.is_ps() && adds_flinch_secondary(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug);
+                let flinch_roll = rng.is_ps() && adds_flinch_roll(self, (!hit_sub).then_some((ctx.tside, ctx.tslot)), ctx.actor_side, ctx.actor_slot, m.slug);
                 #[cfg(feature = "ps-rng")]
                 if rng.is_ps() {
                     for _ in 0..self.ps_target_secondary_rolls(m, ctx.tside, ctx.tslot, hit_sub, &ctx.attacker) {
@@ -13187,7 +13187,7 @@ self.trigger_emergency_exits();
             rng.set_decision(RngDecision::Secondary);
             if !hit_sub {
                 apply_flinch_item_secondary(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
-            } else if adds_flinch_secondary(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug) {
+            } else if adds_flinch_roll(self, None, ctx.actor_side, ctx.actor_slot, m.slug) {
                 // A Substitute's null target still rolls (sim/battle-actions.ts secondaries).
                 let _ = rng.percent_1_100();
             }
@@ -26290,6 +26290,11 @@ fn apply_secondary_effect(
 /// The attacker's King's Rock, Razor Fang or Stench adds a flinch secondary to
 /// this move, which isn't filtered by the target's Shield Dust or Covert Cloak.
 fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8, attacker_side: SideRef, attacker_slot: u8, move_slug: &str) -> bool {
+    adds_flinch_roll(battle, Some((target_side, target_slot)), attacker_side, attacker_slot, move_slug)
+}
+
+/// `target` None: a Substitute's null target, whose ModifySecondaries no ability answers.
+fn adds_flinch_roll(battle: &Battle, target: Option<(SideRef, u8)>, attacker_side: SideRef, attacker_slot: u8, move_slug: &str) -> bool {
     let Some(a) = battle.side(attacker_side).active_mon(attacker_slot as usize) else { return false };
     // onModifyMove ran before the hit: a user that self-destructed still rolls
     // (data/abilities.ts stench, data/items.ts kingsrock).
@@ -26297,7 +26302,7 @@ fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8,
         || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG);
     let category = data::MOVES.iter().find(|mv| mv.slug == move_slug).map_or(2, |mv| mv.category);
     let breaks_mold = matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
-    let filtered = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|d| {
+    let filtered = target.and_then(|(s, sl)| battle.side(s).active_mon(sl as usize)).is_some_and(|d| {
         d.effective_item_id() == data::item_id::COVERTCLOAK
             || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
     });
