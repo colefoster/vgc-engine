@@ -12,6 +12,7 @@ vgc-engine-data = { workspace = true }
 vgc-engine-replay = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = "1"
 
 [features]
 # Enables the `accuracy psrng` mode (engine on PS's own PRNG). See
@@ -25,6 +26,11 @@ path = "src/main.rs"
 [[bin]]
 name = "accuracy"
 path = "src/bin/accuracy.rs"
+
+[[bin]]
+name = "save_load_gate"
+path = "src/bin/save_load_gate.rs"
+required-features = ["ps-rng"]
 
 [[bin]]
 name = "resume_gate"

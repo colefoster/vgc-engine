@@ -17,6 +17,8 @@
 use std::collections::{HashMap, VecDeque};
 
 pub mod accuracy;
+#[cfg(feature = "ps-rng")]
+pub mod save_load;
 
 use serde::Deserialize;
 use vgc_engine_core::data;

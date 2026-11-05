@@ -335,11 +335,11 @@ pub struct Battle {
     pub(crate) struggle_zero_hit: bool,
     /// Per active seat (side * 2 + slot): the seats that damaged it this turn
     /// (Pokemon.attackedBy, for Avalanche and Revenge).
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_damaged_by: [u8; 4],
     /// Damage a Substitute absorbed during the current move, which Shell Bell's
     /// move.totalDamage doesn't count.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) move_sub_absorbed: u16,
     /// The format doesn't enforce legal abilities, so requests don't hint at a
     /// foe's possible trapping abilities (sim/battle.ts getRequests).
@@ -365,7 +365,7 @@ pub struct Battle {
     white_herb_move_defer: bool,
     /// The current move hit a Disguise (no damage dealt, but PS's
     /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
-    #[serde(skip)]
+    #[serde(default)]
     disguise_hit_this_move: bool,
     /// Set while the residual action runs: PS's action queue is empty
     /// then, which Cud Chew's onEatItem reads (`!this.queue.peek()`).
@@ -378,23 +378,23 @@ pub struct Battle {
     pub(crate) unnerve_unstarted: u8,
     /// The status move being resolved cannot miss its target (Glaive Rush
     /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
-    #[serde(skip)]
+    #[serde(default)]
     status_sure_hit: bool,
     /// The status move's net accuracy stage against its resolved target
     /// (user accuracy minus target evasion, clamped to +-6), applied by
     /// `rolled_accuracy_passed`.
-    #[serde(skip)]
+    #[serde(default)]
     status_acc_boost: i8,
     /// The status move's user and target, and the pending-action map, for
     /// `accuracy::effective_accuracy` in `rolled_accuracy_passed`.
-    #[serde(skip)]
+    #[serde(default)]
     status_acc_pair: Option<(SideRef, u8, SideRef, u8)>,
     /// A spread status move rolling accuracy: PS `move.spreadHit`, so a miss
     /// names this roll's target and adds no `[miss]` (hitStepAccuracy,
     /// sim/battle-actions.ts). Log only.
     #[serde(skip)]
     pub(crate) status_spread_rolls: bool,
-    #[serde(skip)]
+    #[serde(default)]
     status_pending_kind: [[u8; 2]; 2],
     /// The status move in progress stops at a target's Substitute: no `bypasssub`
     /// (data/moves.ts substitute onTryPrimaryHit).
@@ -405,19 +405,19 @@ pub struct Battle {
     #[serde(skip, default = "no_move")]
     pub(crate) called_from: u16,
     /// A called move ran, for the caller's result.
-    #[serde(skip)]
+    #[serde(default)]
     called_ran: bool,
     /// PS `battle.lastMove` (sim/battle.ts clearActiveMove), for Copycat.
-    #[serde(skip, default = "no_move")]
+    #[serde(default = "no_move")]
     last_move_any: u16,
-    #[serde(skip, default = "no_move")]
+    #[serde(default = "no_move")]
     last_move_before: u16,
     /// Item thrown by Fling: its `-enditem` waits for the next Update
     /// (data/moves.ts fling condition onUpdate).
     #[serde(skip)]
     fling_pending: Option<(SideRef, u8, u16)>,
     /// data/moves.ts healingwish slot condition: `[side][slot]`.
-    #[serde(skip)]
+    #[serde(default)]
     healing_wish: [[bool; 2]; 2],
     pub config: BattleConfig,
     pub p1: Side,
@@ -483,13 +483,13 @@ pub struct Battle {
     #[serde(skip)]
     pub(crate) after_move_user: Option<(SideRef, u8, u8)>,
     /// Trick-or-Treat / Forest's Curse did not add its type this action.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) status_hit_failed: bool,
     /// Whether the multi-hit move's current hit (after the first) is a crit.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) last_hit_crit: bool,
     /// A status move stopped at the target's Substitute this action.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_status_sub_null: bool,
     /// An aborted Electric move's Charge ends once the pending self-hit lands.
     #[serde(default)]
@@ -513,7 +513,7 @@ pub struct Battle {
     /// This turn's fixed per-slot sort keys (Quick Claw, fractional
     /// priority, After You / Quash) for the gen-8+ re-sort. Rebuilt with
     /// every turn's queue.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) turn_keys: crate::order::TurnKeys,
     /// This turn's Quick Draw / Quick Claw outcomes per active slot, rolled
     /// as the choices commit (PS resolveAction, sim/battle-queue.ts:249) and
@@ -711,14 +711,14 @@ pub struct Battle {
     /// `eachEvent('WeatherChange' / 'TerrainChange')` PS runs on every
     /// change. `None` until the battle-start sequence arms it.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_field_seen: Option<(crate::weather::Weather, crate::terrain::Terrain)>,
     /// `ps-rng` only: hits the current move landed (`hitStepMoveHitLoop`
     /// iterations that reached spreadMoveHit), and whether its per-hit
     /// `eachEvent('Update')` is drawn inline (single-target) or after the
     /// spread window.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_loop_hits: u8,
     /// `ps-rng` only: the action Instruct queued with `prioritizeAction`,
     /// run after Instruct's own action ends (its Update and re-sort).
@@ -729,18 +729,18 @@ pub struct Battle {
     /// targetless `scripted` move (Counter, Mirror Coat, Metal Burst), PS's
     /// `targetLoc` for its later getTarget calls; 255 = none.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_scripted_pick: [[u8; 2]; 2],
     /// `ps-rng` only: per active slot, the copied moves of a transformed
     /// mon that fainted this turn (its moves revert on faint, but PS's
     /// queued action keeps the chosen move for the re-sort's getTarget);
     /// `[u16::MAX; 4]` = none.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_fainted_transform_moves: [[[u16; 4]; 2]; 2],
     /// Whether any mon in either team starts with Receiver / Power of
     /// Alchemy (`faint_events`); computed on first use.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) receiver_possible: Option<bool>,
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
@@ -748,27 +748,27 @@ pub struct Battle {
     /// `ps-rng` only: PS `Pokemon.speed` per team member, the cached Speed
     /// every speed sort reads. See [`Battle::ps_update_speed`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_speed_cache: [[i64; 6]; 2],
     /// `ps-rng` only: the current status move's accuracy roll missed.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_status_missed: bool,
     /// `ps-rng` only: active slots alive when the current action started
     /// (bit `side * 2 + slot`); see [`Battle::ps_hit_update`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_action_live: u8,
     /// `ps-rng` only: active slots at 0 HP at the current action's last
     /// per-hit Update (same bits); see [`Battle::ps_loop_end_update`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_hit_dead: u8,
     /// `ps-rng` only: team indices (bit per index, per side) that released
     /// a two-turn move this turn; their `twoturnmove` volatile lasts to the
     /// residual. See [`Battle::ps_residual_ties`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_twoturn_release: [u8; 2],
     /// `ps-rng` only: team indices (bit per index, per side) whose
     /// priorityChargeCallback or beforeTurnCallback added a duration-1
@@ -776,7 +776,7 @@ pub struct Battle {
     /// mirrorcoat), which lasts to the
     /// residual unless the mon leaves. See [`Battle::ps_residual_ties`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_charge_volatile: [u8; 2],
     /// `ps-rng` only: active slots (bit per slot, per side) whose queued
     /// 'recharge' action Champions Encore replaced this turn
@@ -789,18 +789,18 @@ pub struct Battle {
     /// actives whose status checkFainted set to 'fnt' at the end of an
     /// earlier turn (sim/battle.js:2066-2073): no status residual handler.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_status_fnt: [u8; 2],
     /// `ps-rng` only: the current action's move got past BeforeMove, so
     /// runMove ends with `runEvent('AfterMove')`; see
     /// [`Battle::ps_after_move_ties`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_move_used: bool,
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_commit_moves: ([(u8, u8); 4], u8),
     /// Keyed oracle: the move order PS's commitChoices queue.sort produced
     /// (`keyed_commit_sort`), applied before the first re-sort.
@@ -814,11 +814,11 @@ pub struct Battle {
     commit_switch_order: Option<([(u8, u8); 4], u8)>,
     /// `ps-rng` only: this turn's Mega Evolutions in commit-sort order.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_commit_megas: ([(u8, u8); 4], u8),
     /// `ps-rng` only: this turn's Terastallizations in commit-sort order.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_commit_teras: ([(u8, u8); 4], u8),
 }
 
