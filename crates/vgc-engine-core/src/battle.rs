@@ -22157,7 +22157,9 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((opp, slot)) = opp_target {
                     // gastroacid onTryHit: a cantsuppress ability fails the move.
-                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| ps_cantsuppress(current_ability(t))) {
+                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                        ps_cantsuppress(current_ability(t)) || t.volatiles.has(crate::pokemon::VolatileKind::GastroAcid)
+                    }) {
                         self.ps_status_failed();
                         return;
                     }
