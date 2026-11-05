@@ -186,7 +186,7 @@ pub fn type_resist_berry_fires(
     if requires_se {
         use crate::damage::TypeEff;
         let eff = crate::damage::effectiveness_for_move_type(move_id, move_type, defender);
-        if !matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+        if !matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
             return false;
         }
     }
@@ -1201,7 +1201,7 @@ pub fn on_damaging_hit(
                 move_type < 18
                     && matches!(
                         crate::damage::effectiveness_for_attack(a, move_id, move_type, d),
-                        TypeEff::DoubleX | TypeEff::QuadrupleX
+                        TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX
                     )
             }
             _ => false,
@@ -1235,7 +1235,7 @@ pub fn on_damaging_hit(
             };
             let eff = crate::damage::type_effectiveness(mv.type_, species);
             use crate::damage::TypeEff;
-            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
                 let before = battle.side(target_side).active_mon(target_slot as usize).map_or(0, |t| t.current_hp);
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
                     // Eaten even under Heal Block; `onTryHeal` vetoes the heal.

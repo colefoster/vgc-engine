@@ -7018,10 +7018,12 @@ self.trigger_emergency_exits();
             let eff = crate::damage::type_effectiveness(12, mon.species());
             let (num, den) = match eff {
                 crate::damage::TypeEff::Immune => (0, 1),
+                crate::damage::TypeEff::EighthX => (1, 8),
                 crate::damage::TypeEff::QuarterX => (1, 4),   // 1/8 * 1/4 = 1/32
                 crate::damage::TypeEff::HalfX => (1, 2),      // 1/8 * 1/2 = 1/16
                 crate::damage::TypeEff::Neutral => (1, 1),    // 1/8
                 crate::damage::TypeEff::DoubleX => (2, 1),    // 1/4
+                crate::damage::TypeEff::OctupleX => (8, 1),
                 crate::damage::TypeEff::QuadrupleX => (4, 1), // 1/2
             };
             (mon.stats.hp, num, den, mg)
@@ -10134,6 +10136,7 @@ self.trigger_emergency_exits();
                         eff,
                         crate::damage::TypeEff::DoubleX
                             | crate::damage::TypeEff::QuadrupleX
+                            | crate::damage::TypeEff::OctupleX
                     );
                     if !super_effective {
                         self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
