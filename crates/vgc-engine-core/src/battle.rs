@@ -312,6 +312,46 @@ pub struct WishEffect {
     pub heal: u16,
 }
 
+/// `Battle::ended`. JSON would print both `None` and `Some(None)` (a tie) as
+/// `null`, and a tied game would load as still running, so JSON writes the tie
+/// as `"Tie"`. bincode tells the two apart by itself.
+mod ended_serde {
+    use super::SideRef;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum Text {
+        Won(SideRef),
+        Tie(Tie),
+    }
+
+    #[derive(Serialize, Deserialize)]
+    enum Tie {
+        Tie,
+    }
+
+    pub fn serialize<S: Serializer>(v: &Option<Option<SideRef>>, s: S) -> Result<S::Ok, S::Error> {
+        if s.is_human_readable() && *v == Some(None) {
+            Tie::Tie.serialize(s)
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<SideRef>>, D::Error> {
+        if d.is_human_readable() {
+            Ok(match Option::<Text>::deserialize(d)? {
+                None => None,
+                Some(Text::Won(w)) => Some(Some(w)),
+                Some(Text::Tie(_)) => Some(None),
+            })
+        } else {
+            Option::<Option<SideRef>>::deserialize(d)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
     /// Opt-in PS protocol log (`crate::protocol`). Off unless the battle
@@ -587,6 +627,7 @@ pub struct Battle {
     pub(crate) wish_pending: [[Option<WishEffect>; 2]; 2],
     pub(crate) rng: Rng,
     pub(crate) turn: u32,
+    #[serde(with = "ended_serde")]
     pub(crate) ended: Option<Option<SideRef>>,
     /// Transient (step-scoped) bitset of absolute active slots that are
     /// targeted by ≥2 move-actions THIS turn — set just before each
