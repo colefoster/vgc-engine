@@ -8500,16 +8500,18 @@ self.trigger_emergency_exits();
         // Choice Band/Specs: ×1.5 to atk/spa of the attacker. Implemented
         // by cloning the attacker snapshot and scaling the stat in
         // place before passing to calculate_damage.
-        let mut atk_stats_ovr = attacker.stats;
-        let physical_move = m.category == 0;
+        let atk_stats_ovr = attacker.stats;
+        // The offensive stat's ModifyAtk / ModifySpA chain, applied once to
+        // the boosted stat in damage.rs (sim/battle-actions.ts getDamage).
+        // Body Press attacks with Def, which runs ModifyDef instead.
+        let mut atk_chain: u64 = 4096;
+        let physical_move = m.category == 0 && move_id != data::move_id::BODYPRESS;
         let special_move = m.category == 1;
         if attacker_item_id == data::item_id::CHOICEBAND && physical_move {
-            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
         }
         if attacker_item_id == data::item_id::CHOICESPECS && special_move {
-            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
         }
         // Pinch abilities — Overgrow / Blaze / Torrent / Swarm. PS
         // data/abilities.ts: `onModifyAtk` / `onModifySpA`
@@ -8533,12 +8535,8 @@ self.trigger_emergency_exits();
             if m.type_ == pt
                 && (attacker.current_hp as u32) * 3 <= attacker.stats.hp as u32
             {
-                if physical_move {
-                    atk_stats_ovr.atk =
-                        ((atk_stats_ovr.atk as u32 * 3 / 2).min(u16::MAX as u32)) as u16;
-                } else if special_move {
-                    atk_stats_ovr.spa =
-                        ((atk_stats_ovr.spa as u32 * 3 / 2).min(u16::MAX as u32)) as u16;
+                if physical_move || special_move {
+                    atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
                 }
             }
         }
@@ -8553,14 +8551,8 @@ self.trigger_emergency_exits();
         // i.e. floor((v * 5325 + 2047) / 4096). Apply that exact form
         // here so paradox-boosted damage matches PS bit-for-bit.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protosynthesis_(Ability)>.
-        let scale_off_13 = |v: u16| -> u16 {
-            (((v as u32 * 5325 + 2047) / 4096).min(u16::MAX as u32)) as u16
-        };
-        if attacker.boosted_stat == 0 && physical_move {
-            atk_stats_ovr.atk = scale_off_13(atk_stats_ovr.atk);
-        }
-        if attacker.boosted_stat == 2 && special_move {
-            atk_stats_ovr.spa = scale_off_13(atk_stats_ovr.spa);
+        if (attacker.boosted_stat == 0 && physical_move) || (attacker.boosted_stat == 2 && special_move) {
+            atk_chain = crate::damage::chain_modify(atk_chain, 5325, 4096);
         }
         // Hadron Engine: Iron Moth's signature — SpA ×5461/4096 (≈1.333)
         // on special moves while Electric Terrain is up. The ability also
@@ -8623,7 +8615,7 @@ self.trigger_emergency_exits();
                 m,
                 physical_move,
                 special_move,
-                &mut atk_stats_ovr,
+                &mut atk_chain,
             );
         }
         // Ruin abilities (gen 9 paradox quartet): Tablets of Ruin
@@ -8653,9 +8645,6 @@ self.trigger_emergency_exits();
         // reads its bit. Behavior is byte-identical, including PS's
         // per-target re-evaluation when a Ruin holder faints mid-spread-move
         // (the helper is still called per target-iter inside the loop below).
-        let scale_off_075 = |v: u16| -> u16 {
-            (((v as u32 * 3072 + 2047) / 4096).min(u16::MAX as u32)) as u16
-        };
         // Offensive Ruin: the attacker is the stat-owner, so it is excluded
         // only when IT holds the ability (PS `source.hasAbility(...)`); any
         // other holder on the field — including the attacker's own ally —
@@ -8665,13 +8654,13 @@ self.trigger_emergency_exits();
             && off_ruin.tablets
             && physical_move
         {
-            atk_stats_ovr.atk = scale_off_075(atk_stats_ovr.atk);
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 4);
         }
         if attacker_ability_id != data::ability_id::VESSELOFRUIN
             && off_ruin.vessel
             && special_move
         {
-            atk_stats_ovr.spa = scale_off_075(atk_stats_ovr.spa);
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 4);
         }
 
         // Water Bubble / Toxic Boost / Flare Boost — outlined into the
@@ -9945,9 +9934,13 @@ self.trigger_emergency_exits();
             if self.wonder_room_turns > 0 {
                 core::mem::swap(&mut def_stats_ovr.def, &mut def_stats_ovr.spd);
             }
-            if defender.effective_item_id() == data::item_id::ASSAULTVEST && m.category == 1 {
-                def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
-                    .min(u16::MAX as u32)) as u16;
+            // Psyshock's overrideDefensiveStat runs ModifyDef, not ModifySpD
+            // (sim/battle-actions.ts getDamage).
+            let reads_def = m.category == 0
+                || matches!(move_id, data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD);
+            let mut def_chain: u64 = 4096;
+            if defender.effective_item_id() == data::item_id::ASSAULTVEST && !reads_def {
+                def_chain = crate::damage::chain_modify(def_chain, 3, 2);
             }
             // Eviolite — PS `data/items.ts:eviolite` `onModifyDef` /
             // `onModifySpD` ×1.5 for NFE holders (any species whose
@@ -9957,13 +9950,7 @@ self.trigger_emergency_exits();
             // ×1.3 above (PS chains both modifiers).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eviolite>.
             if defender.effective_item_id() == data::item_id::EVIOLITE && defender.species().is_nfe {
-                if m.category == 0 {
-                    def_stats_ovr.def = ((def_stats_ovr.def as u32 * 3 / 2)
-                        .min(u16::MAX as u32)) as u16;
-                } else if m.category == 1 {
-                    def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
-                        .min(u16::MAX as u32)) as u16;
-                }
+                def_chain = crate::damage::chain_modify(def_chain, 3, 2);
             }
             // Defensive Ruin: Sword of Ruin (×0.75 Def) and Beads of Ruin
             // (×0.75 SpD). The DEFENDER is the stat-owner, so it is excluded
@@ -9978,23 +9965,20 @@ self.trigger_emergency_exits();
             let def_ruin = self.compute_ruin_flags();
             if defender.effective_ability_id() != data::ability_id::SWORDOFRUIN
                 && def_ruin.sword
-                && m.category == 0
+                && reads_def
             {
-                def_stats_ovr.def = scale_off_075(def_stats_ovr.def);
+                def_chain = crate::damage::chain_modify(def_chain, 3, 4);
             }
             if defender.effective_ability_id() != data::ability_id::BEADSOFRUIN
                 && def_ruin.beads
-                && m.category == 1
+                && !reads_def
             {
-                def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
+                def_chain = crate::damage::chain_modify(def_chain, 3, 4);
             }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
-            if defender.boosted_stat == 1 && m.category == 0 {
-                def_stats_ovr.def = scale_off_13(def_stats_ovr.def);
-            }
-            if defender.boosted_stat == 3 && m.category == 1 {
-                def_stats_ovr.spd = scale_off_13(def_stats_ovr.spd);
+            if (defender.boosted_stat == 1 && reads_def) || (defender.boosted_stat == 3 && !reads_def) {
+                def_chain = crate::damage::chain_modify(def_chain, 5325, 4096);
             }
             let def_conds = self.side(tside).conditions;
             // Infiltrator — PS data/abilities.ts:infiltrator `onModifyMove`
@@ -10187,6 +10171,8 @@ self.trigger_emergency_exits();
                 speed_stats,
                 attacker_stats: atk_stats_ovr,
                 defender_stats: def_stats_ovr,
+                attacker_stat_mod: atk_chain as u32,
+                defender_stat_mod: def_chain as u32,
                 pursuit_doubled: move_id == data::move_id::PURSUIT
                     && self.pursuit_intercepting,
                 ally_power_spot, ally_battery, steely_spirit_holders,
@@ -11353,50 +11339,40 @@ self.trigger_emergency_exits();
         m: &data::MoveDef,
         physical_move: bool,
         special_move: bool,
-        atk_stats_ovr: &mut crate::pokemon::FinalStats,
+        atk_chain: &mut u64,
     ) {
         let attacker_ability_id = attacker.effective_ability_id();
         if attacker_ability_id == data::ability_id::HADRONENGINE
             && special_move
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
         {
-            atk_stats_ovr.spa =
-                ((atk_stats_ovr.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 5461, 4096);
         }
         if attacker_ability_id == data::ability_id::ORICHALCUMPULSE
             && physical_move
             && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
         {
-            atk_stats_ovr.atk =
-                ((atk_stats_ovr.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 5461, 4096);
         }
         // Ruin abilities (Tablets/Vessel of Ruin) stay INLINE in
         // `resolve_move_with_pending` because their effect fires on
         // non-Ruin attackers when a foe holds the ability — so they can't
         // be gated on `attacker_ability_id` alone. Outlining them here
         // would either double-apply or skip the foe-side case.
-        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 {
-            if physical_move {
-                atk_stats_ovr.atk =
-                    ((atk_stats_ovr.atk as u32 * 2).min(u16::MAX as u32)) as u16;
-            } else if special_move {
-                atk_stats_ovr.spa =
-                    ((atk_stats_ovr.spa as u32 * 2).min(u16::MAX as u32)) as u16;
-            }
+        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 && (physical_move || special_move) {
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 2, 1);
         }
         if attacker_ability_id == data::ability_id::TOXICBOOST
             && physical_move
             && matches!(attacker.status, Status::Poison | Status::Toxic)
         {
-            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 3, 2);
         }
         if attacker_ability_id == data::ability_id::FLAREBOOST
             && special_move
             && matches!(attacker.status, Status::Burn)
         {
-            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 3, 2);
         }
     }
 
@@ -17871,7 +17847,7 @@ self.trigger_emergency_exits();
                     attacker_moves_last: false,
                     champions: self.champions,
                     defender_resist_berry: false,
-                    parental_bond_hit: false,
+                    parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0,
                 },
             )
         };
@@ -33557,11 +33533,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -37855,11 +37831,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);

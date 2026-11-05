@@ -40,3 +40,12 @@ fn a_round_moved_up_by_round_deals_double() {
     }
     assert!(doubled >= 7, "{doubled}/8");
 }
+
+#[test]
+fn a_stat_modifier_applies_to_the_boosted_stat() {
+    // sim/battle-actions.ts getDamage: calculateStat (the boost) truncates,
+    // then the ModifySpA chain rounds. 103 SpA at -6 is 25, x1.5 = 37; the
+    // other order gives 154 at -6 = 38.
+    let m = crate::damage::chain_modify(4096, 3, 2);
+    assert_eq!(crate::damage::apply_modifier(crate::damage::apply_boost(103, -6), m), 37);
+}
