@@ -17877,6 +17877,15 @@ self.trigger_emergency_exits();
         if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
             return None;
         }
+        // Champions: a non-Ghost's Curse targets itself (sim/battle-queue.ts resolveAction).
+        if mid == data::move_id::CURSE
+            && self.side(side).active_mon(slot as usize).is_some_and(|m| {
+                let (types, n) = m.effective_types();
+                !types[..n as usize].contains(&13)
+            })
+        {
+            return None;
+        }
         let actor_ref = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
         // adjacentAlly (code 2, sim/battle.ts:2503-2508): a sample over the
         // living adjacent allies; none in Singles or without one (no draw).
