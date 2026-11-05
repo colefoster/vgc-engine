@@ -12489,7 +12489,10 @@ self.trigger_emergency_exits();
                 let of_user = self.p_ident(ctx.actor_side, ctx.actor_slot);
                 let of_tgt = self.p_ident(ctx.tside, ctx.tslot);
                 let mv = crate::battle_protocol::move_name(ctx.move_id);
-                self.p_item_line("-enditem", ctx.tside, ctx.tslot, item_before, &format!("|[silent]|[from] move: {mv}|[of] {of_user}"));
+                // Only Thief has the `-enditem` (data/moves.ts covet, thief).
+                if ctx.move_id == data::move_id::THIEF {
+                    self.p_item_line("-enditem", ctx.tside, ctx.tslot, item_before, &format!("|[silent]|[from] move: {mv}|[of] {of_user}"));
+                }
                 self.p_item_line("-item", ctx.actor_side, ctx.actor_slot, item_before, &format!("|[from] move: {mv}|[of] {of_tgt}"));
             }
         }
