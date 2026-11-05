@@ -117,7 +117,7 @@ pub(crate) fn effective_accuracy(
     }
     // data/moves.ts lockon condition onSourceAccuracy.
     if attacker.volatiles.get(crate::pokemon::VolatileKind::LockOn)
-        .is_some_and(|v| v.payload == (tside as u8 as u32) << 1 | tslot as u32)
+        .is_some_and(|v| v.payload == (tside as u8 as u32) << 1 | tslot as u32 | (battle.side(tside).active[tslot as usize] as u32) << 8)
     {
         return AccuracyComputation { threshold: None, consumed_micle: false };
     }
