@@ -20337,6 +20337,26 @@ self.trigger_emergency_exits();
                     self.eat_item_forced(s2, sl);
                 }
             }
+            data::move_id::POWERSPLIT => {
+                // data/moves.ts powersplit onHit.
+                let Some((ts, tslot)) = opp_target else { return };
+                let (Some(u), Some(t)) = (
+                    self.side(actor_side).active_mon(actor_slot as usize).map(|m| m.stats),
+                    self.side(ts).active_mon(tslot as usize).map(|m| m.stats),
+                ) else { return };
+                let atk = ((u.atk as u32 + t.atk as u32) / 2) as u16;
+                let spa = ((u.spa as u32 + t.spa as u32) / 2) as u16;
+                for (sd, sl) in [(actor_side, actor_slot), (ts, tslot)] {
+                    if let Some(x) = self.side_mut(sd).active_mon_mut(sl as usize) {
+                        x.stats.atk = atk;
+                        x.stats.spa = spa;
+                    }
+                }
+                if self.plog() {
+                    let of = self.p_ident(ts, tslot);
+                    pmon!(self, "-activate", actor_side, actor_slot, "|move: Power Split|[of] {of}");
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
