@@ -11373,6 +11373,10 @@ self.trigger_emergency_exits();
     /// check and `trueDuration--`. No order of its own, so after every other
     /// handler (sim/battle.ts fieldEvent).
     fn locked_move_residual(&mut self) {
+        let locked = |sd: &Side| sd.active.iter().any(|&i| sd.team.get(i as usize).is_some_and(|a| a.lockin_turns != 0));
+        if !locked(&self.p1) && !locked(&self.p2) {
+            return;
+        }
         let (order, k) = self.actives_by_speed();
         for &(side, slot) in &order[..k] {
             let Some(a) = self.side(side).active_mon(slot as usize) else { continue };
@@ -20236,10 +20240,22 @@ self.trigger_emergency_exits();
         (order, k)
     }
 
+    /// Whether a live active has an effective ability `f` accepts.
+    #[inline]
+    fn any_active_ability(&self, f: impl Fn(u16) -> bool) -> bool {
+        [&self.p1, &self.p2].iter().any(|sd| {
+            sd.active.iter().any(|&i| sd.team.get(i as usize).is_some_and(|m| m.is_alive() && f(m.effective_ability_id())))
+        })
+    }
+
     fn eot_cure_abilities(&mut self) {
         let n = self.format().active_count() as u8;
         // fieldEvent runs the handlers by speed, so their draws (Moody, Shed Skin,
         // Harvest, Healer) come in that order (sim/battle.ts fieldEvent).
+        // on_residual_cures acts on these alone: skip the Speed sort without them.
+        if !self.plog() && !self.any_active_ability(|a| matches!(a, data::ability_id::SHEDSKIN | data::ability_id::HYDRATION | data::ability_id::HEALER)) {
+            return;
+        }
         let (order, k) = self.residual_speed_order();
         for &(side, slot) in &order[..k] {
             let _ = n;
@@ -20257,6 +20273,22 @@ self.trigger_emergency_exits();
         let n = self.format().active_count() as u8;
         // fieldEvent runs the handlers by speed, so their draws (Moody, Shed Skin,
         // Harvest, Healer) come in that order (sim/battle.ts fieldEvent).
+        // on_residual acts on these alone: skip the Speed sort without them.
+        if !self.plog()
+            && !self.any_active_ability(|a| {
+                matches!(
+                    a,
+                    data::ability_id::PICKUP
+                        | data::ability_id::CUDCHEW
+                        | data::ability_id::SLOWSTART
+                        | data::ability_id::HARVEST
+                        | data::ability_id::SPEEDBOOST
+                        | data::ability_id::MOODY
+                )
+            })
+        {
+            return;
+        }
         let (order, k) = self.residual_speed_order();
         for &(side, slot) in &order[..k] {
             let _ = n;
