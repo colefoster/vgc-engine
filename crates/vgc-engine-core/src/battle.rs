@@ -11054,6 +11054,8 @@ self.trigger_emergency_exits();
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             crate::item::eat_effect(self, ts, tslot, item, &mut rng, Some((ctx.actor_side, ctx.actor_slot)));
             self.rng = rng;
+            // fling onHit's runEvent('EatItem') (data/moves.ts fling).
+            crate::item::on_eat_item_event(self, ts, tslot, item, Some((ctx.actor_side, ctx.actor_slot)));
         } else if item == data::item_id::WHITEHERB {
             let mut any = false;
             if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
@@ -12295,6 +12297,7 @@ self.trigger_emergency_exits();
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::item::cud_chew_reeat(self, ctx.actor_side, ctx.actor_slot, berry, &mut rng);
                 self.rng = rng;
+                crate::item::on_cheek_pouch(self, ctx.actor_side, ctx.actor_slot, berry, None);
             }
         }
         if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) {
