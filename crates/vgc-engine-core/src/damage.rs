@@ -2348,6 +2348,16 @@ pub(crate) fn calculate_damage_with_bp(
         d = (d * 2).max(1);
     }
 
+    // Grass Pelt — PS data/abilities.ts grasspelt onModifyDef: chainModify(1.5) in
+    // Grassy Terrain, whoever is grounded. Flagged `breakable: 1`.
+    if physical
+        && defender.effective_ability_id() == data::ability_id::GRASSPELT
+        && matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
+        && !attacker_breaks_mold_for_offense
+    {
+        d = (d * 6144 / 4096).max(1);
+    }
+
     // Heatproof — PS data/abilities.ts:heatproof onSourceModifyAtk /
     // onSourceModifySpA: chainModify(0.5) on Fire moves. PS applies
     // this AFTER the stage boost (the chain runs on the post-stage stat
