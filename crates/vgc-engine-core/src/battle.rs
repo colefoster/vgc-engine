@@ -12020,7 +12020,7 @@ self.trigger_emergency_exits();
         }
         // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
         // hit (data/moves.ts outrage, data/conditions.ts lockedmove onStart / onRestart).
-        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH) {
+        if matches!(ctx.move_id, data::move_id::OUTRAGE | data::move_id::PETALDANCE | data::move_id::THRASH | data::move_id::RAGINGFURY) {
             self.locked_move_self_drop(ctx.actor_side, ctx.actor_slot, ctx.move_id);
         }
         if hit_sub {
