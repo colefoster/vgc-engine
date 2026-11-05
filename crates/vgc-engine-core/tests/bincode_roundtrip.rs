@@ -2,7 +2,7 @@
 //! `to_bytes` / `from_bytes`. bincode is not self-describing, so any
 //! `skip_serializing_if` on a `Battle` field breaks deserialization.
 
-use vgc_engine_core::{Battle, BattleConfig, Format, TeamBuilder};
+use vgc_engine_core::{Battle, BattleConfig, Format, TeamBuilder, Terrain};
 
 const TEAM: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["tackle"]},{"species":"chansey","level":50,"ability":"naturalcure","nature":"hardy","moves":["splash"]},{"species":"cramorant","level":50,"ability":"gulpmissile","nature":"hardy","moves":["surf"]}]"#;
 
@@ -39,4 +39,20 @@ fn a_tied_game_stays_over_through_json_and_bincode() {
     assert_eq!(serde_json::from_str::<Battle>(&json).unwrap().winner(), Some(None));
     let bytes = bincode::serialize(&b).unwrap();
     assert_eq!(bincode::deserialize::<Battle>(&bytes).unwrap().winner(), Some(None));
+}
+
+/// Reloading is not a terrain change: Mimicry must not retype its holder over
+/// a later Reflect Type.
+#[test]
+fn a_reload_does_not_rerun_mimicry() {
+    let team = TEAM.replace("thickfat", "mimicry");
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 7 },
+        TeamBuilder::from_json(&team).unwrap(),
+        TeamBuilder::from_json(TEAM).unwrap(),
+    );
+    b.set_terrain(Terrain::Electric);
+    let i = b.p1.active[0] as usize;
+    b.p1.team[i].set_type_override(10, None);
+    roundtrip(&b);
 }

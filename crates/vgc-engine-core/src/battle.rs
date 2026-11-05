@@ -1412,7 +1412,10 @@ impl Battle {
     /// safety net (`sync_weather_terrain_cache`), but `move_locks` /
     /// `can_mega_evolve` do not — so this is their only rehydration hook.
     pub fn rehydrate_caches(&mut self) {
-        self.sync_weather_terrain_cache();
+        // Not `sync_weather_terrain_cache`: the field didn't change, so nothing
+        // runs its WeatherChange / TerrainChange (Mimicry would retype the mon).
+        self.cached_weather = self.recompute_effective_weather();
+        self.cached_terrain = self.recompute_effective_terrain();
         for side in [SideRef::P1, SideRef::P2] {
             for mon in self.side_mut(side).team.iter_mut() {
                 mon.sync_move_locks();
