@@ -17181,6 +17181,17 @@ self.trigger_emergency_exits();
     }
 
     /// data/abilities.ts aromaveil onAllyTryAddVolatile: `-block`, naming the holder.
+    /// Mold Breaker and kin ignore the target's breakable abilities for the move
+    /// (data/abilities.ts moldbreaker onModifyMove, sim/pokemon.ts ignoringAbility).
+    pub(crate) fn move_breaks_mold(&self, side: SideRef, slot: u8) -> bool {
+        self.side(side).active_mon(slot as usize).is_some_and(|a| {
+            matches!(
+                a.effective_ability_id(),
+                data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+            )
+        })
+    }
+
     fn p_aroma_veil_block(&mut self, ts: SideRef, tslot: u8) {
         if !self.plog() {
             return;
@@ -21659,7 +21670,7 @@ self.trigger_emergency_exits();
                     // so the move's `success` stays false).
                     let drop_blocked = ts != actor_side
                         && !sub_blocks
-                        && self.side(ts).active_mon(tslot as usize).is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, 6));
+                        && self.side(ts).active_mon(tslot as usize).is_some_and(|t| crate::ability::blocks_move_stat_drop(t, self.move_breaks_mold(actor_side, actor_slot), 6));
                     if drop_blocked {
                         self.p_drop_blocked(ts, tslot, &[6]);
                     } else if !sub_blocks {
@@ -23971,7 +23982,7 @@ self.trigger_emergency_exits();
                     let mut k = 0usize;
                     if let Some(t) = self.side(opp).active_mon(slot as usize) {
                         for stat in [0u8, 2] {
-                            if !crate::ability::blocks_opposing_stat_drop_for(t, stat) {
+                            if !crate::ability::blocks_move_stat_drop(t, self.move_breaks_mold(actor_side, actor_slot), stat) {
                                 drops[k] = (stat, -1);
                                 k += 1;
                             }
@@ -24026,7 +24037,7 @@ self.trigger_emergency_exits();
                 let mut k = 0usize;
                 for (idx, delta) in [(0u8, -2i8), (2, -2)] {
                     let blocked = self.side(ts).active_mon(tslot as usize)
-                        .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, idx));
+                        .is_some_and(|t| crate::ability::blocks_move_stat_drop(t, self.move_breaks_mold(actor_side, actor_slot), idx));
                     if !blocked {
                         buf[k] = (idx, delta);
                         k += 1;
@@ -24289,7 +24300,7 @@ self.trigger_emergency_exits();
                 // Body / Clear Amulet / White Smoke / Full Metal Body, and
                 // Hyper Cutter's Atk-only onTryBoost) comes first.
                 let blocked = self.side(opp).active_mon(ts as usize)
-                    .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, 0));
+                    .is_some_and(|t| crate::ability::blocks_move_stat_drop(t, self.move_breaks_mold(actor_side, actor_slot), 0));
                 if blocked {
                     self.p_drop_blocked(opp, ts, &[0]);
                 } else {
@@ -24935,7 +24946,7 @@ self.trigger_emergency_exits();
                         let mut k = 0usize;
                         for &(idx, delta) in fd.boosts {
                             let blocked = self.side(ts).active_mon(tslot as usize)
-                                .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, idx));
+                                .is_some_and(|t| crate::ability::blocks_move_stat_drop(t, self.move_breaks_mold(actor_side, actor_slot), idx));
                             if !blocked {
                                 buf[k] = (idx, delta);
                                 k += 1;
@@ -26536,8 +26547,9 @@ fn apply_move_secondary(
             // veto any opposing stat drop. Per-stat blockers (Hyper
             // Cutter / Big Pecks / Keen Eye) gate on the specific stat
             // being dropped.
+            let mold = battle.move_breaks_mold(attacker_side, attacker_slot);
             let blocked = battle.side(target_side).active_mon(target_slot as usize)
-                .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, idx));
+                .is_some_and(|m| crate::ability::blocks_move_stat_drop(m, mold, idx));
             if !blocked {
                 // PS clamps each stage to [-6, 6]. Opposing drop — source is
                 // the attacker (move secondary). Mirror Armor reflect hook
@@ -26613,8 +26625,9 @@ fn apply_move_secondary(
     if move_slug == "triplearrows" {
         // Secondary 1: 50% -1 Def on the target.
         if rng.percent_1_100_t(sg(50)) <= sg(50) {
+            let mold = battle.move_breaks_mold(attacker_side, attacker_slot);
             let blocked = battle.side(target_side).active_mon(target_slot as usize)
-                .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 1));
+                .is_some_and(|m| crate::ability::blocks_move_stat_drop(m, mold, 1));
             if !blocked {
                 battle.apply_boosts(target_side, target_slot, &[(1, -1)], attacker_side, attacker_slot);
                 crate::item::try_consume_white_herb(battle, target_side, target_slot);
