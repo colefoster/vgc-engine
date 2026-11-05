@@ -447,6 +447,9 @@ pub enum VolatileKind {
     /// Lock-On (data/moves.ts lockon), duration 2. Payload: `side << 1 | slot`
     /// of the locked target.
     LockOn,
+    /// Uproar (data/moves.ts uproar condition), duration 3. Payload: remaining
+    /// residuals. The move itself is locked through `lockin_turns`.
+    Uproar,
 }
 
 /// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
