@@ -934,6 +934,10 @@ pub struct Pokemon {
     /// (data/mods/champions/scripts.ts:169), i.e. on every switch.
     #[serde(default)]
     pub times_attacked: u8,
+    /// Slot + 1 of the last foe that hit this mon since it came in, on any turn
+    /// (Pokemon.attackedBy, cleared on switching, sim/pokemon.ts getLastDamagedBy).
+    #[serde(default)]
+    pub foe_hit_slot: u8,
     /// Runtime battle-type override (Protean / Libero / Color Change /
     /// Reflect Type / Conversion). `[255, 255]` = no override (use the
     /// species' innate types). Otherwise `type_override[0]` is the
@@ -1175,6 +1179,7 @@ impl Pokemon {
             slow_start_active_turns: 0,
             truant_loafing: false,
             times_attacked: 0,
+            foe_hit_slot: 0,
             type_override: [255, 255],
             protean_used: false,
             disguise_busted: false,
