@@ -7906,10 +7906,8 @@ self.trigger_emergency_exits();
                                 self.p_attr("[still]");
                                 if let Some(hs) = (0..n).find(|&slot| self.side(opp).active_mon(slot as usize).is_some_and(|mon| mon.is_alive() && matches!(mon.effective_ability_id(), data::ability_id::DAZZLING | data::ability_id::QUEENLYMAJESTY | data::ability_id::ARMORTAIL))) {
                                     let ab = self.side(opp).active_mon(hs as usize).map(|mon| mon.effective_ability_id()).unwrap_or(0);
-                                    let of = match target {
-                                        Some(t) if self.side(t.side).active_mon(t.slot as usize).is_some() => self.p_ident(t.side, t.slot),
-                                        _ => self.p_ident(opp, hs),
-                                    };
+                                    // dazzling onFoeTryMove: `[of] ${target}`, its target being the move's user.
+                                    let of = self.p_ident(actor_side, actor_slot);
                                     pmon!(self, "cant", opp, hs, "|ability: {}|{}|[of] {of}", crate::battle_protocol::ability_name(ab), m.name);
                                 }
                             }
