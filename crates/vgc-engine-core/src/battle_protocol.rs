@@ -975,6 +975,14 @@ impl Battle {
         }
     }
 
+    /// One entering mon's Unnerve, unless already announced for its batch.
+    pub(crate) fn p_pre_announce_once(&mut self, side: SideRef, slot: u8) {
+        let bit = 1 << (side as u8 * 2 + slot.min(1));
+        if self.protocol.log().is_some_and(|l| l.pre_announced & bit == 0) {
+            self.p_pre_announce(&[(side, slot)]);
+        }
+    }
+
     /// PS `Side.toString()`: `p1: <player name>`.
     pub(crate) fn p_side_ident(&self, side: SideRef) -> String {
         let name = self.protocol.log().map(|l| l.player_names[side as usize].as_str()).unwrap_or("");

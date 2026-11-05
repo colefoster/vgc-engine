@@ -579,6 +579,9 @@ pub fn switch_in_priority(ability_id: u16) -> i8 {
 }
 
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
+    // Unnerve (onSwitchInPriority 1) runs ahead of the hazards (priority 0):
+    // sim/battle.ts fieldEvent's sort, data/abilities.ts unnerve.
+    battle.p_pre_announce_once(side, slot);
     // The mon's runSwitch: its held hazard lines come first.
     if let Some(l) = battle.protocol.log_mut() {
         l.release_held(Some((side as u8, slot)));
@@ -596,6 +599,11 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // runSwitch, sim/battle-actions.ts:175-192).
     if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp == 0) {
         return;
+    }
+    // Air Balloon's onStart sits at priority 0, ahead of the -1 and -2 abilities.
+    let late = battle.side(side).active_mon(slot as usize).is_some_and(|m| switch_in_priority(m.effective_ability_id()) < 0);
+    if late {
+        battle.p_air_balloon(side, slot);
     }
     on_start(battle, side, slot);
     // zerotohero: onSwitchIn arms its onStart's message for a Hero
