@@ -10835,6 +10835,16 @@ self.trigger_emergency_exits();
         }
 
         self.apply_after_hit_hazards(actor_side, actor_slot, move_id, m, any_damage_dealt);
+        // runEvent('AfterFaint') once for the loop's faintMessages, with the number
+        // of faints as its length: Moxie's +2 on a double KO (sim/battle.ts faintMessages).
+        let kos = targets.iter().filter(|&&(s, sl)| self.side(s).active_mon(sl as usize).is_some_and(|d| d.current_hp == 0)).count() as u8;
+        if kos > 0 {
+            let saved = self.p_key_save();
+            self.p_set_hit(255);
+            self.p_tag_step(crate::protocol::step::AFTER_FAINT);
+            self.ko_boost_triggers(actor_side, actor_slot, move_id, kos);
+            self.p_key_restore(saved);
+        }
         self.apply_self_effects(
             actor_side,
             actor_slot,
@@ -12560,24 +12570,16 @@ self.trigger_emergency_exits();
     /// PRs; the inline scaffold here did not cover them.
     ///
     /// No RNG draws.
-    fn apply_attacker_ko_boost_triggers(
-        &mut self,
-        ctx: &PerTargetContext,
-        alive_post: bool,
-        hit_sub: bool,
-        effective_dmg: u16,
-    ) {
-        if !(!alive_post && effective_dmg > 0 && !hit_sub) {
-            return;
-        }
+    fn ko_boost_triggers(&mut self, side: SideRef, slot: u8, move_id: u16, length: u8) {
         // Fell Stinger — onAfterMoveSecondarySelf: +3 Atk when the target
         // fainted (data/moves.ts:5211-5212). After Moxie's AfterFaint.
-        let fell_stinger = ctx.move_id == data::move_id::FELLSTINGER;
+        let fell_stinger = move_id == data::move_id::FELLSTINGER;
         let attacker_ability = self
-            .side(ctx.actor_side)
-            .active_mon(ctx.actor_slot as usize)
+            .side(side)
+            .active_mon(slot as usize)
             .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
             .unwrap_or("");
+        let amount = length.min(12) as i8;
         match attacker_ability {
             // faintMessages' checkWin ends the battle before runEvent('AfterFaint')
             // (sim/battle.ts faintMessages).
@@ -13027,8 +13029,6 @@ self.trigger_emergency_exits();
 
         // Red Card / Eject Button (PS onAfterMoveSecondary).
         self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg, ctx.move_id);
-        self.p_tag(crate::protocol::step::AFTER_FAINT, ctx.tside, ctx.tslot);
-        self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
         self.p_set_hit(hit_idx as u8);
 
         // PS stops a multi-hit move the moment the target faints
