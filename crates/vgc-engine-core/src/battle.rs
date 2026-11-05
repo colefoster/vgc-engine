@@ -11717,8 +11717,13 @@ self.trigger_emergency_exits();
                 }
             }
         }
-        // Good as Gold — PS data/abilities.ts:1585 goodasgold.
-        if is_targeting_move(m.target) {
+        // Good as Gold — PS data/abilities.ts:1585 goodasgold. A non-Ghost Curse
+        // targets the user (data/mods/champions/moves.ts curse onModifyMove).
+        let self_curse = move_id == data::move_id::CURSE && {
+            let (types, n) = attacker.effective_types();
+            !types[..n as usize].contains(&13)
+        };
+        if is_targeting_move(m.target) && !self_curse {
             // Mycelium Might joins the mold-breaker set for Status moves
             // (PS data/abilities.ts:myceliummight onModifyMove sets
             // move.ignoreAbility for Status). This block only runs for
