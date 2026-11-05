@@ -5570,6 +5570,9 @@ self.trigger_emergency_exits();
         let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
+                if self.side(side).active_mon(slot as usize).map_or(true, crate::item::update_idle) {
+                    continue;
+                }
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::item::on_after_damage(self, side, slot, &mut rng);
                 self.rng = rng;
@@ -13288,7 +13291,12 @@ self.trigger_emergency_exits();
         // the borrow (mem::replace idiom).
         self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
         let mut busted = false;
-        if !hit_sub {
+        let update_idle = self.fling_pending.is_none()
+            && !disguised
+            && [SideRef::P1, SideRef::P2].iter().all(|&s| {
+                (0..self.format().active_count() as u8).all(|sl| self.side(s).active_mon(sl as usize).map_or(true, crate::item::update_idle))
+            });
+        if !hit_sub && !update_idle {
             // eachEvent('Update') over the actives in speed order: the
             // target, and the attacker when this hit cost it HP (Rocky
             // Helmet / Rough Skin), eat their berries here, before recoil
