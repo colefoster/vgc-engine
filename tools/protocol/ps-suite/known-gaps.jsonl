@@ -51,8 +51,6 @@
 {"game":"Imposter should not activate if Skill Swapped","format":"gen9customgame"}
 {"game":"Intrepid Sword should only increase the user's Attack stat once per game","format":"gen9customgame"}
 {"game":"Intrepid Sword should not use up its once-per-game boost if it switches in while its Ability is suppressed","format":"gen9customgame"}
-{"game":"Klutz should negate residual healing events","format":"gen9customgame"}
-{"game":"Klutz should prevent items from being consumed","format":"gen9customgame"}
 {"game":"Klutz should not prevent Pokemon from Mega Evolving","format":"gen9customgame"}
 {"game":"Levitate should have its airborne property suppressed by Mold Breaker if it is forced out by a move","format":"gen9customgame"}
 {"game":"Lightning Rod should redirect to the Pokemon having the ability longest","format":"gen9doublescustomgame"}
@@ -165,18 +163,15 @@
 {"game":"Future Sight should only cause the user to take Life Orb recoil on its damaging turn","format":"gen9customgame"}
 {"game":"Future Sight should not be affected by Life Orb if not the original user","format":"gen9customgame"}
 {"game":"Future Sight should be boosted by Terrain even if the user is not on the field, as long as the user is not Flying-type","format":"gen9customgame"}
-{"game":"Future Sight should only use Sp. Atk stat boosts/drops if the user is on the field","format":"gen9customgame"}
 {"game":"Future Sight should target particular slots in Doubles","format":"gen9doublescustomgame"}
 {"game":"Future Sight should do nothing if no Pokemon is present to take damage from the Future attack","format":"gen9customgame"}
 {"game":"Grassy Terrain should heal grounded Pokemon by 1/16 of their max HP","format":"gen9customgame"}
-{"game":"Gravity should ground Flying-type Pokemon and remove their Ground immunity","format":"gen9customgame"}
 {"game":"Gravity should interrupt and disable the use of airborne moves","format":"gen9customgame"}
 {"game":"Heal Bell should not heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Heal Bell with Mold Breaker should heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Healing Wish should heal an ally fully after Ally Switch","format":"gen9doublescustomgame"}
 {"game":"Ice Spinner should not remove Terrains if the user faints from Rocky Helmet","format":"gen9customgame"}
 {"game":"Ingrain should prevent the user from being forced out or switching out","format":"gen9customgame"}
-{"game":"Ingrain should remove the users' Ground immunities","format":"gen9customgame"}
 {"game":"Knock Off should not remove correctly held mega stones","format":"gen9customgame"}
 {"game":"Memento should cause the user to faint even if the target has Clear Body","format":"gen9customgame"}
 {"game":"Misty Terrain should prevent Yawn from putting grounded Pokemon to sleep, but not cause Yawn to fail","format":"gen9customgame"}
