@@ -1,4 +1,3 @@
-{"game":"Aftermath should hurt attackers by 1/4 their max HP when this Pokemon is KOed by a contact move","format":"gen9customgame"}
 {"game":"Berserk should activate prior to healing from Sitrus Berry","format":"gen9customgame"}
 {"game":"Berserk should be suppressed by Sheer Force","format":"gen9customgame"}
 {"game":"Berserk should not activate prior to healing from Sitrus Berry after a multi-hit move","format":"gen9customgame"}
@@ -20,7 +19,6 @@
 {"game":"Damp should be suppressed by Mold Breaker","format":"gen9customgame"}
 {"game":"Dancer should only copy dance moves used by other Pokemon","format":"gen9customgame"}
 {"game":"Dancer should copy a move that hit, but did 0 damage","format":"gen9customgame"}
-{"game":"Dazzling should block moves with positive priority","format":"gen9customgame"}
 {"game":"Dazzling should not block moves that target all Pokemon, except Perish Song, Rototiller, and Flower Shield","format":"gen9customgame"}
 {"game":"Delta Stream should not reduce damage from Stealth Rock","format":"gen9customgame"}
 {"game":"Delta Stream should cause the Delta Stream weather to fade if it switches out and no other Delta Stream Pokemon are active","format":"gen9customgame"}
@@ -58,9 +56,7 @@
 {"game":"Lightning Rod should redirect to the Pokemon having the ability longest","format":"gen9doublescustomgame"}
 {"game":"Lightning Rod should not redirect if another Pokemon has used Follow Me","format":"gen9doublescustomgame"}
 {"game":"Liquid Ooze should damage the target after taking damage from Leech Seed","format":"gen9customgame"}
-{"game":"Magnet Pull should prevent Steel-type Pokemon from switching out normally","format":"gen9customgame"}
 {"game":"Mirror Armor should activate, but silently, if the source has fainted","format":"gen9customgame"}
-{"game":"Mummy should not change abilities that can't be suppressed","format":"gen9customgame"}
 {"game":"Mycelium Might should cause attacks called by empowered status moves to ignore abilities","format":"gen9customgame"}
 {"game":"Neutralizing Gas should negate abilities that suppress item effects","format":"gen9customgame"}
 {"game":"Neutralizing Gas should prevent Unburden's activation when it is active on the field","format":"gen9customgame"}
@@ -96,7 +92,6 @@
 {"game":"Shield Dust should only prevent Sparkling Aria from curing burn if there is only one target","format":"gen9doublescustomgame"}
 {"game":"Soul-Heart should activate on each individual KO","format":"gen9doublescustomgame"}
 {"game":"Steely Spirit should stack with itself","format":"gen9doublescustomgame"}
-{"game":"Sticky Hold should be suppressed by Mold Breaker","format":"gen9customgame"}
 {"game":"Storm Drain should not redirect if another Pokemon has used Follow Me","format":"gen9doublescustomgame"}
 {"game":"Sturdy should give the user an immunity to OHKO moves","format":"gen9customgame"}
 {"game":"Suction Cups should prevent the user from being forced out","format":"gen9customgame"}
@@ -153,21 +148,16 @@
 {"game":"Belch should still count berries as consumed after switch out","format":"gen9customgame"}
 {"game":"Burning Jealousy should burn a target whose stats were boosted at the start of the match","format":"gen9customgame"}
 {"game":"Burning Jealousy should not burn a target whose stats were boosted at a switch after a KO","format":"gen9customgame"}
-{"game":"Clear Smog should remove all stat boosts from the target","format":"gen9customgame"}
-{"game":"Clear Smog should not remove stat boosts from the user","format":"gen9customgame"}
 {"game":"Clear Smog should trigger before Anger Point activates during critical hits","format":"gen9customgame"}
 {"game":"Court Change should swap certain side conditions to the opponent's side and vice versa","format":"gen9customgame"}
 {"game":"Curse should curse a non-Ghost user with Protean","format":"gen9customgame"}
-{"game":"Disable should interrupt consecutively executed moves like Outrage","format":"gen9customgame"}
 {"game":"Dragon Darts should hit one target twice if the other is protected by an ability","format":"gen9doublescustomgame"}
-{"game":"Electric Terrain should prevent Yawn from putting grounded Pokemon to sleep, and cause Yawn to fail","format":"gen9customgame"}
 {"game":"Follow Me should redirect charging moves if used on the resolution turn","format":"gen9doublescustomgame"}
 {"game":"Future Sight should only cause the user to take Life Orb recoil on its damaging turn","format":"gen9customgame"}
 {"game":"Future Sight should not be affected by Life Orb if not the original user","format":"gen9customgame"}
 {"game":"Future Sight should be boosted by Terrain even if the user is not on the field, as long as the user is not Flying-type","format":"gen9customgame"}
 {"game":"Future Sight should only use Sp. Atk stat boosts/drops if the user is on the field","format":"gen9customgame"}
 {"game":"Future Sight should target particular slots in Doubles","format":"gen9doublescustomgame"}
-{"game":"Future Sight should do nothing if no Pokemon is present to take damage from the Future attack","format":"gen9customgame"}
 {"game":"Grassy Terrain should heal grounded Pokemon by 1/16 of their max HP","format":"gen9customgame"}
 {"game":"Gravity should ground Flying-type Pokemon and remove their Ground immunity","format":"gen9customgame"}
 {"game":"Gravity should interrupt and disable the use of airborne moves","format":"gen9customgame"}
@@ -175,24 +165,15 @@
 {"game":"Heal Bell with Mold Breaker should heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Healing Wish should heal an ally fully after Ally Switch","format":"gen9doublescustomgame"}
 {"game":"Ice Spinner should not remove Terrains if the user faints from Rocky Helmet","format":"gen9customgame"}
-{"game":"Ingrain should prevent the user from being forced out or switching out","format":"gen9customgame"}
 {"game":"Ingrain should remove the users' Ground immunities","format":"gen9customgame"}
 {"game":"Knock Off should not remove correctly held mega stones","format":"gen9customgame"}
 {"game":"Memento should cause the user to faint even if the target has Clear Body","format":"gen9customgame"}
-{"game":"Misty Terrain should prevent Yawn from putting grounded Pokemon to sleep, but not cause Yawn to fail","format":"gen9customgame"}
 {"game":"Pollen Puff should not heal a Pokemon if they have natural type immunity to Pollen Puff","format":"gen9doublescustomgame"}
 {"game":"Rapid Spin should remove entry hazards past a Substitute","format":"gen9customgame"}
 {"game":"Revival Blessing should send the Pokemon back in immediately if in an active slot in Doubles","format":"gen9doublescustomgame"}
 {"game":"Sleep Talk should run conditions for submove","format":"gen9customgame"}
 {"game":"Sparkling Aria should cure the target's burn","format":"gen9customgame"}
-{"game":"Syrup Bomb should lower the opponent's Speed for 3 turns, but not remove its volatile until after 4 turns","format":"gen9customgame"}
-{"game":"Syrup Bomb should end if the source leaves the field","format":"gen9customgame"}
-{"game":"Syrup Bomb the stat changes should be reflected by Mirror Armor","format":"gen9customgame"}
-{"game":"Teatime should force Pokemon to eat Berries while affected by Unnerve","format":"gen9customgame"}
-{"game":"Teatime should force Pokemon to eat Berries while Magic Room is active","format":"gen9customgame"}
-{"game":"Teatime should force Pokemon with Klutz to eat Berries","format":"gen9customgame"}
 {"game":"Teatime should force Pokemon with Substitute to eat Berries","format":"gen9customgame"}
-{"game":"Teatime should not cause Pokemon in the semi-invulnerable state to eat their Berries","format":"gen9customgame"}
 {"game":"Teatime should not cause Recycle to fail to restore the Berry","format":"gen9customgame"}
 {"game":"Transform should copy the target's focus energy status","format":"gen9customgame"}
 {"game":"Transform should fail if either the user or target have Illusion active","format":"gen9customgame"}
