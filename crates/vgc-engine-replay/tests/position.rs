@@ -138,6 +138,9 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                 }
                 // Same for state added since that now survives save/load, at its
                 // resting value.
+                if battle["charge_end_after_yield"] == false {
+                    battle.as_object_mut().unwrap().remove("charge_end_after_yield");
+                }
                 if battle["round_chain"] == serde_json::json!([[false, false], [false, false]]) {
                     battle.as_object_mut().unwrap().remove("round_chain");
                 }
