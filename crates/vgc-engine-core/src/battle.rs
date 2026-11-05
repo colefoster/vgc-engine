@@ -21139,6 +21139,24 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) {
                     return;
                 }
+                // Aroma Veil — holder/partner immunity to Encore
+                // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable: a
+                // Mold-Breaker user bypasses it. addVolatile runs TryAddVolatile
+                // after the has-it check and before the condition's onStart,
+                // which is what fails on a bad last move (sim/pokemon.ts).
+                let encore_src_breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(
+                        a.effective_ability_slug(),
+                        "moldbreaker" | "teravolt" | "turboblaze"
+                    ));
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_alive() && t.encore_turns() == 0)
+                    && self.side_has_aroma_veil(ts, encore_src_breaks_mold)
+                {
+                    self.p_aroma_veil_block(ts, tslot);
+                    return;
+                }
                 let last = match self.side(ts).active_mon(tslot as usize) {
                     Some(t) if t.is_alive() && t.encore_turns() == 0 && t.last_used_move_slot != 255 => {
                         let last = t.last_used_move_slot;
@@ -21161,20 +21179,6 @@ self.trigger_emergency_exits();
                     }
                     _ => return,
                 };
-                // Aroma Veil — holder/partner immunity to Encore
-                // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
-                // a Mold-Breaker Encore user bypasses it.
-                let encore_src_breaks_mold = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| matches!(
-                        a.effective_ability_slug(),
-                        "moldbreaker" | "teravolt" | "turboblaze"
-                    ));
-                if self.side_has_aroma_veil(ts, encore_src_breaks_mold) {
-                    self.p_aroma_veil_block(ts, tslot);
-                    return;
-                }
                 // `!this.queue.willMove(target)`: its pending byte is no
                 // longer a move (1 / 2).
                 let k = pending_kind[ts as usize][(tslot as usize).min(1)];
