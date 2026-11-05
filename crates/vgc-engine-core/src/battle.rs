@@ -22653,7 +22653,7 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let Some((ts, tslot)) = opp_target else { return };
-                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) {
                     return;
                 }
                 let my_item = self.side(actor_side).active_mon(actor_slot as usize).map_or(u16::MAX, |a| a.item_id);
@@ -24015,7 +24015,7 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                     return;
                 }
-                let behind_sub = self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
+                let behind_sub = self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::SIMPLE) {
                     self.ps_status_failed();
                 } else {
@@ -24046,7 +24046,7 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let behind_sub = ts != actor_side
-                    && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
+                    && self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, src) {
                     self.ps_status_failed();
                     return;
@@ -24076,7 +24076,7 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let behind_sub = ts != actor_side
-                    && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
+                    && self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::INSOMNIA) {
                     self.ps_status_failed();
                     return;
@@ -24178,7 +24178,7 @@ self.trigger_emergency_exits();
                 // <https://bulbapedia.bulbagarden.net/wiki/Block_(move)>.
                 let Some((ts, tslot)) = opp_target else { return };
                 if !self.rolled_accuracy_passed(m) { return; }
-                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) {
                     self.ps_status_failed();
                     return;
                 }
@@ -24584,7 +24584,7 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let Some((ts, tslot)) = opp_target else { return };
-                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) {
                     return;
                 }
                 // memento's boosts in one boost(): Hyper Cutter and co print first
@@ -24801,7 +24801,7 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) { return; }
                 let (opp, ts) = match opp_target { Some(t) => t, None => return };
                 let (target_hp, target_max, has_sub) = match self.side(opp).active_mon(ts as usize) {
-                    Some(t) => (t.current_hp as u32, t.stats.hp as u32, t.substitute_hp() > 0),
+                    Some(t) => (t.current_hp as u32, t.stats.hp as u32, t.substitute_hp() > 0 && self.side(actor_side).active_mon(actor_slot as usize).is_none_or(|u| u.effective_ability_id() != data::ability_id::INFILTRATOR)),
                     None => return,
                 };
                 if has_sub { return; }
@@ -24843,7 +24843,7 @@ self.trigger_emergency_exits();
                 let (opp, ts) = match opp_target { Some(t) => t, None => return };
                 // Snapshot target Atk stat post-stage.
                 let (raw_atk, atk_stage, has_substitute) = match self.side(opp).active_mon(ts as usize) {
-                    Some(t) => (t.stats.atk as u32, t.boosts[0], t.substitute_hp() > 0),
+                    Some(t) => (t.stats.atk as u32, t.boosts[0], t.substitute_hp() > 0 && self.side(actor_side).active_mon(actor_slot as usize).is_none_or(|u| u.effective_ability_id() != data::ability_id::INFILTRATOR)),
                     None => return,
                 };
                 if atk_stage <= -6 { return; }
@@ -25406,7 +25406,7 @@ self.trigger_emergency_exits();
                     return;
                 }
                 // Substitute absorbs the whole move (no bypasssub flag).
-                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) {
                     return;
                 }
                 // +2 Atk on the foe (raise — apply_boosts clamps to +6 and
