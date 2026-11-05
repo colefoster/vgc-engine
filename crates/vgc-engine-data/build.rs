@@ -515,6 +515,10 @@ fn champions_tail(slug: &str, tail: &str) -> String {
     if slug == "freezedry" {
         t = t.replace("has_secondary: true", "has_secondary: false");
     }
+    // The mod lets Milk Drink aim at the ally.
+    if slug == "milkdrink" {
+        t = t.replace("target: 1,", "target: 3,");
+    }
     t
 }
 
