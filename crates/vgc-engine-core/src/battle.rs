@@ -18463,7 +18463,8 @@ self.trigger_emergency_exits();
             };
             // Flower Veil guards Grass types against anyone else's status
             // (data/abilities.ts flowerveil onAllySetStatus, breakable).
-            let flower_veil = !(source_side == side && source_slot == slot)
+            let flower_veil = source_slot != u8::MAX
+                && !(source_side == side && source_slot == slot)
                 && self.side(side).active_mon(slot as usize).is_some_and(|m| {
                     let (types, n) = m.effective_types();
                     types[..n as usize].contains(&4)
