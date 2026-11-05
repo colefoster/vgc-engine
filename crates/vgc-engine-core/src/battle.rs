@@ -16432,6 +16432,15 @@ self.trigger_emergency_exits();
         }
         if let Some(drops) = self_stat_drops(m.slug, self.champions) {
             if move_hit {
+                // selfDrops runs before DamagingHit, so a Mummy the hit touches can't yet
+                // have changed the ability that reads the drop (Contrary, Simple; scripts.ts
+                // spreadMoveHit steps 4 and 6).
+                let live_override = self.side(actor_side).active_mon(actor_slot as usize).map(|a| a.ability_override);
+                if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.effective_ability_id() != _attacker.effective_ability_id()) {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.ability_override = _attacker.effective_ability_id();
+                    }
+                }
                 // PS `selfDrops` rolls `random(100)` for a `self.boosts`
                 // move even though the drop is unconditional
                 // (sim/battle-actions.ts selfDrops, a5df8274).
@@ -16442,6 +16451,9 @@ self.trigger_emergency_exits();
                 // selfDrops: boost(..., isSelf) prints no zero change.
                 self.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
                 self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
+                if let (Some(ov), Some(a)) = (live_override, self.side_mut(actor_side).active_mon_mut(actor_slot as usize)) {
+                    a.ability_override = ov;
+                }
                 // White Herb consumes itself to restore negative stages.
                 crate::item::try_consume_white_herb(self, actor_side, actor_slot);
                 // Eject Pack reacts to the self-drop. PS
