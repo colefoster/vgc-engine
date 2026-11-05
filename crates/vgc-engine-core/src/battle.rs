@@ -20259,6 +20259,17 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // A fainted ally: `[notarget]`, naming it (getMoveTargets, sim/pokemon.ts).
+        if m.target == 2 && self.format().active_count() > 1 {
+            let ally = actor_slot ^ 1;
+            if self.side(actor_side).active_mon(ally as usize).is_some_and(|t| !t.is_alive()) {
+                self.p_retarget(actor_side, ally);
+                self.p_attr("[notarget]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                self.ps_status_failed();
+                return;
+            }
+        }
         // An `adjacentAlly` move the same way (hitStepInvulnerabilityEvent spares
         // only Helping Hand): Aromatic Mist on an ally in Fly misses.
         if m.target == 2 && move_id != data::move_id::HELPINGHAND {
