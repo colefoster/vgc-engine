@@ -2698,6 +2698,9 @@ pub fn on_damaging_hit(
                     pmon!(battle, "-activate", attacker_side, attacker_slot, "|Skill Swap|{}|{}|[of] {of}", crate::battle_protocol::ability_name(target_id), crate::battle_protocol::ability_name(attacker_id));
                 }
             }
+            // battle.skillSwap ends with singleEvent('Start') for each new ability.
+            on_start(battle, target_side, target_slot);
+            on_start(battle, attacker_side, attacker_slot);
         }
     }
 }
