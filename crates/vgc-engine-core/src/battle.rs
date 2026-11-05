@@ -11624,8 +11624,9 @@ self.trigger_emergency_exits();
                 .active_mon(actor_slot as usize)
                 .is_some_and(crate::damage::attacker_has_sheer_force)
                 && crate::damage::move_is_sheer_force_boosted(m);
-            // onAfterHit has no source.hp check, unlike onAfterSubDamage (data/moves.ts).
-            if !sheer_force {
+            // Champions' onAfterHit has no source.hp check (data/mods/champions/moves.ts).
+            let user_alive = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive());
+            if !sheer_force && (user_alive || self.champions) {
                 let opp = actor_side.opposing();
                 self.side_mut(opp).conditions.note_hazard(1);
                 let layers = &mut self.side_mut(opp).conditions.spikes_layers;
@@ -11653,8 +11654,9 @@ self.trigger_emergency_exits();
                 .active_mon(actor_slot as usize)
                 .is_some_and(crate::damage::attacker_has_sheer_force)
                 && crate::damage::move_is_sheer_force_boosted(m);
-            // onAfterHit has no source.hp check, unlike onAfterSubDamage (data/moves.ts).
-            if !sheer_force {
+            // Champions' onAfterHit has no source.hp check (data/mods/champions/moves.ts).
+            let user_alive = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive());
+            if !sheer_force && (user_alive || self.champions) {
                 let opp = actor_side.opposing();
                 let added = !self.side(opp).conditions.stealth_rock;
                 self.side_mut(opp).conditions.stealth_rock = true;
