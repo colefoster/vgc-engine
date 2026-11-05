@@ -2728,7 +2728,6 @@ pub fn on_damaging_hit(
         if attacker_alive
             && attacker_id != u16::MAX
             && target_id != u16::MAX
-            && attacker_id != target_id
             && !attacker_shielded
             && !target_shielded
             && !crate::battle::ability_fails_skill_swap(data::ABILITIES[attacker_id as usize].slug)

@@ -6022,6 +6022,8 @@ self.trigger_emergency_exits();
                 // then item onStart). Forme changes remain a per-species TBD.
                 crate::ability::on_switch_in(self, side, actor_slot);
                 crate::item::on_switch_in(self, side, actor_slot);
+                // A switched-out source ends Attract at this Update (data/conditions.ts attract onUpdate).
+                self.attract_update();
                 // ...and the runSwitch action's own eachEvent('Update').
                 #[cfg(feature = "ps-rng")]
                 if self.rng.is_ps() {
@@ -8214,6 +8216,116 @@ self.trigger_emergency_exits();
             return;
         }
 
+        // These fail in onTry / onPrepareHit, ahead of Protean's onPrepareHit
+        // (sim/battle-actions.ts trySpreadMoveHit).
+        // Counter / Mirror Coat / Metal Burst — `target: scripted`. PS
+        // redirects these to the slot that dealt the qualifying damage this
+        // turn (`condition.onRedirectTarget` for Counter/Mirror Coat,
+        // `onModifyTarget` for Metal Burst) and FAILS (`onTry`) when no such
+        // hit was recorded this turn. Counter keys off the last *physical*
+        // hit, Mirror Coat the last *special* hit, Metal Burst the most
+        // recent hit of either category. The attacker must still be on the
+        // field — if it fainted / switched, `getAtSlot` is empty and the
+        // move fizzles. PP was already deducted above (PS deducts before the
+        // failing `onTry`), so we just return.
+        // PS data/moves.ts: counter / mirrorcoat / metalburst.
+        if matches!(
+            move_id,
+            data::move_id::COUNTER | data::move_id::MIRRORCOAT | data::move_id::METALBURST | data::move_id::COMEUPPANCE
+        ) {
+            // getMoveTargets finds nobody with every foe down: `[notarget]`, ahead
+            // of onTry (sim/battle-actions.ts useMoveInner, sim/pokemon.ts).
+            let foe = actor_side.opposing();
+            if !(0..self.format().active_count()).any(|s| self.side(foe).active_mon(s).is_some_and(|d| d.is_alive())) {
+                self.p_attr("[notarget]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                return;
+            }
+            let ((src_side_byte, src_slot), dmg) = match move_id {
+                data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
+                data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
+                // getLastDamagedBy(true): only a foe's hit counts (data/moves.ts
+                // metalburst onTry; last_damage_taken also records an ally's).
+                _ => (attacker.last_attacker, match attacker.last_attacker_category {
+                    0 => attacker.last_phys_damage,
+                    1 => attacker.last_spec_damage,
+                    _ => 0,
+                }),
+            };
+            if dmg == 0 {
+                self.p_try_fail(actor_side, actor_slot);
+                return; // no qualifying damage taken this turn
+            }
+            let scr_side = if src_side_byte == 0 { SideRef::P1 } else { SideRef::P2 };
+            let scr_slot = src_slot;
+            let attacker_present = self
+                .side(scr_side)
+                .active_mon(scr_slot as usize)
+                .is_some_and(|m| m.is_alive());
+            // Metal Burst / Comeuppance name the slot in onModifyTarget; a fainted
+            // occupant makes getMoveTargets pick another foe, and the damage stands
+            // (data/moves.ts metalburst, sim/pokemon.ts getMoveTargets).
+            let retarget = (!attacker_present && matches!(move_id, data::move_id::METALBURST | data::move_id::COMEUPPANCE))
+                .then(|| (0..self.format().active_count() as u8).find(|&s| self.side(scr_side).active_mon(s as usize).is_some_and(|m| m.is_alive())))
+                .flatten();
+            if let Some(sl) = retarget {
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    let _ = self.rng.ps_random_range("get_target", 0, 1);
+                }
+                target = Some(Target { side: scr_side, slot: sl });
+                self.p_retarget(scr_side, sl);
+            } else if !attacker_present {
+                // onRedirectTarget names the fainted slot: getMoveTargets finds nobody,
+                // and the line keeps its first target (data/moves.ts counter,
+                // sim/pokemon.ts getMoveTargets).
+                self.p_attr("[notarget]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                return;
+            } else {
+                target = Some(Target { side: scr_side, slot: scr_slot });
+                // The onRedirectTarget's pick is what `|move|` names.
+                self.p_retarget(scr_side, scr_slot);
+            }
+        }
+
+        // Fling — fail if the user holds no flingable item. PS
+        // data/moves.ts:fling onPrepareHit: `if (!item.fling) return false`.
+        // An itemless user or an un-flingable item (no `fling` field, data
+        // sentinel `fling_bp == 255`) fails the move with NO item consumed.
+        // (Embargo / Klutz / Magic Room `ignoringItem` gating is deferred —
+        // those item-suppressors aren't modelled yet.)
+        if move_id == data::move_id::FLING {
+            // data/moves.ts fling onPrepareHit: ignoringItem(true) (Embargo, Magic
+            // Room), the item's TakeItem (own Mega Stone), then `item.fling`.
+            let flingable = attacker.item_id != u16::MAX
+                && attacker.effective_ability_id() != data::ability_id::KLUTZ
+                && data::ITEMS[attacker.item_id as usize].fling_bp != 255
+                && !attacker.holds_own_mega_stone()
+                && self.magic_room_turns == 0
+                && !attacker.volatiles.has(crate::pokemon::VolatileKind::Embargo);
+            if !flingable {
+                self.p_try_fail(actor_side, actor_slot);
+                return;
+            }
+            // PS removes the flung item in `onPrepareHit` (before accuracy /
+            // Protect / the hit) via the `fling` volatile's onUpdate — so it is
+            // spent even when Fling then misses, is blocked by Protect, or hits
+            // an immune target. Consume it here, at that timing, on the LIVE
+            // mon; the `attacker` snapshot keeps the item so the damage BP
+            // (damage.rs reads `attacker.fling_bp`) is unaffected. The flung
+            // item is Recycle-recoverable, so consume_item (which sets
+            // lastItem) is the right primitive. The fling status/flinch EFFECT
+            // is a move secondary and still applies only on a connecting hit
+            // (handled later, gated on any_damage_dealt > 0).
+            let item = attacker.item_id;
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                let ate = a.ate_berry;
+                a.consume_item();
+                a.ate_berry = ate;
+            }
+            self.fling_pending = Some((actor_side, actor_slot, item));
+        }
         // Protean / Libero — PS `data/abilities.ts:3452` / `:2273`
         // `onPrepareHit(source, target, move)`:
         //   if (this.effectState.protean) return;            // once per switch-in
@@ -8292,110 +8404,6 @@ self.trigger_emergency_exits();
             return;
         }
 
-        // Counter / Mirror Coat / Metal Burst — `target: scripted`. PS
-        // redirects these to the slot that dealt the qualifying damage this
-        // turn (`condition.onRedirectTarget` for Counter/Mirror Coat,
-        // `onModifyTarget` for Metal Burst) and FAILS (`onTry`) when no such
-        // hit was recorded this turn. Counter keys off the last *physical*
-        // hit, Mirror Coat the last *special* hit, Metal Burst the most
-        // recent hit of either category. The attacker must still be on the
-        // field — if it fainted / switched, `getAtSlot` is empty and the
-        // move fizzles. PP was already deducted above (PS deducts before the
-        // failing `onTry`), so we just return.
-        // PS data/moves.ts: counter / mirrorcoat / metalburst.
-        if matches!(
-            move_id,
-            data::move_id::COUNTER | data::move_id::MIRRORCOAT | data::move_id::METALBURST | data::move_id::COMEUPPANCE
-        ) {
-            // getMoveTargets finds nobody with every foe down: `[notarget]`, ahead
-            // of onTry (sim/battle-actions.ts useMoveInner, sim/pokemon.ts).
-            let foe = actor_side.opposing();
-            if !(0..self.format().active_count()).any(|s| self.side(foe).active_mon(s).is_some_and(|d| d.is_alive())) {
-                self.p_attr("[notarget]");
-                pmon!(self, "-fail", actor_side, actor_slot);
-                return;
-            }
-            let ((src_side_byte, src_slot), dmg) = match move_id {
-                data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
-                data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
-                // getLastDamagedBy(true): only a foe's hit counts (data/moves.ts
-                // metalburst onTry; last_damage_taken also records an ally's).
-                _ => (attacker.last_attacker, match attacker.last_attacker_category {
-                    0 => attacker.last_phys_damage,
-                    1 => attacker.last_spec_damage,
-                    _ => 0,
-                }),
-            };
-            if dmg == 0 {
-                self.p_try_fail(actor_side, actor_slot);
-                return; // no qualifying damage taken this turn
-            }
-            let scr_side = if src_side_byte == 0 { SideRef::P1 } else { SideRef::P2 };
-            let scr_slot = src_slot;
-            let attacker_present = self
-                .side(scr_side)
-                .active_mon(scr_slot as usize)
-                .is_some_and(|m| m.is_alive());
-            // Metal Burst / Comeuppance name the slot in onModifyTarget; a fainted
-            // occupant makes getMoveTargets pick another foe, and the damage stands
-            // (data/moves.ts metalburst, sim/pokemon.ts getMoveTargets).
-            let retarget = (!attacker_present && matches!(move_id, data::move_id::METALBURST | data::move_id::COMEUPPANCE))
-                .then(|| (0..self.format().active_count() as u8).find(|&s| self.side(scr_side).active_mon(s as usize).is_some_and(|m| m.is_alive())))
-                .flatten();
-            if let Some(sl) = retarget {
-                #[cfg(feature = "ps-rng")]
-                if self.rng.is_ps() {
-                    let _ = self.rng.ps_random_range("get_target", 0, 1);
-                }
-                target = Some(Target { side: scr_side, slot: sl });
-                self.p_retarget(scr_side, sl);
-            } else if !attacker_present {
-                self.p_try_fail(actor_side, actor_slot);
-                return; // the attacker is gone — move fails
-            } else {
-                target = Some(Target { side: scr_side, slot: scr_slot });
-                // The onRedirectTarget's pick is what `|move|` names.
-                self.p_retarget(scr_side, scr_slot);
-            }
-        }
-
-        // Fling — fail if the user holds no flingable item. PS
-        // data/moves.ts:fling onPrepareHit: `if (!item.fling) return false`.
-        // An itemless user or an un-flingable item (no `fling` field, data
-        // sentinel `fling_bp == 255`) fails the move with NO item consumed.
-        // (Embargo / Klutz / Magic Room `ignoringItem` gating is deferred —
-        // those item-suppressors aren't modelled yet.)
-        if move_id == data::move_id::FLING {
-            // data/moves.ts fling onPrepareHit: ignoringItem(true) (Embargo, Magic
-            // Room), the item's TakeItem (own Mega Stone), then `item.fling`.
-            let flingable = attacker.item_id != u16::MAX
-                && attacker.effective_ability_id() != data::ability_id::KLUTZ
-                && data::ITEMS[attacker.item_id as usize].fling_bp != 255
-                && !attacker.holds_own_mega_stone()
-                && self.magic_room_turns == 0
-                && !attacker.volatiles.has(crate::pokemon::VolatileKind::Embargo);
-            if !flingable {
-                self.p_try_fail(actor_side, actor_slot);
-                return;
-            }
-            // PS removes the flung item in `onPrepareHit` (before accuracy /
-            // Protect / the hit) via the `fling` volatile's onUpdate — so it is
-            // spent even when Fling then misses, is blocked by Protect, or hits
-            // an immune target. Consume it here, at that timing, on the LIVE
-            // mon; the `attacker` snapshot keeps the item so the damage BP
-            // (damage.rs reads `attacker.fling_bp`) is unaffected. The flung
-            // item is Recycle-recoverable, so consume_item (which sets
-            // lastItem) is the right primitive. The fling status/flinch EFFECT
-            // is a move secondary and still applies only on a connecting hit
-            // (handled later, gated on any_damage_dealt > 0).
-            let item = attacker.item_id;
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                let ate = a.ate_berry;
-                a.consume_item();
-                a.ate_berry = ate;
-            }
-            self.fling_pending = Some((actor_side, actor_slot, item));
-        }
 
         // Expanding Force — PS data/moves.ts:4958 `onModifyMove`: a grounded
         // user in Psychic Terrain turns it into `allAdjacentFoes`. PS
@@ -9238,6 +9246,8 @@ self.trigger_emergency_exits();
                 if self.plog() {
                     self.p_tag(crate::protocol::step::DAMAGE, tside, tslot);
                     self.p_damage(tside, tslot, "");
+                    // illusion onDamagingHit (data/abilities.ts).
+                    self.p_illusion_break(tside, tslot);
                     if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.current_hp == 0) {
                         let saved = self.p_key_save();
                         self.p_set_hit(255);
@@ -9795,7 +9805,7 @@ self.trigger_emergency_exits();
                     t[..n as usize].contains(&9)
                 };
                 if darts_phase[ti] == 1 && darts_smart {
-                } else if matches!(defender.effective_ability_id(), data::ability_id::LEVITATE | data::ability_id::EELEVATE) && !attacker_breaks_mold && !flying {
+                } else if matches!(defender.effective_ability_id(), data::ability_id::LEVITATE | data::ability_id::EELEVATE) && !attacker_breaks_mold && !flying && !defender.is_grounded() {
                     pmon!(self, "-immune", tside, tslot, "|[from] ability: {}", crate::battle_protocol::ability_name(defender.effective_ability_id()));
                 } else {
                     pmon!(self, "-immune", tside, tslot);
@@ -11687,7 +11697,8 @@ self.trigger_emergency_exits();
             let aimed_at_ally = target.is_some_and(|t| t.side == actor_side);
             let blocked = match chosen {
                 _ if aimed_at_ally => false,
-                Some(d) => is_dark(d),
+                // hitStepInvulnerabilityEvent comes first: the dodge prints `-miss`.
+                Some(d) => is_dark(d) && d.semi_invuln == 0,
                 None => {
                     let all_targets_dark = (0..n)
                         .filter_map(|slot| self.side(opp).active_mon(slot as usize))
@@ -11761,6 +11772,12 @@ self.trigger_emergency_exits();
                 if blocked {
                     pmon!(self, "-activate", tside, tslot, "|move: Psychic Terrain");
                     return;
+                }
+                // onTryHit's hint for an airborne target and a move of real priority.
+                if tside != actor_side && m.priority > 0
+                    && self.side(tside).active_mon(tslot as usize).is_some_and(|t| t.is_alive() && !t.is_grounded() && t.semi_invuln == 0)
+                {
+                    self.p_push("|-hint|Psychic Terrain doesn't affect airborne Pokémon.".to_string());
                 }
             }
         }
@@ -12386,24 +12403,24 @@ self.trigger_emergency_exits();
         // match, but setSpecies recomputes storedStats, ending a Power Split, and
         // caches the raw Speed (sim/pokemon.ts setSpecies).
         if let Some(busted_id) = busted_id {
-            self.set_forme(ctx.tside, ctx.tslot, busted_id, true);
+            self.set_forme(tside, tslot, busted_id, true);
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
-                self.ps_reset_speed(ctx.tside, ctx.tslot as usize);
+                self.ps_reset_speed(tside, tslot as usize);
             }
         }
-        if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+        if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
             d.disguise_busted = true;
             d.current_hp = d.current_hp.saturating_sub(chip);
         }
         // disguise onUpdate: formeChange(..., isPermanent) then
         // damage(..., species) (data/abilities.ts:1002-1007).
         if let Some(busted_id) = busted_id.filter(|_| self.plog()) {
-            self.p_permanent_forme(ctx.tside, ctx.tslot, busted_id);
+            self.p_permanent_forme(tside, tslot, busted_id);
             let name = data::SPECIES[busted_id as usize].name;
-            self.p_damage(ctx.tside, ctx.tslot, &format!("|[from] pokemon: {name}"));
+            self.p_damage(tside, tslot, &format!("|[from] pokemon: {name}"));
         }
-        let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
+        let _ = self.check_target_fainted(tside, tslot);
     }
 
     /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975),
@@ -12692,7 +12709,7 @@ self.trigger_emergency_exits();
             }
             _ => {}
         }
-        if fell_stinger && self.side(side).active_mon(slot as usize).is_some_and(|a| a.is_alive()) {
+        if fell_stinger && !self.p1.is_defeated() && !self.p2.is_defeated() && self.side(side).active_mon(slot as usize).is_some_and(|a| a.is_alive()) {
             self.apply_boosts(side, slot, &[(0, 3)], side, slot);
         }
     }
@@ -12800,6 +12817,7 @@ self.trigger_emergency_exits();
         if hit_sub && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.effective_item_id() == data::item_id::AIRBALLOON) {
             if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                 t.consume_item();
+                t.consumed_item = u16::MAX;
             }
             self.p_item_line("-enditem", ctx.tside, ctx.tslot, data::item_id::AIRBALLOON, "");
             crate::ability::on_item_consumed(self, ctx.tside, ctx.tslot);
@@ -15896,7 +15914,8 @@ self.trigger_emergency_exits();
                     a.must_recharge = true;
                 }
             }
-            if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.must_recharge) {
+            // selfDrops came before DamagingHit: a Rocky Helmet KO doesn't take the line.
+            if self.plog() {
                 // `self` runs in the first hit's selfDrops (sim/battle-actions.ts).
                 self.p_set_hit(0);
                 self.p_tag_step(crate::protocol::step::SELF_DROP);
@@ -16533,7 +16552,16 @@ self.trigger_emergency_exits();
             "partingshot" if !self.ps_status_missed => true,
             // onHit copies the stages, even all zero, and returns nothing.
             "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit" => true,
-            _ => self.status_effect_snapshot() != *before,
+            _ => {
+                let mut now = self.status_effect_snapshot();
+                // Protean's PrepareHit type change isn't the move's effect.
+                if matches!(user.effective_ability_id(), data::ability_id::PROTEAN | data::ability_id::LIBERO)
+                    && !matches!(m.slug, "conversion" | "conversion2" | "reflecttype" | "camouflage")
+                {
+                    now.mons[side as usize][slot as usize].types = before.mons[side as usize][slot as usize].types;
+                }
+                now != *before
+            }
         };
         if ok { MoveResult::Succeeded } else { MoveResult::Failed }
     }
@@ -16953,10 +16981,11 @@ self.trigger_emergency_exits();
         if !self.plog() {
             return;
         }
-        let holder = (0..self.format().active_count() as u8).find(|&s| {
+        // The fastest holder's onAllyTryAddVolatile runs first (sim/battle.ts speedSort).
+        let holder = (0..self.format().active_count() as u8).filter(|&s| {
             self.side(ts).active_mon(s as usize)
                 .is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::AROMAVEIL)
-        });
+        }).max_by_key(|&s| self.p_res_speed(ts, s));
         if let Some(h) = holder {
             let of = self.p_ident(ts, h);
             pmon!(self, "-block", ts, tslot, "|ability: Aroma Veil|[of] {of}");
@@ -20021,10 +20050,12 @@ self.trigger_emergency_exits();
         let s = self.side(side);
         let n = self.format().active_count();
         let active_here = s.active.iter().take(n).any(|&i| i == source_team_index);
+        // isActive holds until faintMessages (sim/battle.ts): the source counts till
+        // its `|faint|` prints.
         active_here
-            && s.team
-                .get(source_team_index as usize)
-                .is_some_and(|mon| mon.is_alive())
+            && s.team.get(source_team_index as usize).is_some_and(|mon| {
+                mon.is_alive() || (self.plog() && !self.p_faint_logged(side, source_team_index))
+            })
     }
 
     /// Aroma Veil — PS `data/abilities.ts:234` `onAllyTryAddVolatile`:
@@ -20342,7 +20373,12 @@ self.trigger_emergency_exits();
                 let (types, n) = u.effective_types();
                 !types[..n as usize].contains(&13)
             });
-        if matches!(m.target, 0 | 4 | 10) && !self_curse {
+        // Toxic from a Poison type hits through it (hitStepInvulnerabilityEvent).
+        let toxic_sure = move_id == data::move_id::TOXIC && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
+            let (types, n) = u.effective_types();
+            types[..n as usize].contains(&7)
+        });
+        if matches!(m.target, 0 | 4 | 10) && !self_curse && !toxic_sure {
             if let Some((ts, tslot)) = opp_target {
                 let no_guard = |b: &Self, s: SideRef, sl: u8| {
                     b.side(s).active_mon(sl as usize).is_some_and(|x| x.effective_ability_id() == data::ability_id::NOGUARD)
@@ -21339,10 +21375,7 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Defog_(move)>
                 if let Some((ts, tslot)) = opp_target {
                     // Evasion drop unless the target hides behind a Sub.
-                    let sub_blocks = self
-                        .side(ts)
-                        .active_mon(tslot as usize)
-                        .is_some_and(|t| t.substitute_hp() > 0);
+                    let sub_blocks = self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot);
                     if !sub_blocks {
                         let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(ts, tslot, &[(6, -1)], actor_side, actor_slot);
@@ -22710,6 +22743,10 @@ self.trigger_emergency_exits();
                         // terrain/weather setter the user's lands last.
                         // on_start reads the EFFECTIVE ability, so
                         // Neutralizing Gas suppression holds.
+                        // skillSwap's End for the lost abilities (sim/battle.ts skillSwap): Supreme
+                        // Overlord's fallen count, Flash Fire's boost.
+                        self.p_swap_end_lines(actor_side, actor_slot, source_eff_id);
+                        self.p_swap_end_lines(ts, tslot, target_eff_id);
                         crate::ability::on_start(self, ts, tslot);
                         crate::ability::on_start(self, actor_side, actor_slot);
                     }
@@ -22963,6 +23000,14 @@ self.trigger_emergency_exits();
                                 | data::ability_id::TERAVOLT
                                 | data::ability_id::TURBOBLAZE
                         ));
+                    // addVolatile's TryAddVolatile: Aroma Veil's `-block`, once onTryHit
+                    // has passed (data/abilities.ts aromaveil, sim/pokemon.ts).
+                    if last_slot != 255 && self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive() && t.disabled_move_slot() == 255)
+                        && self.side_has_aroma_veil(opp, attacker_breaks_mold)
+                    {
+                        self.p_aroma_veil_block(opp, slot);
+                        return;
+                    }
                     let appliable = last_slot != 255
                         && (last_slot as usize) < 4
                         && self.side(opp).active_mon(slot as usize).is_some_and(|t| {
@@ -23674,6 +23719,9 @@ self.trigger_emergency_exits();
                 if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
                     return;
                 }
+                // memento's boosts in one boost(): Hyper Cutter and co print first
+                // (data/abilities.ts hypercutter onTryBoost).
+                self.p_drop_blocked(ts, tslot, &[0, 2]);
                 let mut buf = [(0u8, 0i8); 2];
                 let mut k = 0usize;
                 for (idx, delta) in [(0u8, -2i8), (2, -2)] {
