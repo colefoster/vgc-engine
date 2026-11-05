@@ -595,7 +595,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: vgc_engine_core::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false, aura_break_active: false,
-                attacker_total_fainted_allies: 0,
+                attacker_total_fainted_allies: 0, speed_stats: None,
                 attacker_stats: None, defender_stats: None,
                 pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
                 defender_friend_guarded: false,

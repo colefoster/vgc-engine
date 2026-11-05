@@ -172,7 +172,7 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         fairy_aura_active: false,
         dark_aura_active: false,
         aura_break_active: false,
-        attacker_total_fainted_allies: 0,
+        attacker_total_fainted_allies: 0, speed_stats: None,
         attacker_stats: None,
         defender_stats: None,
         pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
