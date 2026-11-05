@@ -340,6 +340,11 @@ impl<'a> Serialize for CanonicalVolatileSetView<'a> {
         // Volatile is `Copy`, so this is a stack memcpy.
         let mut items: [Volatile; 8] = vs.items;
         for v in items.iter_mut().take(vs.len as usize) {
+            // The hurtThisTurn HP only matters to Emergency Exit within the turn;
+            // like HP itself it must not split the hash.
+            if v.kind == VolatileKind::DamagedThisTurn {
+                v.payload = 0;
+            }
             if v.kind == VolatileKind::Substitute && v.payload > 0 {
                 v.payload = 1;
             }
