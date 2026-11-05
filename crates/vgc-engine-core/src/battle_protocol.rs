@@ -1668,6 +1668,10 @@ impl Battle {
         if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) {
             display = Some((side, slot));
         }
+        // wonderroom onModifyMove (data/moves.ts) on a move with overrideOffensiveStat.
+        if move_id == data::move_id::BODYPRESS && self.wonder_room_turns > 0 {
+            self.p_push("|-hint|Body Press uses Def boosts when Wonder Room is active.".to_string());
+        }
         // struggle onModifyMove, before the `|move|` line (data/moves.ts:18226).
         if move_id == data::move_id::STRUGGLE {
             pmon!(self, "-activate", side, slot, "|move: Struggle");
