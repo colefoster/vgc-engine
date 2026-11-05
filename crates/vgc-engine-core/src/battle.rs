@@ -3895,6 +3895,11 @@ self.trigger_emergency_exits();
                             // the roll fails (data/moves.ts stall
                             // onStallMove) and never adds it otherwise.
                             V::Stall if v.payload & 0xFF == 0 => continue,
+                            // focuspunch condition onTryAddVolatile refused the
+                            // flinch (data/moves.ts); the engine ignores it at
+                            // BeforeMove instead.
+                            V::Flinch if (self.ps_charge_volatile[side as usize] >> (self.side(side).active[slot] as usize).min(7)) & 1 != 0
+                                && m.moves.contains(&data::move_id::FOCUSPUNCH) => continue,
                             V::Taunt => 15, V::Disable => 17, V::Yawn => 23, V::HealBlock => 20,
                             V::Embargo => 21, V::LeechSeed => 8, V::Curse => 12, V::Nightmare => 11,
                             V::PerishSong => 24, V::Ingrain => 7, V::AquaRing => 6, V::MagnetRise => 18,
