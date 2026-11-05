@@ -233,6 +233,16 @@ impl Battle {
                         }
                     }
                 }
+                // A released two-turn move's `twoturnmove` and the duration-1
+                // volatiles (ps_residual_ties): no line, same sort.
+                #[cfg(feature = "ps-rng")]
+                if !skip && (idx as usize) < 8 {
+                    for mask in [self.ps_twoturn_release[side as usize], self.ps_charge_volatile[side as usize]] {
+                        if mask & (1 << idx) != 0 {
+                            push(&mut e, (NONE, 0, spe, 2), mon(255, 2), false, false);
+                        }
+                    }
+                }
                 // The ability, then the item (sim/battle.ts:1117-1130).
                 let ability = match m.effective_ability_id() {
                     vgc_engine_data::ability_id::HEALER | vgc_engine_data::ability_id::HYDRATION | vgc_engine_data::ability_id::SHEDSKIN => Some((5u8, 3u8)),
