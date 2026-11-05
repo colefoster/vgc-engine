@@ -24845,9 +24845,10 @@ fn apply_secondary_effect(
 /// this move, which isn't filtered by the target's Shield Dust or Covert Cloak.
 fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8, attacker_side: SideRef, attacker_slot: u8, move_slug: &str) -> bool {
     let Some(a) = battle.side(attacker_side).active_mon(attacker_slot as usize) else { return false };
-    let source = a.is_alive()
-        && (a.effective_ability_id() == data::ability_id::STENCH
-            || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG));
+    // onModifyMove ran before the hit: a user that self-destructed still rolls
+    // (data/abilities.ts stench, data/items.ts kingsrock).
+    let source = a.effective_ability_id() == data::ability_id::STENCH
+        || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG);
     let category = data::MOVES.iter().find(|mv| mv.slug == move_slug).map_or(2, |mv| mv.category);
     let breaks_mold = matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
     let filtered = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|d| {
