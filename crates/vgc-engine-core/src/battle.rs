@@ -3517,6 +3517,22 @@ self.trigger_emergency_exits();
         self.p_res_refresh_weather_order();
     }
 
+    /// The bounced copy's own useMove: its hit loop ends a landed hit with both Updates
+    /// (data/abilities.ts:2447, data/mods/champions/scripts.ts:538, :575).
+    fn ps_bounced_hit_loop(&mut self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>, before: &StatusEffectSnapshot) {
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps()
+            && self.ps_status_move_landed(side, slot, m, target)
+            && (self.ps_status_sub_null
+                || self.status_move_result(side, slot, m, target, before, false) == crate::pokemon::MoveResult::Succeeded)
+        {
+            self.ps_hit_update();
+            self.ps_loop_end_update(side, slot);
+        }
+        #[cfg(not(feature = "ps-rng"))]
+        let _ = (side, slot, m, target, before);
+    }
+
     /// `ps-rng` only: the hit loop's per-hit `eachEvent('Update')`
     /// (data/mods/champions/scripts.ts:538). A mon the hit knocked out has
     /// 0 HP but PS marks it `fainted` only in faintMessages after the loop
@@ -12443,6 +12459,7 @@ self.trigger_emergency_exits();
                     pending_kind,
                     will_act,
                 );
+                self.ps_bounced_hit_loop(b_side, b_slot, m, Some(Target { side: actor_side, slot: actor_slot }), before);
                 return;
             }
         }
@@ -17441,8 +17458,10 @@ self.trigger_emergency_exits();
                     }
                 }
                 self.status_bounced = true;
+                let before = self.status_effect_snapshot();
                 self.resolve_status_move_inner(ts, tsl, m, move_id, None, None, pending_kind, will_act);
                 self.status_bounced = false;
+                self.ps_bounced_hit_loop(ts, tsl, m, None, &before);
             } else if ab == data::ability_id::GOODASGOLD {
                 hit[i] = false;
                 pmon!(self, "-immune", ts, tsl, "|[from] ability: Good as Gold");
