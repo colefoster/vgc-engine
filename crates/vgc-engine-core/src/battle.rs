@@ -1047,6 +1047,7 @@ impl Battle {
     /// data/items.ts onSwitchInPriority), as in `apply_replacement_switches`.
     pub(crate) fn run_lead_switch_ins(&mut self, order: ([(SideRef, u8); 4], usize)) {
         let (mut leads, k) = order;
+        let speed_order = leads;
         // Abilities' own onSwitchInPriority first (stable in Speed).
         leads[..k].sort_by_key(|&(s, sl)| {
             -(self.side(s).active_mon(sl as usize).map_or(0, |m| crate::ability::switch_in_priority(m.effective_ability_id())) as i32)
@@ -1061,8 +1062,15 @@ impl Battle {
         for &(side, slot) in &leads[..k] {
             self.shields_down_update(side, slot);
         }
-        for &(side, slot) in &leads[..k] {
+        // The items' onStart (priority -1 seeds, Room Service), then White Herb's
+        // onAnySwitchIn at -2 (data/items.ts).
+        self.defer_white_herb = true;
+        for &(side, slot) in &speed_order[..k] {
             crate::item::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        for &(side, slot) in &speed_order[..k] {
+            crate::item::try_consume_white_herb(self, side, slot);
         }
     }
 
@@ -3220,6 +3228,28 @@ self.trigger_emergency_exits();
         }
         keys[..n].sort_unstable_by(|a, b| b.cmp(a));
         let _ = self.ps_shuffle_ties(&keys[..n], op);
+    }
+
+    /// `ps-rng` only: runSwitch's `speedSort(getAllActive(true))`, which sets
+    /// `speedOrder`, the order every SwitchIn handler of equal priority runs in
+    /// (sim/battle-actions.ts:233-237, resolvePriority, sim/battle.ts:1016-1020).
+    #[cfg(feature = "ps-rng")]
+    fn ps_run_switch_order(&mut self) -> ([(SideRef, u8); 4], usize) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 4];
+        let mut items = [(SideRef::P1, 0u8); 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                if let Some(k) = self.ps_speed(side, slot) {
+                    keys[n] = -k;
+                    items[n] = (side, slot as u8);
+                    n += 1;
+                }
+            }
+        }
+        crate::order::ps_speed_sort(&mut keys[..n], &mut items[..n], |a, b| self.rng.ps_random_range("shuffle", a, b));
+        (items, n)
     }
 
     /// `ps-rng` only: the weather's `eachEvent('Weather')` speed sort, as
@@ -5901,6 +5931,7 @@ self.trigger_emergency_exits();
                 m.set_switched_in_this_turn(false);
             }
         }
+        let mut speed_order = ([(SideRef::P1, 0u8); 4], 0usize);
         // Each instaswitch's switchIn queues its runSwitch with insertChoice,
         // which draws when it ties an already-queued runSwitch on Speed
         // (sim/battle-queue.ts insertChoice, sim/battle-actions.ts:155);
@@ -5932,7 +5963,7 @@ self.trigger_emergency_exits();
                 len += 1;
             }
             self.ps_active_ties(false, "shuffle");
-            self.ps_active_ties(true, "shuffle");
+            speed_order = self.ps_run_switch_order();
         }
         // That last instaswitch's Update runs before any runSwitch, so HP
         // berries eat while the entering Unnerve holders have not started.
@@ -5945,21 +5976,44 @@ self.trigger_emergency_exits();
             self.rng = rng;
         }
         self.unnerve_unstarted = 0;
-        for e in &mut entered[..n] {
-            let tw = self.side(e.1).conditions.tailwind_turns > 0;
-            e.0 = self
-                .side(e.1)
-                .active_mon(e.2 as usize)
-                .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
-                .unwrap_or(0);
-        }
-        // Under Trick Room PS's speed is `10000 - spe` (sim/pokemon.ts:641
-        // getActionSpeed), so the slower replacement's onStart runs first
-        // (Torkoal's Drought before Pelipper's Drizzle -> rain stays).
-        if self.trick_room_turns > 0 {
-            entered[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        if speed_order.1 > 0 {
+            let (order, len) = speed_order;
+            entered[..n].sort_by_key(|e| order[..len].iter().position(|o| *o == (e.1, e.2)));
         } else {
-            entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            for e in &mut entered[..n] {
+                let tw = self.side(e.1).conditions.tailwind_turns > 0;
+                e.0 = self
+                    .side(e.1)
+                    .active_mon(e.2 as usize)
+                    .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
+                    .unwrap_or(0);
+            }
+            // Under Trick Room PS's speed is `10000 - spe` (sim/pokemon.ts:641
+            // getActionSpeed), so the slower replacement's onStart runs first
+            // (Torkoal's Drought before Pelipper's Drizzle -> rain stays).
+            if self.trick_room_turns > 0 {
+                entered[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            } else {
+                entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            }
+            let mut len = 0;
+            for e in &entered[..n] {
+                speed_order.0[len] = (e.1, e.2);
+                len += 1;
+            }
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() as u8 {
+                    if len < 4 && !speed_order.0[..len].contains(&(side, slot)) {
+                        speed_order.0[len] = (side, slot);
+                        len += 1;
+                    }
+                }
+            }
+            speed_order.1 = len;
+        }
+        let mut item_order = [(SideRef::P1, 0u8); 4];
+        for (o, e) in item_order.iter_mut().zip(&entered[..n]) {
+            *o = (e.1, e.2);
         }
         // Handlers sort by priority before Speed: abilities (0) all run
         // before the item handlers (seeds / Booster Energy / Room Service
@@ -5985,16 +6039,16 @@ self.trigger_emergency_exits();
         for &(_, side, slot) in &entered[..n] {
             self.shields_down_update(side, slot);
         }
-        // White Herb's onAnySwitchIn also fires for a holder already in.
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..self.format().active_count() as u8 {
-                if !entered[..n].iter().any(|e| e.1 == side && e.2 == slot) {
-                    crate::item::try_consume_white_herb(self, side, slot);
-                }
-            }
-        }
-        for &(_, side, slot) in &entered[..n] {
+        // The items' onStart (priority -1 seeds, Room Service), then White Herb's
+        // onAnySwitchIn at -2, which fires for a holder already in as well
+        // (data/items.ts).
+        self.defer_white_herb = true;
+        for &(side, slot) in &item_order[..n] {
             crate::item::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        for &(side, slot) in &speed_order.0[..speed_order.1] {
+            crate::item::try_consume_white_herb(self, side, slot);
         }
         // runSwitch's own eachEvent('Update').
         #[cfg(feature = "ps-rng")]
