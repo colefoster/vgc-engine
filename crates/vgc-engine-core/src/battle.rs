@@ -7792,6 +7792,15 @@ self.trigger_emergency_exits();
         //    See `deduct_pp_main`.
         // sim/battle-actions.ts runMove: a locked move pays no PP.
         let move_locked = attacker.lockin_turns > 0 && attacker.lockin_move_slot == move_slot;
+        // deductPP fails at 0 PP (Spite, Eerie Spell spent it): `cant|nopp`.
+        if !called && !move_locked && !skip_pp_deduct && move_id != data::move_id::STRUGGLE
+            && attacker.pp.get(move_slot as usize).copied() == Some(0)
+        {
+            self.p_move_cancel();
+            pmon!(self, "cant", actor_side, actor_slot, "|nopp|{}", crate::battle_protocol::move_name(move_id));
+            self.after_move_user = None;
+            return;
+        }
         if !called && !move_locked {
             self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, skip_pp_deduct);
         }
