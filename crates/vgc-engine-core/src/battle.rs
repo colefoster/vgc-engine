@@ -14940,7 +14940,9 @@ self.trigger_emergency_exits();
                 m.level as u32,
                 m.stats.atk as u32,
                 m.boosts[0],
-                m.stats.def as u32,
+                // calculateStat('def') reads stored SpD under Wonder Room
+                // (sim/pokemon.ts calculateStat), keeping the Def stage.
+                if self.wonder_room_turns > 0 { m.stats.spd } else { m.stats.def } as u32,
                 m.boosts[1],
             )
         };
