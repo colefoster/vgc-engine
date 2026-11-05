@@ -2212,6 +2212,7 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                battle.ps_note_hit_ko(attacker_side, attacker_slot);
                 // roughskin / ironbarbs onDamagingHit: damage(..., source=target).
                 if battle.plog() {
                     let of = battle.p_ident(target_side, target_slot);
@@ -2421,24 +2422,14 @@ pub fn on_damaging_hit(
     // skipping Grass-type attackers. Overcoat/Safety Goggles deferred.
     if ability_id == data::ability_id::EFFECTSPORE {
         if move_makes_contact_from_attacker {
+            // source.runStatusImmunity('powder'): alive, not Grass, no Overcoat or
+            // Safety Goggles. An already-statused source still rolls
+            // (data/abilities.ts effectspore).
             let attacker_alive = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
-            let attacker_grass = battle
-                .side(attacker_side)
-                .active_mon(attacker_slot as usize)
-                .map(|a| {
-                    let s = a.species();
-                    (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass
-                })
-                .unwrap_or(false);
-            let attacker_already_statused = battle
-                .side(attacker_side)
-                .active_mon(attacker_slot as usize)
-                .map(|a| !matches!(a.status, crate::pokemon::Status::None))
-                .unwrap_or(true);
-            if attacker_alive && !attacker_grass && !attacker_already_statused {
+            if attacker_alive && !battle.target_is_powder_immune(attacker_side, attacker_slot) {
                 // PS uses `random(100)` returning 0..=99. Our percent_1_100
                 // returns 1..=100. Translate: r in 1..=11 → slp, 12..=21
                 // → par, 22..=30 → psn (matches PS's `< 11`, `< 21`, `< 30`

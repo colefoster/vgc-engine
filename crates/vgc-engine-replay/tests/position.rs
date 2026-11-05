@@ -161,6 +161,10 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                         }
                     }
                 }
+                // Same for the turn-scoped ps-rng field, absent without the feature.
+                if battle["ps_recharge_changed"] == serde_json::json!([0, 0]) {
+                    battle.as_object_mut().unwrap().remove("ps_recharge_changed");
+                }
                 for v in [battle, rec.prefix_json(), rec.report.clone(), rec.board.clone(), rec.sets.clone()] {
                     all.push_str(&serde_json::to_string(&v).unwrap());
                     all.push('\n');

@@ -787,7 +787,9 @@ fn main() {
             m.pp.min(u8::MAX as u32) as u8,
             m.priority.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
             target_code(&m.target),
-            !m.secondary.is_null(),
+            // `secondaries` lists are dropped by the dex dump; they are Sheer Force
+            // moves too (data/abilities.ts sheerforce onModifyMove).
+            !m.secondary.is_null() || matches!(slug.as_str(), "firefang" | "icefang" | "thunderfang" | "triplearrows"),
             matches!(slug.as_str(), "electroshot" | "orderup"),
             m.flags.contains_key("contact"),
             m.flags.contains_key("punch"),

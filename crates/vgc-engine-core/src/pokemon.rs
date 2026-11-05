@@ -1340,10 +1340,9 @@ impl Pokemon {
         if self.effective_ability_id() == data::ability_id::SUPERLUCK {
             s = s.saturating_add(1);
         }
-        let item = if self.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[self.item_id as usize].slug
+        let item = match self.effective_item_id() {
+            u16::MAX => "",
+            id => data::ITEMS[id as usize].slug,
         };
         match item {
             "scopelens" | "razorclaw" => s = s.saturating_add(1),
@@ -1428,14 +1427,14 @@ impl Pokemon {
         if self.item_suppressed {
             return u16::MAX;
         }
-        // sim/pokemon.ts ignoringItem: Klutz, but for `ignoreKlutz` items
-        // (Macho Brace, Iron Ball, the Power items; data/items.ts).
-        if self.ability_id == data::ability_id::KLUTZ
-            && self.effective_ability_id() == data::ability_id::KLUTZ
+        // sim/pokemon.ts ignoringItem: Klutz, except the items flagged ignoreKlutz
+        // (data/items.ts).
+        if self.effective_ability_id() == data::ability_id::KLUTZ
             && !matches!(
                 self.item_id,
-                data::item_id::MACHOBRACE | data::item_id::IRONBALL | data::item_id::POWERANKLET | data::item_id::POWERBAND
-                    | data::item_id::POWERBELT | data::item_id::POWERBRACER | data::item_id::POWERLENS | data::item_id::POWERWEIGHT
+                data::item_id::ABILITYSHIELD | data::item_id::MACHOBRACE | data::item_id::POWERANKLET
+                    | data::item_id::POWERBAND | data::item_id::POWERBELT | data::item_id::POWERBRACER | data::item_id::POWERLENS
+                    | data::item_id::POWERWEIGHT
             )
         {
             return u16::MAX;

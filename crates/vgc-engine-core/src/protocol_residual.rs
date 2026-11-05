@@ -172,8 +172,15 @@ impl Battle {
                 if self.future_pending[side as usize][slot as usize].is_some() {
                     push(&mut e, (3, 0, spe, 3), mon(3, 3), false, false);
                 }
+                // Its status handler stays on the list until checkFainted sets
+                // 'fnt' (sim/battle.js:2066-2073), at the end of the turn's last
+                // action: it takes part in the sort, then is skipped.
+                #[cfg(feature = "ps-rng")]
+                let fnt = !m.is_alive() && (idx as usize) < 8 && self.ps_status_fnt[side as usize] & (1 << idx) != 0;
+                #[cfg(not(feature = "ps-rng"))]
+                let fnt = skip;
                 match m.status {
-                    _ if skip => {}
+                    _ if fnt => {}
                     Status::Burn => push(&mut e, (10, 0, spe, 0), mon(10, 0), false, skip),
                     Status::Poison | Status::Toxic => push(&mut e, (9, 0, spe, 0), mon(9, 0), false, skip),
                     _ => {}
@@ -217,8 +224,25 @@ impl Battle {
                         let order = order as i64;
                         push(&mut e, (order, 0, spe, 2), mon(order.min(255) as u8, 2), ends, false);
                     }
-                    for on in [m.charging_turns > 0, m.semi_invuln != 0, m.must_recharge, m.lockin_turns > 0] {
+                    // Uproar is a volatile with its own onResidual, not a
+                    // lockedmove (data/moves.ts uproar).
+                    let uproar = m.volatiles.has(V::Uproar);
+                    if uproar {
+                        let ends = m.volatiles.get(V::Uproar).is_some_and(|v| v.payload <= 1);
+                        push(&mut e, (28, 0, spe, 1), mon(28, 1), ends, false);
+                    }
+                    for on in [m.charging_turns > 0, m.semi_invuln != 0, m.must_recharge, m.lockin_turns > 0 && !uproar] {
                         if on {
+                            push(&mut e, (NONE, 0, spe, 2), mon(255, 2), false, false);
+                        }
+                    }
+                }
+                // A released two-turn move's `twoturnmove` and the duration-1
+                // volatiles (ps_residual_ties): no line, same sort.
+                #[cfg(feature = "ps-rng")]
+                if !skip && (idx as usize) < 8 {
+                    for mask in [self.ps_twoturn_release[side as usize], self.ps_charge_volatile[side as usize]] {
+                        if mask & (1 << idx) != 0 {
                             push(&mut e, (NONE, 0, spe, 2), mon(255, 2), false, false);
                         }
                     }
