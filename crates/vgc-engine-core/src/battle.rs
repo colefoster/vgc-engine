@@ -17832,6 +17832,12 @@ self.trigger_emergency_exits();
         if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.must_recharge) {
             self.ps_recharge_changed[ts as usize] |= 1 << tslot;
         }
+        // Counter / Mirror Coat first resolve their beforeTurnMove action, which
+        // picks a random foe too (sim/battle-queue.ts:106-112).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && matches!(mid, data::move_id::COUNTER | data::move_id::MIRRORCOAT) {
+            let _ = self.random_target_for(ts, tslot, mid);
+        }
         let target = self.random_target_for(ts, tslot, mid);
         // resolveAction then runs getActionSpeed -> getTarget
         // (sim/battle-queue.ts:173), which redraws for a move whose picked
