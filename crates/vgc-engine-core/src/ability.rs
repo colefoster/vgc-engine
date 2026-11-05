@@ -1712,7 +1712,7 @@ pub fn on_damaging_hit(
     attacker_side: SideRef,
     attacker_slot: u8,
     rng: &mut crate::rng::Rng,
-    crit: bool,
+    _crit: bool,
 ) {
     // Read ability slug + alive flag; the hook fires on a KO hit too
     // (PS contact-status abilities like Static still paralyze the
