@@ -760,6 +760,8 @@ fn eat_heal(battle: &mut Battle, side: SideRef, slot: u8, amount: u16, name: &st
     if m.is_heal_blocked() || m.current_hp == 0 || m.current_hp >= m.stats.hp {
         return;
     }
+    // ripen onTryHeal doubles a berry's heal (data/abilities.ts ripen).
+    let amount = if m.effective_ability_id() == data::ability_id::RIPEN { amount.saturating_mul(2) } else { amount };
     m.current_hp = m.current_hp.saturating_add(amount).min(m.stats.hp);
     if battle.plog() {
         let suffix = match of {
