@@ -1820,6 +1820,8 @@ pub(crate) fn magician_steal(
                 // magician onAfterMoveSecondarySelf's line (data/abilities.ts).
                 if battle.plog() {
                     let of = battle.p_ident(target_side, target_slot);
+                    // A KO'd target is named without a position by then.
+                    let of = battle.p_current_ident(&of);
                     battle.p_item_line("-item", attacker_side, attacker_slot, item, &format!("|[from] ability: Magician|[of] {of}"));
                 }
             }
