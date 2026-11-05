@@ -20298,6 +20298,18 @@ self.trigger_emergency_exits();
                 }
                 self.end_stockpile(actor_side, actor_slot);
             }
+            data::move_id::STUFFCHEEKS => {
+                // data/moves.ts stuffcheeks onTry + onHit.
+                let berry = self.side(actor_side).active_mon(actor_slot as usize)
+                    .is_some_and(|a| a.item_id != u16::MAX && data::ITEMS[a.item_id as usize].is_berry);
+                if !berry { return; }
+                let before = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[1]);
+                self.apply_boosts(actor_side, actor_slot, &[(1, 2)], actor_side, actor_slot);
+                let after = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[1]);
+                if before != after {
+                    self.eat_item_forced(actor_side, actor_slot);
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
