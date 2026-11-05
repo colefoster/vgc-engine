@@ -17960,6 +17960,11 @@ self.trigger_emergency_exits();
                 } else {
                     pmon!(self, "-activate", tside, tslot, "|move: Substitute|[damage]");
                 }
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                    self.ps_active_ties(false, "shuffle");
+                }
                 return;
             }
             // A future move no longer removes Endure before it hits
@@ -17983,6 +17988,16 @@ self.trigger_emergency_exits();
                 }
             }
             self.p_damage(tside, tslot, "");
+            // The hit loop's two eachEvent('Update'), around faintMessages:
+            // the first still sorts a mon this hit knocked out
+            // (data/mods/champions/scripts.ts hitStepMoveHitLoop, reached
+            // through trySpreadMoveHit from data/conditions.ts futuremove).
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                let knocked_out = self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.current_hp == 0);
+                self.ps_active_ties(knocked_out, "shuffle");
+                self.ps_active_ties(false, "shuffle");
+            }
         }
     }
 
