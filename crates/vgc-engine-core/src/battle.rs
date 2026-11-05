@@ -19965,6 +19965,18 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // An `adjacentAlly` move the same way (hitStepInvulnerabilityEvent spares
+        // only Helping Hand): Aromatic Mist on an ally in Fly misses.
+        if m.target == 2 && move_id != data::move_id::HELPINGHAND {
+            let ally = actor_slot ^ 1;
+            if self.side(actor_side).active_mon(ally as usize).is_some_and(|t| {
+                t.is_alive() && t.semi_invuln != 0 && t.effective_ability_id() != data::ability_id::NOGUARD
+            }) && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| u.effective_ability_id() != data::ability_id::NOGUARD)
+            {
+                self.p_miss(actor_side, actor_slot, actor_side, ally);
+                return;
+            }
+        }
         if m.blocked_by_protect && matches!(m.target, 0 | 4 | 10) {
             if let Some((ts, tslot)) = opp_target {
                 if self
