@@ -11473,7 +11473,7 @@ self.trigger_emergency_exits();
                 // move, a pending drag, a heal that fails with NOT_FAIL
                 // (data/moves.js healpulse / floralhealing), and Parting Shot,
                 // whose onHit returns nothing even if no stage moved.
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "partingshot")
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "partingshot" | "psychup")
                 || (matches!(m.slug, "roar" | "whirlwind")
                     && self.force_switch_flags.iter().flatten().any(|&f| f)))
         {
@@ -15859,6 +15859,8 @@ self.trigger_emergency_exits();
             // (data/moves.ts partingshot; runMoveEffects' didSomething).
             #[cfg(feature = "ps-rng")]
             "partingshot" if !self.ps_status_missed => true,
+            // onHit copies the stages, even all zero, and returns nothing.
+            "psychup" => true,
             _ => self.status_effect_snapshot() != *before,
         };
         if ok { MoveResult::Succeeded } else { MoveResult::Failed }
