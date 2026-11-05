@@ -199,6 +199,18 @@ pub(crate) fn react_to_opposing_stat_drop(
 ///
 /// Tie-break: PS visits stats in order atk, def, spa, spd, spe and
 /// uses strict `>`, so the EARLIER stat wins a tie.
+pub(crate) fn best_unboosted_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
+    // getBestStat(true, true): stages don't count (data/abilities.ts beastboost, eelevate).
+    let s = &mon.stats;
+    let mut best = (0u8, s.atk);
+    for (i, v) in [(1u8, s.def), (2, s.spa), (3, s.spd), (4, s.spe)] {
+        if v > best.1 {
+            best = (i, v);
+        }
+    }
+    best.0
+}
+
 pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
     let s = &mon.stats;
     // Apply the stat-stage multiplier per PS apply_boost equivalent.

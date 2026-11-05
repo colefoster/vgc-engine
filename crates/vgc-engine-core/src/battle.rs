@@ -12837,7 +12837,7 @@ self.trigger_emergency_exits();
                 let idx = self
                     .side(side)
                     .active_mon(slot as usize)
-                    .map(crate::ability::best_stat_index)
+                    .map(crate::ability::best_unboosted_stat_index)
                     .unwrap_or(0);
                 self.apply_boosts(side, slot, &[(idx, amount)], side, slot);
             }
