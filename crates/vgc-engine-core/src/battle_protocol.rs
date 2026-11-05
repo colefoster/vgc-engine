@@ -1578,7 +1578,9 @@ impl Battle {
                         return Some((t.side, t.slot));
                     }
                     if t.side == side {
-                        return Some((t.side, t.slot));
+                        // sim/battle.ts getTarget: adjacentAllyOrSelf falls back to
+                        // the user when the ally fainted.
+                        return Some(if tcode == 3 { (side, slot) } else { (t.side, t.slot) });
                     }
                 }
             }
@@ -1689,7 +1691,13 @@ impl Battle {
             }
         }
         let id = self.p_ident(side, slot);
-        let tgt = display.map(|(s, sl)| self.p_ident(s, sl)).unwrap_or_default();
+        // getRandomTarget's null for an adjacentAlly move with no ally reaches
+        // addMove as `null` (sim/battle.ts getRandomTarget, addMove).
+        let tgt = match display {
+            Some((s, sl)) => self.p_ident(s, sl),
+            None if self.moves()[move_id as usize].target == 2 => "null".to_string(),
+            None => String::new(),
+        };
         let locked = attacker.lockin_turns > 0 || attacker.charging_turns > 0;
         let from = if self.called_from != u16::MAX {
             format!("|[from] move: {}", move_name(self.called_from))
