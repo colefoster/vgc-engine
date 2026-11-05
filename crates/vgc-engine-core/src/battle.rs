@@ -377,6 +377,12 @@ pub struct Battle {
     /// `rolled_accuracy_passed`.
     #[serde(skip)]
     status_acc_boost: i8,
+    /// The status move's user and target, and the pending-action map, for
+    /// `accuracy::effective_accuracy` in `rolled_accuracy_passed`.
+    #[serde(skip)]
+    status_acc_pair: Option<(SideRef, u8, SideRef, u8)>,
+    #[serde(skip)]
+    status_pending_kind: [[u8; 2]; 2],
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -859,6 +865,8 @@ impl Battle {
             unnerve_unstarted: 0,
             status_sure_hit: false,
             status_acc_boost: 0,
+            status_acc_pair: None,
+            status_pending_kind: [[0; 2]; 2],
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -8006,6 +8014,16 @@ self.trigger_emergency_exits();
         // unchanged. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Poltergeist_(move)>.
         if move_id == data::move_id::POLTERGEIST && self.poltergeist_target_has_no_item(&targets) {
+            self.p_try_fail(actor_side, actor_slot);
+            return;
+        }
+        // Snore — PS data/moves.ts snore onTry: only while the user sleeps
+        // or has Comatose.
+        if move_id == data::move_id::SNORE
+            && !self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| {
+                matches!(u.status, Status::Sleep) || u.effective_ability_id() == data::ability_id::COMATOSE
+            })
+        {
             self.p_try_fail(actor_side, actor_slot);
             return;
         }
@@ -15259,14 +15277,33 @@ self.trigger_emergency_exits();
         // future enumerator pass can collapse to hit/miss.
         // Accuracy / evasion stages scale the base accuracy as for a
         // damaging move (sim/battle-actions.ts:614-631 hitStepAccuracy).
+        // The accuracy event chain, as for a damaging move
+        // (sim/battle-actions.ts hitStepAccuracy: items, abilities, Gravity).
         let boost = self.status_acc_boost as i32;
-        let acc: u32 = if boost > 0 {
+        let mut acc: u32 = if boost > 0 {
             m.accuracy as u32 * (3 + boost as u32) / 3
         } else if boost < 0 {
             m.accuracy as u32 * 3 / (3 + (-boost) as u32)
         } else {
             m.accuracy as u32
         };
+        if let Some((us, usl, ts, tsl)) = self.status_acc_pair {
+            if let (Some(a), Some(d)) = (self.side(us).active_mon(usl as usize), self.side(ts).active_mon(tsl as usize)) {
+                let comp = crate::accuracy::effective_accuracy(
+                    self, a, d, m, u16::MAX, us, usl, ts, tsl,
+                    a.effective_ability_id(), a.effective_item_id(), false, false,
+                    &self.status_pending_kind,
+                );
+                if let Some(t) = comp.threshold {
+                    acc = t;
+                }
+                if comp.consumed_micle {
+                    if let Some(a) = self.side_mut(us).active_mon_mut(usl as usize) {
+                        a.micle_next_move = false;
+                    }
+                }
+            }
+        }
         let roll = self.rng.percent_1_100_t(acc.min(100) as u8) as u32;
         #[cfg(feature = "ps-rng")]
         if roll > acc {
@@ -15366,6 +15403,70 @@ self.trigger_emergency_exits();
     /// is resolved by the caller via `resolve_status_target` (PR-334) so a
     /// bounced / redirected move can hit a specific mon rather than always
     /// the first opposing active.
+    /// A status move without `bypasssub` into a target's Substitute: data/moves.ts
+    /// substitute onTryPrimaryHit fails it (the caller's `-fail` fallback prints it).
+    fn status_blocked_by_substitute(&self, ts: SideRef, tslot: u8, us: SideRef, uslot: u8) -> bool {
+        (ts, tslot) != (us, uslot)
+            && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0)
+            && self.side(us).active_mon(uslot as usize).is_none_or(|u| u.effective_ability_id() != data::ability_id::INFILTRATOR)
+    }
+
+    /// `volatileStatus: 'confusion'` from a move: data/conditions.ts confusion,
+    /// with the vetoes of data/moves.ts mistyterrain and safeguard
+    /// onTryAddVolatile and data/abilities.ts owntempo. A veto returns null, so
+    /// no `-fail`; an already confused target returns false, so the caller's
+    /// `-fail` fallback runs.
+    fn confuse_from_move(&mut self, ts: SideRef, tslot: u8, us: SideRef, uslot: u8) {
+        use crate::pokemon::VolatileKind as V;
+        let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
+        if !t.is_alive() {
+            return;
+        }
+        let breaks = self.side(us).active_mon(uslot as usize)
+            .is_some_and(|a| matches!(a.effective_ability_slug(), "moldbreaker" | "teravolt" | "turboblaze"));
+        let tempo = t.effective_ability_id() == data::ability_id::OWNTEMPO && !breaks;
+        let misty = matches!(self.terrain, crate::terrain::Terrain::Misty) && t.is_grounded() && t.semi_invuln == 0;
+        let guarded = self.side(ts).conditions.safeguard_turns > 0
+            && (ts, tslot) != (us, uslot)
+            && self.side(us).active_mon(uslot as usize).is_none_or(|u| ts == us || u.effective_ability_id() != data::ability_id::INFILTRATOR);
+        if t.volatiles.has(V::Confusion) {
+            return;
+        }
+        if tempo {
+            pmon!(self, "-immune", ts, tslot, "|confusion|[from] ability: Own Tempo");
+            return;
+        }
+        if misty {
+            pmon!(self, "-activate", ts, tslot, "|move: Misty Terrain");
+            return;
+        }
+        if guarded {
+            pmon!(self, "-activate", ts, tslot, "|move: Safeguard");
+            return;
+        }
+        let dur = 2 + self.rng.range(4);
+        if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+            let _ = t.volatiles.add(crate::pokemon::Volatile { kind: V::Confusion, turns_remaining: 0, payload: dur });
+        }
+        pmon!(self, "-start", ts, tslot, "|confusion");
+        crate::item::try_consume_persim_berry(self, ts, tslot);
+    }
+
+    /// data/abilities.ts aromaveil onAllyTryAddVolatile: `-block`, naming the holder.
+    fn p_aroma_veil_block(&mut self, ts: SideRef, tslot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let holder = (0..self.format().active_count() as u8).find(|&s| {
+            self.side(ts).active_mon(s as usize)
+                .is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::AROMAVEIL)
+        });
+        if let Some(h) = holder {
+            let of = self.p_ident(ts, h);
+            pmon!(self, "-block", ts, tslot, "|ability: Aroma Veil|[of] {of}");
+        }
+    }
+
     fn apply_status_to_target(&mut self, tside: SideRef, tslot: u8, status: Status, source_slot: u8) {
         let before = self.side(tside).active_mon(tslot as usize).map(|m| m.status);
         self.apply_status_to_target_inner(tside, tslot, status, source_slot);
@@ -15583,6 +15684,7 @@ self.trigger_emergency_exits();
         // above, so those still release the user.
         if mon.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
             || mon.volatiles.has(crate::pokemon::VolatileKind::NoRetreat)
+            || mon.volatiles.has(crate::pokemon::VolatileKind::Ingrain)
         {
             return true;
         }
@@ -16840,6 +16942,7 @@ self.trigger_emergency_exits();
         self.eot_cure_abilities();
         self.eot_item_residual();
         self.eot_aqua_ring();
+        self.eot_ingrain(self.format().active_count() as u8);
         self.eot_leech_seed();
         self.eot_status_dot();
         self.eot_curse();
@@ -17246,6 +17349,35 @@ self.trigger_emergency_exits();
                     if self.plog() {
                         self.p_heal(side, slot, "|[from] Aqua Ring");
                     }
+                }
+            }
+        }
+    }
+
+    /// data/moves.ts ingrain condition onResidual (order 7): heal baseMaxhp/16.
+    fn eot_ingrain(&mut self, n: u8) {
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Ingrain) {
+            return;
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    if !m.is_alive()
+                        || !m.volatiles.has(crate::pokemon::VolatileKind::Ingrain)
+                        || m.is_heal_blocked()
+                        || m.current_hp >= m.stats.hp
+                    {
+                        continue;
+                    }
+                    let mut heal = (m.stats.hp as u32 / 16).max(1);
+                    if m.effective_item_id() == data::item_id::BIGROOT {
+                        heal = (heal * 5324 + 2047) / 4096;
+                    }
+                    m.current_hp = (m.current_hp as u32 + heal).min(m.stats.hp as u32) as u16;
+                }
+                self.p_res(7, 0, Some((side, slot)));
+                if self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive() && m.volatiles.has(crate::pokemon::VolatileKind::Ingrain)) && self.plog() {
+                    self.p_heal(side, slot, "|[from] Ingrain");
                 }
             }
         }
@@ -18385,6 +18517,8 @@ self.trigger_emergency_exits();
             .side(actor_side)
             .active_mon(actor_slot as usize)
             .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
+        self.status_pending_kind = *pending_kind;
+        self.status_acc_pair = opp_target.filter(|&t| t != (actor_side, actor_slot)).map(|(ts, tsl)| (actor_side, actor_slot, ts, tsl));
         self.status_acc_boost = match opp_target {
             Some((ts, tslot)) if (ts, tslot) != (actor_side, actor_slot) => {
                 let acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
@@ -20971,22 +21105,7 @@ self.trigger_emergency_exits();
                 // PS step order: immunity events run before the accuracy
                 // roll, so a gender-incompatible / Oblivious target fails
                 // WITHOUT consuming the accuracy draw.
-                let opp = opp_side;
-                let target_slot = match target {
-                    Some(t) if t.side == opp => t.slot,
-                    _ => {
-                        // Singles / unspecified: first alive foe.
-                        let n = self.format().active_count() as u8;
-                        match (0..n).find(|&s| {
-                            self.side(opp)
-                                .active_mon(s as usize)
-                                .is_some_and(|mon| mon.is_alive())
-                        }) {
-                            Some(s) => s,
-                            None => return,
-                        }
-                    }
-                };
+                let Some((opp, target_slot)) = opp_target else { return };
                 let src_gender = match self.side(actor_side).active_mon(actor_slot as usize) {
                     Some(mon) => mon.gender,
                     None => return,
@@ -21003,8 +21122,20 @@ self.trigger_emergency_exits();
                 if !tgt_alive {
                     return;
                 }
-                // Oblivious immunity (PS abilities.ts:2979 onTryHit -immune).
-                if tgt_oblivious {
+                let breaks = self.side(actor_side).active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(a.effective_ability_slug(), "moldbreaker" | "teravolt" | "turboblaze"));
+                // data/moves.ts attract onTryImmunity: hitStepTryImmunity prints `-immune`.
+                if !matches!(
+                    (src_gender, tgt_gender),
+                    (data::Gender::Male, data::Gender::Female) | (data::Gender::Female, data::Gender::Male)
+                ) {
+                    pmon!(self, "-immune", opp, target_slot);
+                    self.ps_status_failed();
+                    return;
+                }
+                // data/abilities.ts oblivious onTryHit: `-immune`, null.
+                if tgt_oblivious && !breaks {
+                    pmon!(self, "-immune", opp, target_slot, "|[from] ability: Oblivious");
                     return;
                 }
                 // Aroma Veil — holder/partner immunity to Attract
@@ -21017,7 +21148,12 @@ self.trigger_emergency_exits();
                         a.effective_ability_slug(),
                         "moldbreaker" | "teravolt" | "turboblaze"
                     ));
+                // Accuracy, then the volatile's own Aroma Veil check.
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
                 if self.side_has_aroma_veil(opp, attract_src_breaks_mold) {
+                    self.p_aroma_veil_block(opp, target_slot);
                     return;
                 }
                 // Gender gate: opposite, non-genderless (M↔F). Genderless
@@ -21029,10 +21165,6 @@ self.trigger_emergency_exits();
                         | (data::Gender::Female, data::Gender::Male)
                 );
                 if !opposite {
-                    return;
-                }
-                // Accuracy (100% — always passes, but draws at the PS site).
-                if !self.rolled_accuracy_passed(m) {
                     return;
                 }
                 // Already infatuated — PS volatileStatus add is a no-op.
@@ -21060,8 +21192,7 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) { return; }
                 // Powder gate: Grass / Overcoat / Safety Goggles.
                 if let Some((opp, slot)) = opp_target {
-                    if self.target_is_powder_immune(opp, slot) { return; }
-                    self.try_set_status_from(opp, slot, Status::Poison, actor_side);
+                    self.apply_status_to_target(opp, slot, Status::Poison, actor_slot);
                 }
             }
             data::move_id::PARTINGSHOT => {
@@ -21877,32 +22008,7 @@ self.trigger_emergency_exits();
                 // +2 Atk on the foe (raise — apply_boosts clamps to +6 and
                 // inverts under Contrary).
                 self.apply_boosts(ts, tslot, &[(0, 2)], actor_side, actor_slot);
-                // Confusion: onTryAddVolatile vetoes BEFORE the duration roll.
-                let blocked = self
-                    .side(ts)
-                    .active_mon(tslot as usize)
-                    .map(|t| {
-                        !t.is_alive()
-                            || t.volatiles.has(crate::pokemon::VolatileKind::Confusion)
-                            || t.effective_ability_id() == data::ability_id::OWNTEMPO
-                            || (matches!(self.terrain, crate::terrain::Terrain::Misty)
-                                && t.is_grounded())
-                            || self.side(ts).conditions.safeguard_turns > 0
-                    })
-                    .unwrap_or(true);
-                if !blocked {
-                    let dur = 2 + self.rng.range(4);
-                    if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
-                        let _ = t.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::Confusion,
-                            turns_remaining: 0,
-                            payload: dur,
-                        });
-                    }
-                    pmon!(self, "-start", ts, tslot, "|confusion");
-                    // Persim / Lum Berry onUpdate cures it at once.
-                    crate::item::try_consume_persim_berry(self, ts, tslot);
-                }
+                self.confuse_from_move(ts, tslot, actor_side, actor_slot);
             }
             _ => {
                 // Foe-stat-lowering STATUS moves (Growl, Leer, Tail Whip,
@@ -21980,6 +22086,7 @@ self.trigger_emergency_exits();
                             let boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
                             self.status_sure_hit = sure;
                             self.status_acc_boost = boost;
+                            self.status_acc_pair = Some((actor_side, actor_slot, ts, tslot));
                             let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
                             self.rng.set_move_context(self.turn + 1, sref(actor_side) + actor_slot, move_id, sref(ts) + tslot);
                             self.rng.set_decision(RngDecision::Accuracy);
