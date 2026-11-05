@@ -775,7 +775,7 @@ pub fn action_order(
 /// (sim/battle-queue.ts:249); the re-sort only refreshes priority
 /// (ModifyPriority) and Speed. `bias` is PS's action order for After You
 /// (3, first) and Quash (201, last).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TurnKeys {
     pub qc_bump: [[i8; 2]; 2],
     pub frac: [[i8; 2]; 2],
