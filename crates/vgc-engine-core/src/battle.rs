@@ -20491,6 +20491,20 @@ self.trigger_emergency_exits();
                 }
                 self.run_called_move(actor_side, actor_slot, prev, move_id, pending_kind);
             }
+            data::move_id::HEALINGWISH => {
+                // data/moves.ts healingwish onTryHit, `selfdestruct: ifHit`, slotCondition.
+                let can_switch = self.side(actor_side).team.iter().enumerate().any(|(i, t)| {
+                    t.is_alive() && !self.side(actor_side).active.iter().any(|&x| x as usize == i)
+                });
+                if !can_switch {
+                    return;
+                }
+                self.healing_wish[actor_side as usize][(actor_slot as usize).min(1)] = true;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = 0;
+                    a.fainted = true;
+                }
+            }
             data::move_id::SPICYEXTRACT => {
                 // data/moves.ts spicyextract: `boosts: {atk: 2, def: -2}`.
                 let Some((ts, tslot)) = opp_target else { return };
