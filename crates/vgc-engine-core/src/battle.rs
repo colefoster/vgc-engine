@@ -21661,21 +21661,10 @@ self.trigger_emergency_exits();
                 // Aggron / Steelix unparalyzed). Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Glare_(move)>.
                 if let Some((ts, tslot)) = opp_target {
-                    // PS checks paralysis immunity in `hitStepTryImmunity`,
-                    // BEFORE the accuracy roll — an Electric-typed (effective)
-                    // target is immune and Glare fails with NO accuracy draw.
-                    // Pre-check it so the failure (and the draw stream) matches
-                    // PS; the remaining paralysis immunities (Limber, Safeguard,
-                    // Misty Terrain, etc.) are handled by apply_status_to_target
-                    // after the roll.
-                    let para_immune = self
-                        .side(ts)
-                        .active_mon(tslot as usize)
-                        .is_some_and(|t| {
-                            let (types, n) = t.effective_types();
-                            (0..n as usize).any(|i| types[i] == 3) // Electric
-                        });
-                    if !para_immune && self.rolled_accuracy_passed(m) {
+                    // Status moves ignore type immunity in hitStepTypeImmunity, so
+                    // an Electric target takes the roll and trySetStatus prints
+                    // `-immune` (sim/battle-actions.ts, sim/pokemon.ts setStatus).
+                    if self.rolled_accuracy_passed(m) {
                         self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
                     }
                 }
