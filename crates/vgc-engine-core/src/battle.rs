@@ -20526,15 +20526,40 @@ self.trigger_emergency_exits();
                 // accuracy: true — no accuracy roll.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Tidy_Up_(move)>
                 let n = self.format().active_count() as u8;
-                for s in [SideRef::P1, SideRef::P2] {
-                    for slot in 0..n {
+                let mut success = false;
+                let (order, k) = self.actives_by_speed();
+                let _ = n;
+                for &(s, slot) in &order[..k] {
+                    if self.side(s).active_mon(slot as usize).is_some_and(|mon| mon.substitute_hp() > 0) {
                         if let Some(mon) = self.side_mut(s).active_mon_mut(slot as usize) {
-                            if mon.substitute_hp() > 0 {
-                                mon.set_substitute_hp(0);
+                            mon.set_substitute_hp(0);
+                        }
+                        pmon!(self, "-end", s, slot, "|Substitute");
+                        success = true;
+                    }
+                }
+                // The user's side first, each hazard with its line.
+                for s in [actor_side, actor_side.opposing()] {
+                    let c = self.side(s).conditions;
+                    let lines = [
+                        (c.spikes_layers > 0, "Spikes"),
+                        (c.toxic_spikes_layers > 0, "Toxic Spikes"),
+                        (c.stealth_rock, "Stealth Rock"),
+                        (c.sticky_web, "Sticky Web"),
+                    ];
+                    if self.plog() {
+                        let sid = self.p_side_ident(s);
+                        for (on, name) in lines {
+                            if on {
+                                self.p_push(format!("|-sideend|{sid}|{name}"));
                             }
                         }
                     }
+                    success |= lines.iter().any(|l| l.0);
                     self.clear_entry_hazards(s);
+                }
+                if success {
+                    pmon!(self, "-activate", actor_side, actor_slot, "|move: Tidy Up");
                 }
                 self.apply_boosts(actor_side, actor_slot, &[(0, 1), (4, 1)], actor_side, actor_slot);
             }
