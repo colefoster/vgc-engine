@@ -13040,7 +13040,14 @@ self.trigger_emergency_exits();
             // explicit defrost-flagged move. Done after damage so a
             // frozen mon that's KO'd by the hit doesn't get cured
             // first. type code 1 = Fire.
-            let thawed = m.type_ == 1 || move_is_defrost(m.slug);
+            // frz onDamagingHit reads move.type after ModifyType (Weather Ball in
+            // sun, data/conditions.ts).
+            let thawed = crate::damage::move_type_in_ctx(&ctx.attacker, ctx.move_id, &DamageContext {
+                weather: self.effective_weather_for(ctx.actor_side, ctx.actor_slot),
+                terrain: self.terrain,
+                champions: self.champions,
+                ..DamageContext::default()
+            }) == 1 || move_is_defrost(m.slug);
             if thawed {
                 let mut cured = false;
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
@@ -14040,7 +14047,7 @@ self.trigger_emergency_exits();
         let mut redirected = false;
         if !tracks_target
             && self.format().active_count() >= 2
-            && matches!(m.target, 0 | 4 | 10)
+            && matches!(m.target, 0 | 4 | 10 | 13)
             && targets.len() == 1
         {
             // onFoeRedirectTarget runs for the user's foes whatever side the
