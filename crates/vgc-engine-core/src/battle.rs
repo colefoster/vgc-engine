@@ -26183,13 +26183,17 @@ fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8,
     // (data/abilities.ts stench, data/items.ts kingsrock).
     let source = a.effective_ability_id() == data::ability_id::STENCH
         || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG);
+    // Almost every hit stops here; the rest of this reads a linear move scan.
+    if !source {
+        return false;
+    }
     let category = data::MOVES.iter().find(|mv| mv.slug == move_slug).map_or(2, |mv| mv.category);
     let breaks_mold = matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
     let filtered = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|d| {
         d.effective_item_id() == data::item_id::COVERTCLOAK
             || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
     });
-    source && category != 2 && !filtered && flinch_chance(move_slug, battle.champions).is_none()
+    category != 2 && !filtered && flinch_chance(move_slug, battle.champions).is_none()
 }
 
 fn apply_move_secondary(
