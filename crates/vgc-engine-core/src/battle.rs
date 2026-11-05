@@ -12694,6 +12694,14 @@ self.trigger_emergency_exits();
                 pmon!(self, "-activate", ctx.tside, ctx.tslot, "|move: Substitute|[damage]");
             }
         }
+        // airballoon onAfterSubDamage (data/items.ts): a hit on the Substitute pops it.
+        if hit_sub && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.effective_item_id() == data::item_id::AIRBALLOON) {
+            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                t.consume_item();
+            }
+            self.p_item_line("-enditem", ctx.tside, ctx.tslot, data::item_id::AIRBALLOON, "");
+            crate::ability::on_item_consumed(self, ctx.tside, ctx.tslot);
+        }
         // PS counts every hit whose damage is a number, a Substitute's
         // HIT_SUBSTITUTE (0) included (data/mods/champions/scripts.ts:564-567).
         if (ctx.tside, ctx.tslot) != (ctx.actor_side, ctx.actor_slot) {
