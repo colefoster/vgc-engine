@@ -5437,11 +5437,12 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() {
             self.ps_active_ties(false, "shuffle");
             // The turn's last action ran checkFainted: every fainted active's
-            // status becomes 'fnt' (sim/battle.js:2066-2073).
+            // status becomes 'fnt', on a side that can still switch
+            // (sim/battle.js:2075-2085).
             for side in [SideRef::P1, SideRef::P2] {
                 for slot in 0..self.format().active_count() {
                     let ti = self.side(side).active[slot] as usize;
-                    if ti < 8 && self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive()) {
+                    if ti < 8 && self.has_eligible_bench(side) && self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive()) {
                         self.ps_status_fnt[side as usize] |= 1 << ti;
                     }
                 }
