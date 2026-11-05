@@ -24775,7 +24775,9 @@ fn apply_self_boost_secondary(
     let chance = if serene_grace { (chance as u16 * 2).min(100) as u8 } else { chance };
     if rng.percent_1_100_t(chance) <= chance {
         // Source == target (self): no Mirror Armor reflect, positive
-        // boosts only. Clamps to +6 via the standard helper.
+        // boosts only. Clamps to +6 via the standard helper. A maxed stat prints
+        // nothing: sim/battle.ts boost, isSecondary.
+        battle.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
         battle.apply_boosts(attacker_side, attacker_slot, boosts, attacker_side, attacker_slot);
         // Mirror Herb — a foe copies the user's stat raise. PS
         // `data/items.ts:mirrorherb.onFoeAfterBoost`.
