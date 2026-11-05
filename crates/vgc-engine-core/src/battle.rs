@@ -20202,6 +20202,15 @@ self.trigger_emergency_exits();
                 if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
                 self.confuse_from_move(ts, tslot, actor_side, actor_slot);
             }
+            data::move_id::FLATTER => {
+                // data/moves.ts flatter: `boosts: {spa: 1}`, then confusion
+                // (sim/battle-actions.ts runMoveEffects order).
+                if !self.rolled_accuracy_passed(m) { return; }
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                self.apply_boosts(ts, tslot, &[(2, 1)], actor_side, actor_slot);
+                self.confuse_from_move(ts, tslot, actor_side, actor_slot);
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
