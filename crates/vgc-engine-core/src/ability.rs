@@ -2219,6 +2219,7 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                battle.ps_note_hit_ko(attacker_side, attacker_slot);
                 // roughskin / ironbarbs onDamagingHit: damage(..., source=target).
                 if battle.plog() {
                     let of = battle.p_ident(target_side, target_slot);
