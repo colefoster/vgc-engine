@@ -20729,6 +20729,23 @@ self.trigger_emergency_exits();
                 }
                 pmon!(self, "-singleturn", ts, tslot, "|move: Electrify");
             }
+            data::move_id::MAGNETRISE => {
+                // data/moves.ts magnetrise onTry (Smack Down, Ingrain, Gravity), condition.
+                use crate::pokemon::VolatileKind as V;
+                let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) else { return };
+                if a.volatiles.has(V::SmackdownGrounded) || a.volatiles.has(V::Ingrain) || a.volatiles.has(V::MagnetRise) {
+                    return;
+                }
+                if self.gravity_turns > 0 {
+                    self.p_move_cancel();
+                    pmon!(self, "cant", actor_side, actor_slot, "|move: Gravity|Magnet Rise");
+                    return;
+                }
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::MagnetRise, turns_remaining: 5, payload: 0 });
+                }
+                pmon!(self, "-start", actor_side, actor_slot, "|Magnet Rise");
+            }
             data::move_id::SPICYEXTRACT => {
                 // data/moves.ts spicyextract: `boosts: {atk: 2, def: -2}`.
                 let Some((ts, tslot)) = opp_target else { return };
