@@ -190,8 +190,9 @@ pub fn check_splitmix_game(input_log: &[String], seed: u64) -> GameReport {
                 base.legal_choices_into(side, slot, &mut buf);
                 // Each slot's list is its own: don't send one mon in twice.
                 if let Some(&Choice::Switch { team_index, .. }) = out.first() {
-                    if buf.len() > 1 {
-                        buf.retain(|c| !matches!(c, Choice::Switch { team_index: t, .. } if *t == team_index));
+                    buf.retain(|c| !matches!(c, Choice::Switch { team_index: t, .. } if *t == team_index));
+                    if buf.is_empty() {
+                        buf.push(Choice::Pass { actor_slot: slot });
                     }
                 }
                 lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
