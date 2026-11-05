@@ -15264,6 +15264,8 @@ self.trigger_emergency_exits();
             // After the whole hit step (sim/battle-actions.ts:520).
             self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
+            // selfBoost runs with isSelf: a stat at its limit prints nothing.
+            self.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1), (4, 1)], actor_side, actor_slot);
             // Mirror Herb copies the spe raise onto a foe.
             crate::item::try_consume_mirror_herb_on_foe_boost(
