@@ -19293,6 +19293,20 @@ self.trigger_emergency_exits();
                 }
                 return;
             }
+            // disguise onDamage takes any Move effect (data/abilities.ts disguise): the 0 still
+            // prints and the bust waits for the Update.
+            let disguised = src_mon.effective_ability_id() != data::ability_id::MOLDBREAKER
+                && self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                    !d.disguise_busted
+                        && d.effective_ability_id() == data::ability_id::DISGUISE
+                        && matches!(d.species_id, data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM)
+                });
+            if disguised {
+                pmon!(self, "-activate", tside, tslot, "|ability: Disguise");
+                self.p_damage(tside, tslot, "");
+                self.disguise_bust_at(tside, tslot);
+                return;
+            }
             // A future move no longer removes Endure before it hits
             // (data/conditions.ts futuremove, PS 0ac140354).
             let endured = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
