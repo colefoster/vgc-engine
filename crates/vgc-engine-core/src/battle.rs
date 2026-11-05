@@ -14425,21 +14425,10 @@ self.trigger_emergency_exits();
         // Burn Up — PS data/moves.ts:2092 `self.onHit`: once the move has
         // hit, the user's Fire type becomes '???'.
         if move_id == data::move_id::BURNUP && any_damage_dealt > 0 {
-            // setType(getTypes(true).map(t => t === 'Fire' ? '???' : t)) (data/moves.ts burnup).
-            let line = self.side(actor_side).active_mon(actor_slot as usize).map(|a| {
-                let (types, n) = a.effective_types();
-                let names: Vec<&str> = types[..n as usize].iter().map(|&t| {
-                    let name = crate::battle_protocol::type_name(t);
-                    if name == "Fire" { "???" } else { name }
-                }).collect();
-                names.join("/")
-            });
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.lose_fire_type();
             }
-            if let Some(line) = line {
-                pmon!(self, "-start", actor_side, actor_slot, "|typechange|{line}|[from] move: Burn Up");
-            }
+            self.p_typechange(actor_side, actor_slot, "|[from] move: Burn Up");
         }
         // Double Shock's self.onHit: Electric becomes '???'.
         if move_id == data::move_id::DOUBLESHOCK && any_damage_dealt > 0 {
