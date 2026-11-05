@@ -4538,7 +4538,6 @@ self.trigger_emergency_exits();
                 // Singles picks the foe without a draw (sim/battle.ts
                 // getRandomTarget: `gameType === 'singles'`).
                 if n > 0 && n_active > 1 {
-                    let scripted = self.moves()[move_id as usize].target == 14;
                     let pick = self.rng.ps_random_range("random_target", 0, n as u32) as usize;
                     // Kept for every move: Mega Evolution can bring Stalwart
                     // before runMove's getTarget reads it (sim/battle.ts getTarget).
@@ -8159,6 +8158,19 @@ self.trigger_emergency_exits();
             pmon!(self, "cant", actor_side, actor_slot, "|nopp|{}", crate::battle_protocol::move_name(move_id));
             self.after_move_user = None;
             return;
+        }
+        // A called move's Pressure charge falls on the calling move
+        // (sim/battle-actions.ts useMoveInner callerMoveForPressure).
+        if called {
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, ps_pick.or(target));
+            let caller = self.called_from;
+            if extra > 0 {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(slot) = a.moves.iter().position(|&id| id == caller) {
+                        a.spend_pp(slot as u8, extra);
+                    }
+                }
+            }
         }
         if !called && !move_locked {
             self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, ps_pick.or(target), skip_pp_deduct);
