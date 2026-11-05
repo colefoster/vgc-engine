@@ -11545,7 +11545,13 @@ self.trigger_emergency_exits();
                 if self.plog() {
                     let holder = self.p_ident(b_side, b_slot);
                     let at = self.p_ident(actor_side, actor_slot);
-                    self.p_push(format!("|move|{holder}|{}|{at}|[from] ability: Magic Bounce", m.name));
+                    let line = format!("|move|{holder}|{}|{at}|[from] ability: Magic Bounce", m.name);
+                    if let Some(l) = self.protocol.log_mut() {
+                        // Later `[miss]` / `[still]` attributes belong to this line.
+                        l.flush_pending_move();
+                        l.pending_move = Some(line);
+                        l.since_move = 0;
+                    }
                 }
                 self.resolve_status_move_inner(
                     b_side,
