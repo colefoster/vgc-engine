@@ -40859,7 +40859,7 @@ mod tests {
         // Mirror of the Acc test on the defender side: +2 evasion
         // turns 70% Hurricane into ≈42% effective.
         let p1_json = r#"[
-            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+            {"species":"pelipper","level":50,"ability":"raindish","item":"","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
         ]"#;
         let p2_json = r#"[
             {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
