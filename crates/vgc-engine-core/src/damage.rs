@@ -1496,7 +1496,9 @@ pub(crate) fn calculate_damage_with_bp(
     // own offensive ability. Scizor (Bullet Punch) / Breloom (Mach Punch) /
     // Scizor-Mega signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Technician_(Ability)>.
-    if apply_modifier(bp, bp_mod) <= 60
+    // onBasePowerPriority 30 comes ahead of every other BasePower modifier
+    // (data/abilities.ts technician), so `this.event.modifier` is still 1.
+    if bp <= 60
         && attacker.effective_ability_id() != u16::MAX
         && attacker.effective_ability_id() == data::ability_id::TECHNICIAN
     {
