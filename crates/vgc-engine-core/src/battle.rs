@@ -8795,8 +8795,11 @@ self.trigger_emergency_exits();
             let others_used = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
                 let known = a.moves.iter().filter(|&&id| id != u16::MAX).count();
                 // data/moves.ts lastresort onTry: `return hasLastResort`, for a called one.
+                // run_called_move borrows slot 3 for the called move, so a called one
+                // looks in the others.
+                let scan = if called { 3 } else { 4 };
                 known >= 2
-                    && a.moves.contains(&data::move_id::LASTRESORT)
+                    && a.moves[..scan].contains(&data::move_id::LASTRESORT)
                     && (0..4).all(|i| {
                         matches!(a.moves[i], u16::MAX | data::move_id::LASTRESORT) || a.moves_used & (1 << i) != 0
                     })
