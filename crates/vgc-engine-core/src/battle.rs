@@ -3210,6 +3210,9 @@ self.trigger_emergency_exits();
             "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
             | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
+            // onHitSide's relayed true, even with the condition already up.
+            "quickguard" => self.side(side).conditions.quick_guard_this_turn,
+            "wideguard" => self.side(side).conditions.wide_guard_this_turn,
             _ => true,
         }
     }
@@ -16182,6 +16185,9 @@ self.trigger_emergency_exits();
             "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
             | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
+            // onHitSide's relayed true, even with the condition already up.
+            "quickguard" => self.side(side).conditions.quick_guard_this_turn,
+            "wideguard" => self.side(side).conditions.wide_guard_this_turn,
             // No effect of their own to fail (Splash onTryHit, Haze onHitField).
             "splash" | "celebrate" | "holdhands" | "haze" => true,
             // onHit returns nothing, so hitting a target at -6/-6 still counts
@@ -16436,7 +16442,162 @@ self.trigger_emergency_exits();
             let _ = t.volatiles.add(crate::pokemon::Volatile { kind: V::Confusion, turns_remaining: 0, payload: dur });
         }
         pmon!(self, "-start", ts, tslot, "|confusion");
-        crate::item::try_consume_persim_berry(self, ts, tslot);
+        SpreadHit::True
+    }
+
+    /// getMoveTargets for `allAdjacent`: the ally, then the foes (sim/pokemon.ts).
+    fn all_adjacent_targets(&self, side: SideRef, slot: u8) -> ([(SideRef, u8); 3], usize) {
+        let mut tgts = [(SideRef::P1, 0u8); 3];
+        let mut k = 0;
+        for ts in [side, side.opposing()] {
+            for sl in 0..self.format().active_count() as u8 {
+                if (ts, sl) != (side, slot) && self.side(ts).active_mon(sl as usize).is_some_and(|t| t.is_alive()) {
+                    tgts[k] = (ts, sl);
+                    k += 1;
+                }
+            }
+        }
+        (tgts, k)
+    }
+
+    /// The target steps of trySpreadMoveHit for a spread status move, each one
+    /// across every target before the next: invulnerability, TryHit (Wide Guard,
+    /// Protect, the absorbing abilities), powder and Prankster immunity, then
+    /// accuracy (sim/battle-actions.ts:612-680). `hit[i]` says which targets
+    /// remain.
+    fn spread_status_gate(&mut self, us: SideRef, usl: u8, m: &data::MoveDef, move_id: u16, tgts: &[(SideRef, u8)], hit: &mut [bool]) {
+        let (user_noguard, user_acc, breaks, prankster) = self.side(us).active_mon(usl as usize).map_or((false, 0, false, false), |a| {
+            (
+                a.effective_ability_id() == data::ability_id::NOGUARD,
+                a.boosts[5] as i32,
+                matches!(a.effective_ability_slug(), "moldbreaker" | "teravolt" | "turboblaze" | "myceliummight"),
+                a.effective_ability_id() == data::ability_id::PRANKSTER,
+            )
+        });
+        self.status_spread_rolls = tgts.len() > 1;
+        for (i, &(ts, tsl)) in tgts.iter().enumerate() {
+            let Some(t) = self.side(ts).active_mon(tsl as usize) else { hit[i] = false; continue };
+            hit[i] = true;
+            if t.commanding || (t.semi_invuln != 0 && !user_noguard && t.effective_ability_id() != data::ability_id::NOGUARD) {
+                hit[i] = false;
+                self.p_miss(us, usl, ts, tsl);
+            }
+        }
+        for (i, &(ts, tsl)) in tgts.iter().enumerate() {
+            if !hit[i] {
+                continue;
+            }
+            let Some(t) = self.side(ts).active_mon(tsl as usize) else { continue };
+            let ab = t.effective_ability_id();
+            if m.blocked_by_protect && self.side(ts).conditions.wide_guard_this_turn {
+                hit[i] = false;
+                pmon!(self, "-activate", ts, tsl, "|move: Wide Guard");
+            } else if m.blocked_by_protect && t.is_protected_this_turn() {
+                hit[i] = false;
+                pmon!(self, "-activate", ts, tsl, "|move: Protect");
+            } else if breaks {
+            } else if ab == data::ability_id::GOODASGOLD {
+                hit[i] = false;
+                pmon!(self, "-immune", ts, tsl, "|[from] ability: Good as Gold");
+            } else if ab == data::ability_id::SOUNDPROOF && m.is_sound {
+                hit[i] = false;
+                pmon!(self, "-immune", ts, tsl, "|[from] ability: Soundproof");
+            } else if ab == data::ability_id::SAPSIPPER && m.type_ == 4 {
+                hit[i] = false;
+                self.p_absorb_boost_fx(ts, tsl, data::ability_id::SAPSIPPER, 0, 1);
+                self.apply_boosts(ts, tsl, &[(0, 1)], ts, tsl);
+            }
+        }
+        for (i, &(ts, tsl)) in tgts.iter().enumerate() {
+            if !hit[i] {
+                continue;
+            }
+            if m.is_powder && self.target_is_powder_immune(ts, tsl) {
+                hit[i] = false;
+                pmon!(self, "-immune", ts, tsl);
+            } else if prankster && ts != us && self.side(ts).active_mon(tsl as usize).is_some_and(|d| {
+                let (types, n) = d.effective_types();
+                types[..n as usize].contains(&15)
+            }) {
+                hit[i] = false;
+                self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                pmon!(self, "-immune", ts, tsl);
+            }
+        }
+        let (mut any_rolled, mut any_hit) = (false, false);
+        for (i, &(ts, tsl)) in tgts.iter().enumerate() {
+            if !hit[i] {
+                continue;
+            }
+            let Some(t) = self.side(ts).active_mon(tsl as usize) else { continue };
+            let sure = user_noguard
+                || t.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush)
+                || t.effective_ability_id() == data::ability_id::NOGUARD;
+            let boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
+            self.status_sure_hit = sure;
+            self.status_acc_boost = boost;
+            self.status_acc_pair = Some((us, usl, ts, tsl));
+            let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+            self.rng.set_move_context(self.turn + 1, sref(us) + usl, move_id, sref(ts) + tsl);
+            self.rng.set_decision(RngDecision::Accuracy);
+            any_rolled = true;
+            hit[i] = self.rolled_accuracy_passed(m);
+            any_hit |= hit[i];
+        }
+        self.status_spread_rolls = false;
+        #[cfg(feature = "ps-rng")]
+        {
+            self.ps_status_missed = any_rolled && !any_hit;
+        }
+        let _ = (any_rolled, any_hit);
+    }
+
+    /// tryPrimaryHitEvent across a spread status move's targets, before any
+    /// effect: Substitute's onTryPrimaryHit prints `-fail`, `[still]` and returns
+    /// null (sim/battle-actions.ts spreadMoveHit, data/moves.ts substitute).
+    fn spread_status_sub_pass(&mut self, us: SideRef, usl: u8, m: &data::MoveDef, tgts: &[(SideRef, u8)], hit: &[bool], res: &mut [SpreadHit]) {
+        if m.is_sound || status_bypasses_sub(m.slug) {
+            return;
+        }
+        for (i, &(ts, tsl)) in tgts.iter().enumerate() {
+            if hit[i] && self.status_blocked_by_substitute(ts, tsl, us, usl) {
+                self.p_try_fail(us, usl);
+                self.ps_status_sub_null = true;
+                res[i] = SpreadHit::Sub;
+            }
+        }
+    }
+
+    /// The end of a spread status move: runMoveEffects' `-fail` when every
+    /// effect failed, then `[spread]`, listing nobody when no hit counted
+    /// (sim/battle-actions.ts runMoveEffects, trySpreadMoveHit; the loop's
+    /// `damage.fill(false)` in data/mods/champions/scripts.ts).
+    fn spread_status_finish(&mut self, us: SideRef, usl: u8, tgts: &[(SideRef, u8)], hit: &[bool], res: &[SpreadHit]) {
+        let (mut any_true, mut any_false, mut any_sub) = (false, false, false);
+        for i in 0..tgts.len() {
+            if hit[i] {
+                any_true |= res[i] == SpreadHit::True;
+                any_false |= res[i] == SpreadHit::False;
+                any_sub |= res[i] == SpreadHit::Sub;
+            }
+        }
+        if !any_true && any_false {
+            self.p_try_fail(us, usl);
+        }
+        if self.plog() && tgts.len() > 1 {
+            let mut attr = String::from("[spread] ");
+            let mut first = true;
+            for i in 0..tgts.len() {
+                if hit[i] && (any_true || any_sub) {
+                    if !first {
+                        attr.push(',');
+                    }
+                    first = false;
+                    attr.push_str(std::str::from_utf8(&crate::battle_protocol::slot_tag(tgts[i].0, tgts[i].1)).unwrap_or(""));
+                }
+            }
+            self.p_attr(&attr);
+        }
     }
 
     /// data/abilities.ts aromaveil onAllyTryAddVolatile: `-block`, naming the holder.
@@ -20090,7 +20251,14 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let is_wide = move_id == data::move_id::WIDEGUARD;
-                pmon!(self, "-singleturn", actor_side, actor_slot, "|{}", m.name);
+                // addSideCondition returns false with the condition already up,
+                // no `-singleturn`; onHitSide's relayed true keeps the move from
+                // failing (sim/side.ts addSideCondition, sim/battle-actions.ts
+                // runMoveEffects).
+                let conds = &self.side(actor_side).conditions;
+                if !(if is_wide { conds.wide_guard_this_turn } else { conds.quick_guard_this_turn }) {
+                    pmon!(self, "-singleturn", actor_side, actor_slot, "|{}", m.name);
+                }
                 let s = self.side_mut(actor_side);
                 if is_wide {
                     s.conditions.wide_guard_this_turn = true;
