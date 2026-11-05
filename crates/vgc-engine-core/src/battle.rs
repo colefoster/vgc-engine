@@ -8314,13 +8314,27 @@ self.trigger_emergency_exits();
                 .side(scr_side)
                 .active_mon(scr_slot as usize)
                 .is_some_and(|m| m.is_alive());
-            if !attacker_present {
+            // Metal Burst / Comeuppance name the slot in onModifyTarget; a fainted
+            // occupant makes getMoveTargets pick another foe, and the damage stands
+            // (data/moves.ts metalburst, sim/pokemon.ts getMoveTargets).
+            let retarget = (!attacker_present && matches!(move_id, data::move_id::METALBURST | data::move_id::COMEUPPANCE))
+                .then(|| (0..self.format().active_count() as u8).find(|&s| self.side(scr_side).active_mon(s as usize).is_some_and(|m| m.is_alive())))
+                .flatten();
+            if let Some(sl) = retarget {
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    let _ = self.rng.ps_random_range("get_target", 0, 1);
+                }
+                target = Some(Target { side: scr_side, slot: sl });
+                self.p_retarget(scr_side, sl);
+            } else if !attacker_present {
                 self.p_try_fail(actor_side, actor_slot);
                 return; // the attacker is gone — move fails
+            } else {
+                target = Some(Target { side: scr_side, slot: scr_slot });
+                // The onRedirectTarget's pick is what `|move|` names.
+                self.p_retarget(scr_side, scr_slot);
             }
-            target = Some(Target { side: scr_side, slot: scr_slot });
-            // The onRedirectTarget's pick is what `|move|` names.
-            self.p_retarget(scr_side, scr_slot);
         }
 
         // Fling — fail if the user holds no flingable item. PS
