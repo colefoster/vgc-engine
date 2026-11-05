@@ -17035,6 +17035,12 @@ self.trigger_emergency_exits();
                 }
             }
             protect_variant::BANEFUL => {
+                // safeguard onSetStatus prints for a move's status (data/moves.ts safeguard).
+                if self.side(atk_side).conditions.safeguard_turns > 0
+                    && self.side(atk_side).active_mon(atk_slot as usize).is_some_and(|a| a.status == Status::None && a.effective_ability_id() != data::ability_id::INFILTRATOR)
+                {
+                    pmon!(self, "-activate", atk_side, atk_slot, "|move: Safeguard");
+                }
                 self.try_set_status_from(atk_side, atk_slot, Status::Poison, def_side);
             }
             protect_variant::BURNING => {
