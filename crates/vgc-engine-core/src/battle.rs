@@ -4883,7 +4883,7 @@ self.trigger_emergency_exits();
                 }
                 // focuspunch condition onStart (data/moves.ts focuspunch).
                 if self.side(side).active_mon(actor_slot as usize)
-                    .is_some_and(|a| a.is_alive() && a.moves.get(move_slot as usize) == Some(&data::move_id::FOCUSPUNCH))
+                    .is_some_and(|a| a.is_alive() && !a.must_recharge && a.moves.get(move_slot as usize) == Some(&data::move_id::FOCUSPUNCH))
                 {
                     pmon!(self, "-singleturn", side, actor_slot, "|move: Focus Punch");
                 }
