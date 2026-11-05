@@ -11900,15 +11900,32 @@ self.trigger_emergency_exits();
     /// knocked out still loses its item.
     fn knock_off_take_item(&mut self, side: SideRef, slot: u8, user_side: SideRef, user_slot: u8) {
         let user_up = self.side(user_side).active_mon(user_slot as usize).is_some_and(|a| a.current_hp > 0);
-        let can_knock = user_up && self.side(side).active_mon(slot as usize)
-            .is_some_and(|m| (!m.is_alive() || m.effective_ability_id() != data::ability_id::STICKYHOLD)
-                && !m.holds_own_mega_stone());
+        let can_knock = user_up && !self.sticky_hold_blocks(side, slot, user_side, user_slot)
+            && self.side(side).active_mon(slot as usize).is_some_and(|m| !m.holds_own_mega_stone());
         if can_knock {
             if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
                 t.item_id = u16::MAX;
                 t.sync_can_mega_evolve();
             }
         }
+    }
+
+    /// stickyhold onTakeItem (data/abilities.ts): a holder with HP keeps its item
+    /// against another mon, with its line. Breakable, so Mold Breaker takes it.
+    pub(crate) fn sticky_hold_blocks(&mut self, side: SideRef, slot: u8, user_side: SideRef, user_slot: u8) -> bool {
+        let breaks = self.side(user_side).active_mon(user_slot as usize).is_some_and(|a| {
+            matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE)
+        });
+        let blocks = !breaks && self.side(side).active_mon(slot as usize).is_some_and(|t| {
+            t.is_alive()
+                && t.effective_ability_id() == data::ability_id::STICKYHOLD
+                && t.item_id != u16::MAX
+                && t.item_id != data::item_id::STICKYBARB
+        });
+        if blocks {
+            pmon!(self, "-activate", side, slot, "|ability: Sticky Hold");
+        }
+        blocks
     }
 
     /// Thief / Covet onAfterHit (PS data/moves.ts thief / covet): an
@@ -11925,9 +11942,11 @@ self.trigger_emergency_exits();
         if !user_ok || gem {
             return;
         }
+        if self.sticky_hold_blocks(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot) {
+            return;
+        }
         let item = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
-            let sticky = t.is_alive() && t.effective_ability_id() == data::ability_id::STICKYHOLD;
-            (t.item_id != u16::MAX && !sticky && !t.holds_own_mega_stone()).then_some(t.item_id)
+            (t.item_id != u16::MAX && !t.holds_own_mega_stone()).then_some(t.item_id)
         });
         let Some(item) = item else { return };
         if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
@@ -12039,9 +12058,9 @@ self.trigger_emergency_exits();
         if matches!(ctx.move_id, data::move_id::BUGBITE | data::move_id::PLUCK) {
             let user_alive = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive());
             let berry = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
-                let sticky = t.is_alive() && t.effective_ability_id() == data::ability_id::STICKYHOLD;
-                (t.item_id != u16::MAX && data::ITEMS[t.item_id as usize].is_berry && !sticky).then_some(t.item_id)
+                (t.item_id != u16::MAX && data::ITEMS[t.item_id as usize].is_berry).then_some(t.item_id)
             });
+            let berry = berry.filter(|_| user_alive && !self.sticky_hold_blocks(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot));
             if let (true, Some(berry)) = (user_alive, berry) {
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     t.item_id = u16::MAX;
@@ -12722,9 +12741,11 @@ self.trigger_emergency_exits();
             return;
         }
         // source.takeItem(target): Sticky Hold and items a mon can't lose keep it.
+        if self.sticky_hold_blocks(source_side, source_slot, tside, tslot) {
+            return;
+        }
         let Some(item) = self.side(source_side).active_mon(source_slot as usize).and_then(|s| {
             (s.item_id != u16::MAX
-                && s.effective_ability_id() != data::ability_id::STICKYHOLD
                 && !s.holds_own_mega_stone()
                 && !s.pending_self_switch())
             .then_some(s.item_id)
@@ -16072,6 +16093,7 @@ self.trigger_emergency_exits();
         match move_id {
             data::move_id::THUNDERWAVE => types.contains(&8),
             data::move_id::LEECHSEED => types.contains(&4),
+            data::move_id::TRICK | data::move_id::SWITCHEROO => t.effective_ability_id() == data::ability_id::STICKYHOLD,
             data::move_id::WORRYSEED => matches!(t.effective_ability_id(), data::ability_id::TRUANT | data::ability_id::INSOMNIA),
             data::move_id::ATTRACT | data::move_id::CAPTIVATE => true,
             _ => false,
@@ -17661,10 +17683,6 @@ self.trigger_emergency_exits();
         self.p_res_close();
         // The residual action's faintMessages, before its Update.
         self.faint_forme_cleanup();
-        // Attract `onUpdate` sweep — lift infatuation on any mon whose
-        // source has left the field via switch / faint this turn (PS
-        // data/moves.ts:706 attract onUpdate). No RNG.
-        self.update_attract_sources();
     }
 
     /// PR-EOT2 helper: any active mon on either side carries the given
@@ -18734,7 +18752,7 @@ self.trigger_emergency_exits();
     /// attract's onUpdate: the volatile ends once its source left the field
     /// (data/moves.ts attract condition), at the Update after an action.
     #[inline]
-    fn attract_update(&mut self) {
+    pub(crate) fn attract_update(&mut self) {
         let n = self.format().active_count() as u8;
         if self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Attract) {
             self.attract_update_cold();
@@ -18744,17 +18762,17 @@ self.trigger_emergency_exits();
     #[cold]
     #[inline(never)]
     fn attract_update_cold(&mut self) {
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..self.format().active_count() as u8 {
-                let Some((src_side, src_idx)) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()).and_then(|m| m.attract_source()) else { continue };
-                if self.attract_source_on_field(src_side, src_idx) {
-                    continue;
-                }
-                if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
-                    a.clear_attract();
-                }
-                pmon!(self, "-end", side, slot, "|Attract|[silent]");
+        // eachEvent('Update') runs in speed order.
+        let (order, k) = self.actives_by_speed();
+        for &(side, slot) in &order[..k] {
+            let Some((src_side, src_idx)) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()).and_then(|m| m.attract_source()) else { continue };
+            if self.attract_source_on_field(src_side, src_idx) {
+                continue;
             }
+            if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+                a.clear_attract();
+            }
+            pmon!(self, "-end", side, slot, "|Attract|[silent]");
         }
     }
 
@@ -19009,29 +19027,6 @@ self.trigger_emergency_exits();
                 .active_mon(s)
                 .is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::AROMAVEIL)
         })
-    }
-
-    /// Clear infatuation on any active mon whose Attract source has left
-    /// the field. Mirrors PS `data/moves.ts:706` attract `onUpdate`. Drawn
-    /// no RNG; safe to call each end of turn after switches resolve.
-    fn update_attract_sources(&mut self) {
-        let n = self.format().active_count();
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
-                let gone = match self.side(side).active_mon(slot) {
-                    Some(mon) => match mon.attract_source() {
-                        Some((ss, si)) => !self.attract_source_on_field(ss, si),
-                        None => continue,
-                    },
-                    None => continue,
-                };
-                if gone {
-                    if let Some(mon) = self.side_mut(side).active_mon_mut(slot) {
-                        mon.clear_attract();
-                    }
-                }
-            }
-        }
     }
 
     /// Apply the Attract (infatuation) volatile to the holder at
@@ -20639,18 +20634,20 @@ self.trigger_emergency_exits();
                 // (neither move has a `bypasssub` flag). The actual swap +
                 // un-swappable / both-empty fail conditions live in
                 // `swap_held_items`.
+                // onTryImmunity `!target.hasAbility('stickyhold')` comes before the
+                // accuracy roll and prints `-immune` (sim/battle-actions.ts hitStepTryImmunity).
+                if let Some((ts, tslot)) = opp_target {
+                    if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.effective_ability_id() == data::ability_id::STICKYHOLD) {
+                        pmon!(self, "-immune", ts, tslot);
+                        self.ps_status_failed();
+                        return;
+                    }
+                }
                 if !self.rolled_accuracy_passed(m) {
                     return;
                 }
                 let Some((ts, tslot)) = opp_target else { return };
-                let blocked = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
-                    t.effective_ability_id() == data::ability_id::STICKYHOLD
-                        || t.substitute_hp() > 0
-                });
-                if blocked {
-                    if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.effective_ability_id() == data::ability_id::STICKYHOLD) {
-                        pmon!(self, "-activate", ts, tslot, "|ability: Sticky Hold");
-                    }
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
                     return;
                 }
                 let my_item = self.side(actor_side).active_mon(actor_slot as usize).map_or(u16::MAX, |a| a.item_id);

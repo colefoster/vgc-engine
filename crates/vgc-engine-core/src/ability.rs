@@ -2609,12 +2609,13 @@ pub fn on_damaging_hit(
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.item_id == u16::MAX);
+        let held = attacker_itemless && !battle.sticky_hold_blocks(target_side, target_slot, attacker_side, attacker_slot);
         let stealable = battle
             .side(target_side)
             .active_mon(target_slot as usize)
             .and_then(|t| {
-                if t.item_id != u16::MAX
-                    && t.effective_ability_id() != data::ability_id::STICKYHOLD
+                if held
+                    && t.item_id != u16::MAX
                     && !t.holds_own_mega_stone()
                 {
                     Some(t.item_id)

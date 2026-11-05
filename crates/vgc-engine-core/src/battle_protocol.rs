@@ -811,6 +811,8 @@ impl Battle {
             return;
         }
         l.ee_announced |= bit;
+        // The hit loop's Update comes first (data/mods/champions/scripts.ts).
+        self.attract_update();
         pmon!(self, "-activate", side, slot, "|ability: Emergency Exit");
     }
 
