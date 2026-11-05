@@ -616,7 +616,9 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             pmon!(battle, "-activate", side, slot, "|ability: Zero to Hero");
         }
     }
-    battle.p_air_balloon(side, slot);
+    if !late {
+        battle.p_air_balloon(side, slot);
+    }
 }
 
 /// The ability's `onStart`, which PS also runs when a move hands a mon a
