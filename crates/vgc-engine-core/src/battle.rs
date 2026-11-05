@@ -11608,6 +11608,11 @@ self.trigger_emergency_exits();
             // down, sim/battle.ts:2332).
             dmg = ((dmg as u32 * 1024 + 2047) / 4096).max(1) as _;
         }
+        // A Substitute's whole hit runs in TryPrimaryHit, before the other targets' steps.
+        let sub_takes_hit = ctx.defender.substitute_hp() > 0 && !is_sound_move(ctx.move_def.slug) && !ctx.attacker_infiltrates;
+        if sub_takes_hit {
+            self.p_tag(crate::protocol::step::SUB_HIT, ctx.tside, ctx.tslot);
+        }
         // modifyDamage's effectiveness and crit lines
         // (data/mods/champions/scripts.ts:270-285), then the damage step.
         if self.plog() && ctx.per_hit_inv.fixed_dmg_snapshot.is_none() {
@@ -11621,7 +11626,9 @@ self.trigger_emergency_exits();
                 pmon!(self, "-zbroken", ctx.tside, ctx.tslot);
             }
         }
-        self.p_tag(crate::protocol::step::DAMAGE, ctx.tside, ctx.tslot);
+        if !sub_takes_hit {
+            self.p_tag(crate::protocol::step::DAMAGE, ctx.tside, ctx.tslot);
+        }
         let sub_absorbed = dmg.min(ctx.defender.substitute_hp());
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
         if ctx.move_id == data::move_id::STRUGGLE && !hit_sub && effective_dmg == 0 {
