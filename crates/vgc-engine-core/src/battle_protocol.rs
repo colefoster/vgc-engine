@@ -1186,7 +1186,10 @@ impl Battle {
             Status::Freeze => ab == a::MAGMAARMOR,
             Status::None => false,
         } || matches!(ab, a::PURIFYINGSALT | a::COMATOSE);
-        if blocks {
+        // leafguard, shieldsdown onSetStatus (data/abilities.ts).
+        let weather_block = (ab == a::LEAFGUARD && matches!(self.effective_weather_for(side, slot), crate::weather::Weather::Sun))
+            || Self::shields_down_shielded(m);
+        if blocks || weather_block {
             pmon!(self, "-immune", side, slot, "|[from] ability: {}", ability_name(ab));
         }
     }
