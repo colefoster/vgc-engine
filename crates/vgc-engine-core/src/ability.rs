@@ -1272,6 +1272,13 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
     // Celebi signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Natural_Cure_(Ability)>.
     if ability_id == data::ability_id::NATURALCURE {
+        // onSwitchOut's line (data/mods/champions/abilities.ts naturalcure).
+        if battle.plog() {
+            let st = battle.side(side).active_mon(slot as usize).map_or(crate::pokemon::Status::None, |m| m.status);
+            if st != crate::pokemon::Status::None {
+                pmon!(battle, "-curestatus", side, slot, "|{}|[from] ability: Natural Cure|[silent]", crate::battle_protocol::status_id(st));
+            }
+        }
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.status = crate::pokemon::Status::None;
         }
