@@ -12506,6 +12506,32 @@ self.trigger_emergency_exits();
             self.p_illusion_break(ctx.tside, ctx.tslot);
         }
 
+        // Aftermath (onDamagingHitOrder 1): a holder KO'd by a contact move costs the
+        // attacker 1/4 of its HP; Damp stops it (data/abilities.ts aftermath, damp).
+        if !hit_sub && hp_lost > 0 {
+            let aftermath = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| {
+                d.current_hp == 0 && d.effective_ability_id() == data::ability_id::AFTERMATH
+            }) && crate::damage::move_makes_contact(&ctx.move_def, &ctx.attacker)
+                && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive() && !crate::ability::has_magic_guard(a));
+            let damp = (0..self.format().active_count() as u8).any(|sl| {
+                [SideRef::P1, SideRef::P2].iter().any(|&sd| self.side(sd).active_mon(sl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::DAMP))
+            });
+            if aftermath && !damp {
+                if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
+                    a.current_hp = a.current_hp.saturating_sub((a.stats.hp / 4).max(1));
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+                if self.plog() {
+                    let of = self.p_ident(ctx.tside, ctx.tslot);
+                    self.p_sub(1);
+                    self.p_damage(ctx.actor_side, ctx.actor_slot, &format!("|[from] ability: Aftermath|[of] {of}"));
+                    self.p_sub(3);
+                }
+            }
+        }
+
         // Innards Out (onDamagingHitOrder 1): a holder KO'd by the hit deals
         // the HP it lost (plus earlier hits of a multi-hit move) to the
         // attacker (data/abilities.ts:2140-2147).
