@@ -16499,6 +16499,9 @@ self.trigger_emergency_exits();
                 }
             }
             pending_kind[sw_side as usize].swap(0, 1);
+            // A scripted move's pick belongs to the mon that moved.
+            #[cfg(feature = "ps-rng")]
+            self.ps_scripted_pick[sw_side as usize].swap(0, 1);
             self.pursuit_consumed[sw_side as usize].swap(0, 1);
             let k = &mut self.turn_keys;
             k.qc_bump[sw_side as usize].swap(0, 1);
