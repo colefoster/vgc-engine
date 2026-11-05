@@ -6174,6 +6174,8 @@ self.trigger_emergency_exits();
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
+            incoming.metronome_count = 0;
+            incoming.metronome_move = u16::MAX;
             incoming.supreme_overlord_fallen = u8::MAX; // re-latched by its onStart
             incoming.used_item_this_turn = false;
             incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
@@ -7675,6 +7677,29 @@ self.trigger_emergency_exits();
         let move_locked = attacker.lockin_turns > 0 && attacker.lockin_move_slot == move_slot;
         if !called && !move_locked {
             self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, skip_pp_deduct);
+        }
+        // Metronome's volatile onTryMove (data/items.ts metronome): `skip_pp_deduct`
+        // is a two-turn move's release, when `twoturnmove` is still up.
+        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            if a.effective_item_id() != data::item_id::METRONOME {
+                a.metronome_count = 0;
+                a.metronome_move = u16::MAX;
+            } else if !matches!(
+                move_id,
+                data::move_id::ASSIST | data::move_id::COPYCAT | data::move_id::MEFIRST | data::move_id::METRONOME
+                    | data::move_id::MIRRORMOVE | data::move_id::NATUREPOWER | data::move_id::SLEEPTALK
+            ) {
+                let succeeded = a.move_last_turn_result == crate::pokemon::MoveResult::Succeeded;
+                a.metronome_count = if a.metronome_move == move_id && succeeded {
+                    a.metronome_count.saturating_add(1)
+                } else if skip_pp_deduct {
+                    if a.metronome_move != move_id { 1 } else { a.metronome_count.saturating_add(1) }
+                } else {
+                    0
+                };
+                a.metronome_move = move_id;
+            }
+            attacker.metronome_count = a.metronome_count;
         }
 
         // Priority-block abilities — Dazzling / Queenly Majesty / Armor Tail.
