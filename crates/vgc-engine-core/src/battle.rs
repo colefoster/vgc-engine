@@ -10549,7 +10549,6 @@ self.trigger_emergency_exits();
         }
 
         self.apply_after_hit_hazards(actor_side, actor_slot, move_id, m, any_damage_dealt);
-        self.apply_partial_trap(actor_side, actor_slot, move_id, m, any_damage_dealt, hit_target);
         self.apply_self_effects(
             actor_side,
             actor_slot,
@@ -12043,6 +12042,10 @@ self.trigger_emergency_exits();
         if ctx.move_id == data::move_id::FLING {
             self.fling_on_hit(ctx);
         }
+        // volatileStatus 'partiallytrapped' is added in the hit's moveHit, before
+        // the DamagingHit reactions, and never past a Substitute
+        // (sim/battle-actions.ts runMoveEffects).
+        self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.move_def, 1, Some((ctx.tside, ctx.tslot)));
         // Clear Smog onHit (data/moves.ts clearsmog): also on a target the hit KO'd.
         if ctx.move_id == data::move_id::CLEARSMOG {
             if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
