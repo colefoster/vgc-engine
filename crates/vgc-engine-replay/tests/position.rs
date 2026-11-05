@@ -150,6 +150,7 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                         let m = mon.as_object_mut().unwrap();
                         for (key, rest) in [
                             ("lockin_true", serde_json::json!(0)),
+                            ("last_foe_damage", serde_json::json!(0)),
                             ("lost_focus", serde_json::json!(false)),
                             ("metronome_count", serde_json::json!(0)),
                             ("metronome_move", serde_json::json!(65535)),

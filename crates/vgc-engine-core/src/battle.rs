@@ -3568,20 +3568,71 @@ self.trigger_emergency_exits();
                         n += 1;
                     }
                 }
-                let list = &mut h[..n];
-                list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                let mut st = 0;
-                while st < n {
-                    let mut end = st + 1;
-                    while end < n && list[end] == list[st] {
-                        end += 1;
-                    }
-                    for i in st..end - 1 {
-                        let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
-                    }
-                    st = end;
-                }
+                self.ps_handler_ties(&mut h[..n]);
+                self.ps_trap_ties(side, slot, spe);
             }
+        }
+    }
+
+    /// `ps-rng` only: endTurn's `runEvent('TrapPokemon', pokemon)` and
+    /// `runEvent('MaybeTrapPokemon', pokemon)`, right after that mon's
+    /// DisableMove (sim/battle.js endTurn). Handlers that can tie: the mon's
+    /// own `trapped`, `partiallytrapped`, `ingrain` and `octolock` volatiles
+    /// (subOrder 2, its Speed), and each foe's Shadow Tag, Arena Trap or
+    /// Magnet Pull (`onFoeTrapPokemon`, 7, the foe's Speed).
+    #[cfg(feature = "ps-rng")]
+    fn ps_trap_ties(&mut self, side: SideRef, slot: usize, spe: i64) {
+        use crate::pokemon::VolatileKind as V;
+        let Some(m) = self.side(side).active_mon(slot) else { return };
+        // (speed, subOrder)
+        let mut h = [(0i64, 0i64); 6];
+        let mut n = 0;
+        for k in [V::Trapped, V::PartialTrap, V::Ingrain, V::Octolock] {
+            if m.volatiles.has(k) {
+                h[n] = (spe, 2);
+                n += 1;
+            }
+        }
+        let (types, nt) = m.effective_types();
+        let trappable = !types[..nt as usize].contains(&13);
+        let foe = side.opposing();
+        let mut foes = [(0i64, 0i64); 2];
+        let mut nf = 0;
+        for fslot in 0..self.format().active_count().min(2) {
+            let trapper = self.side(foe).active_mon(fslot).is_some_and(|f| {
+                f.is_alive()
+                    && matches!(f.effective_ability_id(), data::ability_id::SHADOWTAG | data::ability_id::ARENATRAP | data::ability_id::MAGNETPULL)
+            });
+            if trapper {
+                let k = (self.ps_speed(foe, fslot).unwrap_or(0), 7);
+                foes[nf] = k;
+                nf += 1;
+                h[n] = k;
+                n += 1;
+            }
+        }
+        self.ps_handler_ties(&mut h[..n]);
+        if trappable {
+            self.ps_handler_ties(&mut foes[..nf]);
+        }
+    }
+
+    /// `ps-rng` only: `speedSort` over handlers of one priority and order,
+    /// as (speed, subOrder): a tied group draws its shuffle.
+    #[cfg(feature = "ps-rng")]
+    fn ps_handler_ties(&mut self, list: &mut [(i64, i64)]) {
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let n = list.len();
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end - 1 {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
         }
     }
 
@@ -3828,7 +3879,7 @@ self.trigger_emergency_exits();
                             V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13, V::Octolock => 14,
                             V::MagicCoat | V::Snatch | V::PowderShield | V::LaserFocus | V::Endure
                             | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch
-                            | V::BeakBlast => NONE,
+                            | V::BeakBlast | V::LockOn | V::Electrify => NONE,
                             _ => continue,
                         };
                         push(&mut h, (order, 0, spe, 2));
@@ -5001,6 +5052,7 @@ self.trigger_emergency_exits();
                 m.last_attacker = (255, 255);
                 m.last_attacker_category = 255;
                 m.last_damage_taken = 0;
+                m.last_foe_damage = 0;
                 m.last_phys_attacker = (255, 255);
                 m.last_phys_damage = 0;
                 m.last_spec_attacker = (255, 255);
@@ -5507,13 +5559,23 @@ self.trigger_emergency_exits();
         }
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
+            // Terrain's last turn: clearTerrain's eachEvent('TerrainChange')
+            // (sim/field.ts), inside the residual; the timer ticks below.
+            if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
+                self.ps_active_ties(false, "shuffle");
+                // The tick's sync below must not draw for this change again.
+                if let Some((w, _)) = self.ps_field_seen {
+                    self.ps_field_seen = Some((w, crate::terrain::Terrain::None));
+                }
+            }
             self.ps_active_ties(false, "shuffle");
             // The turn's last action ran checkFainted: every fainted active's
-            // status becomes 'fnt' (sim/battle.js:2066-2073).
+            // status becomes 'fnt', on a side that can still switch
+            // (sim/battle.js:2075-2085).
             for side in [SideRef::P1, SideRef::P2] {
                 for slot in 0..self.format().active_count() {
                     let ti = self.side(side).active[slot] as usize;
-                    if ti < 8 && self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive()) {
+                    if ti < 8 && self.has_eligible_bench(side) && self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive()) {
                         self.ps_status_fnt[side as usize] |= 1 << ti;
                     }
                 }
@@ -6462,6 +6524,7 @@ self.trigger_emergency_exits();
             incoming.last_attacker = (255, 255);
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
+            incoming.last_foe_damage = 0;
             incoming.last_phys_attacker = (255, 255);
             incoming.last_phys_damage = 0;
             incoming.last_spec_attacker = (255, 255);
@@ -7789,7 +7852,19 @@ self.trigger_emergency_exits();
             // draws before mustrecharge's onBeforeMove cancels it.
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
-                self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+                // runMove passes originalTarget: Stalwart / Propeller Tail keep
+                // the location's mon if it is active, without a draw
+                // (sim/battle.ts getTarget; the action aims at lastMoveTargetLoc,
+                // sim/side.ts). getActionSpeed passes none, so only this one.
+                let (tracks, loc) = (
+                    matches!(attacker.effective_ability_id(), data::ability_id::STALWART | data::ability_id::PROPELLERTAIL),
+                    dec_target(attacker.last_used_move_target),
+                );
+                let kept = tracks
+                    && loc.is_some_and(|t| self.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive()));
+                if !kept {
+                    self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+                }
             }
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.must_recharge = false;
@@ -8263,11 +8338,7 @@ self.trigger_emergency_exits();
                 data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
                 // getLastDamagedBy(true): only a foe's hit counts (data/moves.ts
                 // metalburst onTry; last_damage_taken also records an ally's).
-                _ => (attacker.last_attacker, match attacker.last_attacker_category {
-                    0 => attacker.last_phys_damage,
-                    1 => attacker.last_spec_damage,
-                    _ => 0,
-                }),
+                _ => (attacker.last_attacker, attacker.last_foe_damage),
             };
             if dmg == 0 {
                 self.p_try_fail(actor_side, actor_slot);
@@ -8682,16 +8753,18 @@ self.trigger_emergency_exits();
         // Choice Band/Specs: ×1.5 to atk/spa of the attacker. Implemented
         // by cloning the attacker snapshot and scaling the stat in
         // place before passing to calculate_damage.
-        let mut atk_stats_ovr = attacker.stats;
-        let physical_move = m.category == 0;
+        let atk_stats_ovr = attacker.stats;
+        // The offensive stat's ModifyAtk / ModifySpA chain, applied once to
+        // the boosted stat in damage.rs (sim/battle-actions.ts getDamage).
+        // Body Press attacks with Def, which runs ModifyDef instead.
+        let mut atk_chain: u64 = 4096;
+        let physical_move = m.category == 0 && move_id != data::move_id::BODYPRESS;
         let special_move = m.category == 1;
         if attacker_item_id == data::item_id::CHOICEBAND && physical_move {
-            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
         }
         if attacker_item_id == data::item_id::CHOICESPECS && special_move {
-            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
         }
         // Pinch abilities — Overgrow / Blaze / Torrent / Swarm. PS
         // data/abilities.ts: `onModifyAtk` / `onModifySpA`
@@ -8715,12 +8788,8 @@ self.trigger_emergency_exits();
             if m.type_ == pt
                 && (attacker.current_hp as u32) * 3 <= attacker.stats.hp as u32
             {
-                if physical_move {
-                    atk_stats_ovr.atk =
-                        ((atk_stats_ovr.atk as u32 * 3 / 2).min(u16::MAX as u32)) as u16;
-                } else if special_move {
-                    atk_stats_ovr.spa =
-                        ((atk_stats_ovr.spa as u32 * 3 / 2).min(u16::MAX as u32)) as u16;
+                if physical_move || special_move {
+                    atk_chain = crate::damage::chain_modify(atk_chain, 3, 2);
                 }
             }
         }
@@ -8735,14 +8804,8 @@ self.trigger_emergency_exits();
         // i.e. floor((v * 5325 + 2047) / 4096). Apply that exact form
         // here so paradox-boosted damage matches PS bit-for-bit.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protosynthesis_(Ability)>.
-        let scale_off_13 = |v: u16| -> u16 {
-            (((v as u32 * 5325 + 2047) / 4096).min(u16::MAX as u32)) as u16
-        };
-        if attacker.boosted_stat == 0 && physical_move {
-            atk_stats_ovr.atk = scale_off_13(atk_stats_ovr.atk);
-        }
-        if attacker.boosted_stat == 2 && special_move {
-            atk_stats_ovr.spa = scale_off_13(atk_stats_ovr.spa);
+        if (attacker.boosted_stat == 0 && physical_move) || (attacker.boosted_stat == 2 && special_move) {
+            atk_chain = crate::damage::chain_modify(atk_chain, 5325, 4096);
         }
         // Hadron Engine: Iron Moth's signature — SpA ×5461/4096 (≈1.333)
         // on special moves while Electric Terrain is up. The ability also
@@ -8805,7 +8868,7 @@ self.trigger_emergency_exits();
                 m,
                 physical_move,
                 special_move,
-                &mut atk_stats_ovr,
+                &mut atk_chain,
             );
         }
         // Ruin abilities (gen 9 paradox quartet): Tablets of Ruin
@@ -8835,9 +8898,6 @@ self.trigger_emergency_exits();
         // reads its bit. Behavior is byte-identical, including PS's
         // per-target re-evaluation when a Ruin holder faints mid-spread-move
         // (the helper is still called per target-iter inside the loop below).
-        let scale_off_075 = |v: u16| -> u16 {
-            (((v as u32 * 3072 + 2047) / 4096).min(u16::MAX as u32)) as u16
-        };
         // Offensive Ruin: the attacker is the stat-owner, so it is excluded
         // only when IT holds the ability (PS `source.hasAbility(...)`); any
         // other holder on the field — including the attacker's own ally —
@@ -8847,13 +8907,13 @@ self.trigger_emergency_exits();
             && off_ruin.tablets
             && physical_move
         {
-            atk_stats_ovr.atk = scale_off_075(atk_stats_ovr.atk);
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 4);
         }
         if attacker_ability_id != data::ability_id::VESSELOFRUIN
             && off_ruin.vessel
             && special_move
         {
-            atk_stats_ovr.spa = scale_off_075(atk_stats_ovr.spa);
+            atk_chain = crate::damage::chain_modify(atk_chain, 3, 4);
         }
 
         // Water Bubble / Toxic Boost / Flare Boost — outlined into the
@@ -8965,6 +9025,10 @@ self.trigger_emergency_exits();
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
+        // getSpreadDamage rolls every target before any DamagingHit runs
+        // (data/mods/champions/scripts.ts spreadMoveHit), so an earlier target's
+        // Seed Sower or Sand Spit does not reach a later target's damage.
+        let spread_field = (self.effective_weather(), self.terrain);
         for (ti, &(tside, tslot)) in targets.iter().enumerate() {
             if darts_phase[ti] == 2 && !darts_pass[ti - 2] {
                 continue;
@@ -9247,6 +9311,7 @@ self.trigger_emergency_exits();
                         d.last_attacker = (aside_byte, actor_slot as u8);
                         d.last_attacker_category = m.category;
                         d.last_damage_taken = capped;
+                        d.last_foe_damage = capped;
                         // Per-category attribution for Counter / Mirror Coat.
                         if m.category == 0 {
                             d.last_phys_attacker = (aside_byte, actor_slot as u8);
@@ -10031,7 +10096,7 @@ self.trigger_emergency_exits();
                 // recent hit of EITHER category this turn. Scripted-target /
                 // fail gate above guarantees `last_damage_taken > 0` here.
                 data::move_id::METALBURST | data::move_id::COMEUPPANCE => {
-                    Some(((attacker.last_damage_taken as u32 * 3 / 2).max(1)).min(u16::MAX as u32) as u16)
+                    Some(((attacker.last_foe_damage as u32 * 3 / 2).max(1)).min(u16::MAX as u32) as u16)
                 }
                 _ => None,
             };
@@ -10143,9 +10208,13 @@ self.trigger_emergency_exits();
             if self.wonder_room_turns > 0 {
                 core::mem::swap(&mut def_stats_ovr.def, &mut def_stats_ovr.spd);
             }
-            if defender.effective_item_id() == data::item_id::ASSAULTVEST && m.category == 1 {
-                def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
-                    .min(u16::MAX as u32)) as u16;
+            // Psyshock's overrideDefensiveStat runs ModifyDef, not ModifySpD
+            // (sim/battle-actions.ts getDamage).
+            let reads_def = m.category == 0
+                || matches!(move_id, data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD);
+            let mut def_chain: u64 = 4096;
+            if defender.effective_item_id() == data::item_id::ASSAULTVEST && !reads_def {
+                def_chain = crate::damage::chain_modify(def_chain, 3, 2);
             }
             // Eviolite — PS `data/items.ts:eviolite` `onModifyDef` /
             // `onModifySpD` ×1.5 for NFE holders (any species whose
@@ -10155,13 +10224,7 @@ self.trigger_emergency_exits();
             // ×1.3 above (PS chains both modifiers).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eviolite>.
             if defender.effective_item_id() == data::item_id::EVIOLITE && defender.species().is_nfe {
-                if m.category == 0 {
-                    def_stats_ovr.def = ((def_stats_ovr.def as u32 * 3 / 2)
-                        .min(u16::MAX as u32)) as u16;
-                } else if m.category == 1 {
-                    def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
-                        .min(u16::MAX as u32)) as u16;
-                }
+                def_chain = crate::damage::chain_modify(def_chain, 3, 2);
             }
             // Defensive Ruin: Sword of Ruin (×0.75 Def) and Beads of Ruin
             // (×0.75 SpD). The DEFENDER is the stat-owner, so it is excluded
@@ -10176,23 +10239,20 @@ self.trigger_emergency_exits();
             let def_ruin = self.compute_ruin_flags();
             if defender.effective_ability_id() != data::ability_id::SWORDOFRUIN
                 && def_ruin.sword
-                && m.category == 0
+                && reads_def
             {
-                def_stats_ovr.def = scale_off_075(def_stats_ovr.def);
+                def_chain = crate::damage::chain_modify(def_chain, 3, 4);
             }
             if defender.effective_ability_id() != data::ability_id::BEADSOFRUIN
                 && def_ruin.beads
-                && m.category == 1
+                && !reads_def
             {
-                def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
+                def_chain = crate::damage::chain_modify(def_chain, 3, 4);
             }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
-            if defender.boosted_stat == 1 && m.category == 0 {
-                def_stats_ovr.def = scale_off_13(def_stats_ovr.def);
-            }
-            if defender.boosted_stat == 3 && m.category == 1 {
-                def_stats_ovr.spd = scale_off_13(def_stats_ovr.spd);
+            if (defender.boosted_stat == 1 && reads_def) || (defender.boosted_stat == 3 && !reads_def) {
+                def_chain = crate::damage::chain_modify(def_chain, 5325, 4096);
             }
             let def_conds = self.side(tside).conditions;
             // Infiltrator — PS data/abilities.ts:infiltrator `onModifyMove`
@@ -10226,7 +10286,7 @@ self.trigger_emergency_exits();
                 || self.calc_mods.doubles;
             // Raw field terrain; `damage.rs` checks attacker / defender
             // grounding per terrain rule.
-            let active_terrain = self.terrain;
+            let active_terrain = spread_field.1;
             // Aura abilities — scan every alive active for fairyaura /
             // darkaura / aurabreak. PS `onAnyBasePower` fires from
             // each holder; here we precompute presence (PS de-dupes via
@@ -10340,7 +10400,7 @@ self.trigger_emergency_exits();
                     guarded || (tside == SideRef::P2 && self.calc_mods.friend_guard)
                 };
             let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                weather: self.effective_weather(),
+                weather: spread_field.0,
                 terrain: active_terrain,
                 champions: self.champions,
                 ..DamageContext::default()
@@ -10380,7 +10440,7 @@ self.trigger_emergency_exits();
             }
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
-                weather: self.effective_weather(),
+                weather: spread_field.0,
                 terrain: active_terrain,
                 defender_has_reflect, defender_has_light_screen,
                 defender_has_aurora_veil,
@@ -10389,6 +10449,8 @@ self.trigger_emergency_exits();
                 speed_stats,
                 attacker_stats: atk_stats_ovr,
                 defender_stats: def_stats_ovr,
+                attacker_stat_mod: atk_chain as u32,
+                defender_stat_mod: def_chain as u32,
                 pursuit_doubled: move_id == data::move_id::PURSUIT
                     && self.pursuit_intercepting,
                 ally_power_spot, ally_battery, steely_spirit_holders,
@@ -10436,6 +10498,11 @@ self.trigger_emergency_exits();
                 // this turn (queue.willMove; `pending_kind` clears as each
                 // action starts).
                 Some((self.moves()[move_id as usize].base_power as u32) * 2)
+            } else if move_id == data::move_id::ROUND && m.base_power != self.moves()[move_id as usize].base_power {
+                // A Round moved up by another Round (data/moves.ts round
+                // basePowerCallback: `move.sourceEffect === 'round'`). The
+                // damage formula reads the move table, not `m_owned`.
+                Some(m.base_power as u32)
             } else {
                 None
             };
@@ -11610,50 +11677,40 @@ self.trigger_emergency_exits();
         m: &data::MoveDef,
         physical_move: bool,
         special_move: bool,
-        atk_stats_ovr: &mut crate::pokemon::FinalStats,
+        atk_chain: &mut u64,
     ) {
         let attacker_ability_id = attacker.effective_ability_id();
         if attacker_ability_id == data::ability_id::HADRONENGINE
             && special_move
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
         {
-            atk_stats_ovr.spa =
-                ((atk_stats_ovr.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 5461, 4096);
         }
         if attacker_ability_id == data::ability_id::ORICHALCUMPULSE
             && physical_move
             && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
         {
-            atk_stats_ovr.atk =
-                ((atk_stats_ovr.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 5461, 4096);
         }
         // Ruin abilities (Tablets/Vessel of Ruin) stay INLINE in
         // `resolve_move_with_pending` because their effect fires on
         // non-Ruin attackers when a foe holds the ability — so they can't
         // be gated on `attacker_ability_id` alone. Outlining them here
         // would either double-apply or skip the foe-side case.
-        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 {
-            if physical_move {
-                atk_stats_ovr.atk =
-                    ((atk_stats_ovr.atk as u32 * 2).min(u16::MAX as u32)) as u16;
-            } else if special_move {
-                atk_stats_ovr.spa =
-                    ((atk_stats_ovr.spa as u32 * 2).min(u16::MAX as u32)) as u16;
-            }
+        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 && (physical_move || special_move) {
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 2, 1);
         }
         if attacker_ability_id == data::ability_id::TOXICBOOST
             && physical_move
             && matches!(attacker.status, Status::Poison | Status::Toxic)
         {
-            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 3, 2);
         }
         if attacker_ability_id == data::ability_id::FLAREBOOST
             && special_move
             && matches!(attacker.status, Status::Burn)
         {
-            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
+            *atk_chain = crate::damage::chain_modify(*atk_chain, 3, 2);
         }
     }
 
@@ -13531,6 +13588,7 @@ self.trigger_emergency_exits();
                 t.last_attacker = (aside_byte, app.attacker_slot);
                 t.last_attacker_category = app.move_category;
                 t.last_damage_taken = app.effective_dmg;
+                t.last_foe_damage = app.effective_dmg;
                 // Per-category attribution for Counter / Mirror Coat.
                 if app.move_category == 0 {
                     t.last_phys_attacker = (aside_byte, app.attacker_slot);
@@ -15330,7 +15388,9 @@ self.trigger_emergency_exits();
                 m.level as u32,
                 m.stats.atk as u32,
                 m.boosts[0],
-                m.stats.def as u32,
+                // calculateStat('def') reads stored SpD under Wonder Room
+                // (sim/pokemon.ts calculateStat), keeping the Def stage.
+                if self.wonder_room_turns > 0 { m.stats.spd } else { m.stats.def } as u32,
                 m.boosts[1],
             )
         };
@@ -16558,7 +16618,10 @@ self.trigger_emergency_exits();
             // A consecutive Destiny Bond removes the volatile and fails.
             "destinybond" => user.volatiles.has(crate::pokemon::VolatileKind::DestinyBond),
             // onHit fails on a target that has the type (or missed).
-            "trickortreat" | "forestscurse" => !self.status_hit_failed,
+            "trickortreat" | "forestscurse" | "spite" => !self.status_hit_failed,
+            // forceSwitch counts once the flag is set, the drag comes later
+            // (runMoveEffects' didSomething, sim/battle-actions.ts).
+            "roar" | "whirlwind" => self.force_switch_flags.iter().flatten().any(|&f| f),
             "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
             | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
@@ -18318,10 +18381,20 @@ self.trigger_emergency_exits();
         {
             return;
         }
+        // A source off the field (fainted or benched) has no boosts, and its
+        // item and ability do nothing (sim/pokemon.ts ignoringItem,
+        // ignoringAbility: gen 5+ `!isActive`; boosts clear in clearVolatile).
+        let mut src_mon = self.side(src_side).team[src_idx].clone();
+        let src_active = self.side(src_side).active.iter().any(|&a| a as usize == src_idx) && src_mon.is_alive();
+        if !src_active {
+            src_mon.boosts = Default::default();
+            src_mon.item_id = u16::MAX;
+            src_mon.ability_suppressed = true;
+        }
         // hitStepInvulnerabilityEvent: a target in Fly or Phantom Force dodges, and
         // `[miss]` lands on the last move line (sim/battle-actions.ts).
         if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.semi_invuln != 0 && d.effective_ability_id() != data::ability_id::NOGUARD)
-            && self.side(src_side).team[src_idx].effective_ability_id() != data::ability_id::NOGUARD
+            && src_mon.effective_ability_id() != data::ability_id::NOGUARD
         {
             self.p_future_miss(src_side, src_idx as u8, tside, tslot);
             return;
@@ -18329,7 +18402,7 @@ self.trigger_emergency_exits();
         // trySpreadMoveHit's hitStepTypeImmunity: `-immune` and no rolls
         // (sim/battle-actions.ts:654-664).
         let immune_target = {
-            let attacker = &self.side(src_side).team[src_idx];
+            let attacker = &src_mon;
             let ty = self.moves()[entry.move_id as usize].type_;
             self.side(tside)
                 .active_mon(tslot as usize)
@@ -18364,7 +18437,7 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() {
             let m = &self.moves()[entry.move_id as usize];
             let (immune, acc, crit_stage, crit_immune) = {
-                let attacker = &self.side(src_side).team[src_idx];
+                let attacker = &src_mon;
                 let Some(defender) = self.side(tside).active_mon(tslot as usize) else { return };
                 let immune = crate::damage::effectiveness_for_attack(attacker, entry.move_id, m.type_, defender)
                     .is_immune();
@@ -18400,7 +18473,7 @@ self.trigger_emergency_exits();
 
         let wonder_room = self.wonder_room_turns > 0;
         let dmg = {
-            let attacker = &self.side(src_side).team[src_idx];
+            let attacker = &src_mon;
             let defender = match self.side(tside).active_mon(tslot as usize) {
                 Some(d) => d,
                 None => return,
@@ -18454,7 +18527,7 @@ self.trigger_emergency_exits();
                     attacker_moves_last: false,
                     champions: self.champions,
                     defender_resist_berry: false,
-                    parental_bond_hit: false,
+                    parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0,
                 },
             )
         };
@@ -18479,6 +18552,11 @@ self.trigger_emergency_exits();
                     pmon!(self, "-end", tside, tslot, "|Substitute");
                 } else {
                     pmon!(self, "-activate", tside, tslot, "|move: Substitute|[damage]");
+                }
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                    self.ps_active_ties(false, "shuffle");
                 }
                 return;
             }
@@ -18512,6 +18590,16 @@ self.trigger_emergency_exits();
                     crate::ability::on_damaging_hit(self, tside, tslot, entry.move_id, src_side, src_slot as u8, &mut rng, false);
                     self.rng = rng;
                 }
+            }
+            // The hit loop's two eachEvent('Update'), around faintMessages:
+            // the first still sorts a mon this hit knocked out
+            // (data/mods/champions/scripts.ts hitStepMoveHitLoop, reached
+            // through trySpreadMoveHit from data/conditions.ts futuremove).
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                let knocked_out = self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.current_hp == 0);
+                self.ps_active_ties(knocked_out, "shuffle");
+                self.ps_active_ties(false, "shuffle");
             }
         }
     }
@@ -20351,7 +20439,14 @@ self.trigger_emergency_exits();
         }) || self
             .side(actor_side)
             .active_mon(actor_slot as usize)
-            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
+            .is_some_and(|a| {
+                let (types, n) = a.effective_types();
+                a.effective_ability_id() == data::ability_id::NOGUARD
+                    // hitStepAccuracy: gen 8+ Toxic from a Poison type is
+                    // `accuracy = true` (sim/battle-actions.ts), behind a
+                    // Substitute too.
+                    || (move_id == data::move_id::TOXIC && types[..n as usize].contains(&7))
+            });
         self.status_pending_kind = *pending_kind;
         self.status_sub_blocks = !m.is_sound && !matches!(m.target, 1 | 3)
             && self.side(actor_side).active_mon(actor_slot as usize).is_none_or(|u| u.effective_ability_id() != data::ability_id::INFILTRATOR);
@@ -22425,7 +22520,9 @@ self.trigger_emergency_exits();
                 let Some((ts, tslot)) = opp_target else { return };
                 if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.volatiles.has(V::LockOn)) { return; }
                 if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
-                let payload = (ts as u8 as u32) << 1 | tslot as u32;
+                // effectState.source is the mon, not the slot: its team index
+                // in the upper bits (data/moves.ts lockon onSourceAccuracy).
+                let payload = (ts as u8 as u32) << 1 | tslot as u32 | (self.side(ts).active[tslot as usize] as u32) << 8;
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::LockOn, turns_remaining: 2, payload });
                 }
@@ -22528,6 +22625,9 @@ self.trigger_emergency_exits();
             }
             data::move_id::SPITE => {
                 // data/moves.ts spite onHit: 4 PP off the target's last move.
+                // PP is left out of the status-move snapshot, so the result
+                // goes through status_hit_failed.
+                self.status_hit_failed = true;
                 if !self.rolled_accuracy_passed(m) { return; }
                 let Some((ts, tslot)) = opp_target else { return };
                 let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
@@ -22536,6 +22636,7 @@ self.trigger_emergency_exits();
                 let pp = t.pp.get(i).copied().unwrap_or(0);
                 let took = pp.min(4);
                 if took == 0 { return; }
+                self.status_hit_failed = false;
                 if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                     t.pp[i] = pp - took;
                 }
@@ -34235,11 +34336,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -38533,11 +38634,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -53205,6 +53306,10 @@ mod r9_tests;
 #[cfg(test)]
 #[path = "battle_r10_tests.rs"]
 mod r10_tests;
+
+#[cfg(test)]
+#[path = "battle_ps_damage_tests.rs"]
+mod battle_ps_damage_tests;
 
 #[cfg(test)]
 #[path = "battle_r11_tests.rs"]

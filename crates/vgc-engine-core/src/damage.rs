@@ -237,6 +237,13 @@ pub struct DamageContext {
     /// Parental Bond's second hit: x0.25 at the spread-modifier step
     /// (data/mods/champions/scripts.ts:209 modifyDamage).
     pub parental_bond_hit: bool,
+    /// The ModifyAtk / ModifySpA chain battle.rs knows about (items, pinch and
+    /// paradox abilities, Ruin), Q12 with 0 for none. Showdown applies the
+    /// whole chain once to the boosted stat (sim/battle-actions.ts getDamage,
+    /// sim/battle.ts chainModify).
+    pub attacker_stat_mod: u32,
+    /// The same for the defensive stat's ModifyDef / ModifySpD chain.
+    pub defender_stat_mod: u32,
 }
 
 impl DamageContext {
@@ -2130,12 +2137,9 @@ pub(crate) fn calculate_damage_with_bp(
     // blocked) lives in battle.rs. ×1.5 = 6144/4096 (exact in pokeRound).
     // Charizard / Heliolisk / Sunkern signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
-    if !physical
+    let solar_power = !physical
         && matches!(weather_for_holder(ctx.weather, attacker), crate::weather::Weather::Sun)
-        && attacker.effective_ability_id() == data::ability_id::SOLARPOWER
-    {
-        atk_stat = atk_stat * 3 / 2;
-    }
+        && attacker.effective_ability_id() == data::ability_id::SOLARPOWER;
 
     // Heatproof — PS `data/abilities.ts:heatproof`:
     //   onSourceModifyAtk / onSourceModifySpA(atk, attacker, defender, move) {
@@ -2184,8 +2188,17 @@ pub(crate) fn calculate_damage_with_bp(
     }
     let eff_atk_stage = atk_policy.project(atk_stage);
     let eff_def_stage = def_policy.project(def_stage);
-    let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
-    let mut d = apply_boost(def_stat, eff_def_stage).max(1);
+    let a = apply_boost(atk_stat, eff_atk_stage).max(1);
+    let d = apply_boost(def_stat, eff_def_stage).max(1);
+    // Every Modify* handler chains into one Q12 modifier, applied once to the
+    // boosted stat at the end (sim/battle-actions.ts getDamage: calculateStat,
+    // then runEvent). Not per handler, and not before the boost: both round
+    // differently.
+    let mut a_chain: u64 = if ctx.attacker_stat_mod == 0 { 4096 } else { ctx.attacker_stat_mod as u64 };
+    let mut d_chain: u64 = if ctx.defender_stat_mod == 0 { 4096 } else { ctx.defender_stat_mod as u64 };
+    if solar_power {
+        a_chain = chain_modify(a_chain, 3, 2);
+    }
     // Sandstorm's onModifySpD and Snow's onModifyDef, priority 10
     // (data/conditions.ts sandstorm, snowscape): on the staged stat, for the
     // types the mon has now. Mega Sol makes the attacker's weather reads 'sunnyday'
@@ -2203,7 +2216,7 @@ pub(crate) fn calculate_damage_with_bp(
                 _ => false,
             };
         if weather_buff {
-            d = (d * 6144 / 4096).max(1);
+            d_chain = chain_modify(d_chain, 3, 2);
         }
     }
 
@@ -2218,7 +2231,7 @@ pub(crate) fn calculate_damage_with_bp(
     if attacker.effective_ability_id() == data::ability_id::DEFEATIST
         && (attacker.current_hp as u32) * 2 <= atk_stats.hp as u32
     {
-        a = (a / 2).max(1);
+        a_chain = chain_modify(a_chain, 1, 2);
     }
 
     // Slow Start — PS `data/abilities.ts:4266`:
@@ -2232,7 +2245,7 @@ pub(crate) fn calculate_damage_with_bp(
         && attacker.slow_start_active_turns > 0
         && physical
     {
-        a = (a / 2).max(1);
+        a_chain = chain_modify(a_chain, 1, 2);
     }
 
     // Guts — PS `data/abilities.ts:guts`:
@@ -2246,7 +2259,7 @@ pub(crate) fn calculate_damage_with_bp(
         && attacker.effective_ability_id() == data::ability_id::GUTS
         && !matches!(attacker.status, crate::pokemon::Status::None)
     {
-        a = (a * 6144 / 4096).max(1);
+        a_chain = chain_modify(a_chain, 3, 2);
     }
 
     // Gorilla Tactics — PS `data/abilities.ts:1628`:
@@ -2262,7 +2275,7 @@ pub(crate) fn calculate_damage_with_bp(
     // signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Gorilla_Tactics_(Ability)>.
     if physical && attacker.effective_ability_id() == data::ability_id::GORILLATACTICS {
-        a = (a * 6144 / 4096).max(1);
+        a_chain = chain_modify(a_chain, 3, 2);
     }
 
     // Hustle — PS `data/abilities.ts:hustle`:
@@ -2276,7 +2289,7 @@ pub(crate) fn calculate_damage_with_bp(
     // Flapple-line signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Hustle_(Ability)>.
     if physical && attacker.effective_ability_id() == data::ability_id::HUSTLE {
-        a = (a * 6144 / 4096).max(1);
+        a_chain = chain_modify(a_chain, 3, 2);
     }
 
     // Flash Fire — PS data/abilities.ts:1359-1371: the `flashfire`
@@ -2287,7 +2300,7 @@ pub(crate) fn calculate_damage_with_bp(
         && attacker.volatiles.has(crate::pokemon::VolatileKind::FlashFire)
         && attacker.effective_ability_id() == data::ability_id::FLASHFIRE
     {
-        a = (a * 6144 / 4096).max(1);
+        a_chain = chain_modify(a_chain, 3, 2);
     }
 
     // Fire Mane (Pokémon Champions, Mega Pyroar) — PS `data/abilities.ts:
@@ -2295,7 +2308,7 @@ pub(crate) fn calculate_damage_with_bp(
     // return this.chainModify(1.5)`. An attack-stat modifier, not a
     // base-power one (the two round differently). Not breakable.
     if move_type == 1 && attacker.effective_ability_id() == data::ability_id::FIREMANE {
-        a = (a * 6144 / 4096).max(1);
+        a_chain = chain_modify(a_chain, 3, 2);
     }
 
     // Thick Fat / Water Bubble (defender) — PS `data/abilities.ts:thickfat`
@@ -2309,7 +2322,7 @@ pub(crate) fn calculate_damage_with_bp(
         && ((def_ab == data::ability_id::THICKFAT && (move_type == 1 || move_type == 5))
             || (def_ab == data::ability_id::WATERBUBBLE && move_type == 1))
     {
-        a = (a / 2).max(1);
+        a_chain = chain_modify(a_chain, 1, 2);
     }
 
     // Huge Power / Pure Power — PS `data/abilities.ts:hugepower` / `purepower`:
@@ -2329,13 +2342,13 @@ pub(crate) fn calculate_damage_with_bp(
             data::ability_id::HUGEPOWER | data::ability_id::PUREPOWER
         )
     {
-        a = (a * 2).max(1);
+        a_chain = chain_modify(a_chain, 2, 1);
     }
 
     // Stakeout — data/abilities.ts stakeout onModifyAtk / onModifySpA: a defender
     // whose activeTurns is still 0, one that switched in this turn.
     if attacker.effective_ability_id() == data::ability_id::STAKEOUT && defender.switched_in_this_turn() {
-        a = (a * 2).max(1);
+        a_chain = chain_modify(a_chain, 2, 1);
     }
 
     // Light Ball — PS `data/items.ts:lightball` onModifyAtk / onModifySpA
@@ -2344,7 +2357,7 @@ pub(crate) fn calculate_damage_with_bp(
     if attacker.effective_item_id() == data::item_id::LIGHTBALL
         && attacker.species().slug.starts_with("pikachu")
     {
-        a = (a * 2).max(1);
+        a_chain = chain_modify(a_chain, 2, 1);
     }
 
     // Marvel Scale — PS `data/abilities.ts:marvelscale`:
@@ -2361,7 +2374,7 @@ pub(crate) fn calculate_damage_with_bp(
         && !matches!(defender.status, crate::pokemon::Status::None)
         && !attacker_breaks_mold_for_offense
     {
-        d = (d * 6144 / 4096).max(1);
+        d_chain = chain_modify(d_chain, 3, 2);
     }
 
     // Fur Coat — PS `data/abilities.ts:furcoat`:
@@ -2375,7 +2388,7 @@ pub(crate) fn calculate_damage_with_bp(
         && defender.effective_ability_id() == data::ability_id::FURCOAT
         && !attacker_breaks_mold_for_offense
     {
-        d = (d * 2).max(1);
+        d_chain = chain_modify(d_chain, 2, 1);
     }
 
     // Grass Pelt — PS data/abilities.ts grasspelt onModifyDef: chainModify(1.5) in
@@ -2385,7 +2398,7 @@ pub(crate) fn calculate_damage_with_bp(
         && matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
         && !attacker_breaks_mold_for_offense
     {
-        d = (d * 6144 / 4096).max(1);
+        d_chain = chain_modify(d_chain, 3, 2);
     }
 
     // Heatproof — PS data/abilities.ts:heatproof onSourceModifyAtk /
@@ -2399,7 +2412,7 @@ pub(crate) fn calculate_damage_with_bp(
         && !attacker_breaks_mold_for_offense
         && defender.effective_ability_id() == data::ability_id::HEATPROOF
     {
-        a = (a / 2).max(1);
+        a_chain = chain_modify(a_chain, 1, 2);
     }
 
     // Purifying Salt — PS `data/abilities.ts:3573`:
@@ -2417,7 +2430,7 @@ pub(crate) fn calculate_damage_with_bp(
         && !attacker_breaks_mold_for_offense
         && defender.effective_ability_id() == data::ability_id::PURIFYINGSALT
     {
-        a = (a / 2).max(1);
+        a_chain = chain_modify(a_chain, 1, 2);
     }
 
     // Dry Skin — PS data/abilities.ts:dryskin:
@@ -2430,6 +2443,9 @@ pub(crate) fn calculate_damage_with_bp(
     // mathematically equivalent — base-damage is linear in A. PokeRound
     // 5120/4096 = 1.25 exactly.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
+
+    let a = apply_modifier(a, a_chain).max(1);
+    let d = apply_modifier(d, d_chain).max(1);
 
     let level = attacker.level as u32;
     // base = floor( floor( floor(2L/5+2) * BP * A / D ) / 50 ) + 2
@@ -2512,7 +2528,10 @@ pub(crate) fn calculate_damage_with_bp(
     let eff_has_move_type = (0..eff_atk_num as usize)
         .any(|i| eff_atk_types[i] == move_type);
     // Struggle is typeless (data/moves.ts struggle onModifyMove: '???').
-    let is_stab = (base_has_move_type || eff_has_move_type) && move_id != data::move_id::STRUGGLE;
+    // getTypes includes Forest's Curse's or Trick-or-Treat's added type
+    // (sim/pokemon.ts getTypes; hasType in getDamage's STAB check).
+    let added_has_move_type = !attacker.terastallized && attacker.added_type == move_type;
+    let is_stab = (base_has_move_type || eff_has_move_type || added_has_move_type) && move_id != data::move_id::STRUGGLE;
     // Stellar STAB. PS sim/battle-actions.ts:1781:
     //   if (pokemon.terastallized === 'Stellar') {
     //     stab = isSTAB ? 2 : [4915, 4096];   // ×2 or ×1.2
@@ -2851,6 +2870,13 @@ pub(crate) struct DamageInputs {
     pub champions: bool,
     pub defender_resist_berry: bool,
     pub parental_bond_hit: bool,
+    /// The ModifyAtk / ModifySpA chain battle.rs knows about (items, pinch and
+    /// paradox abilities, Ruin), Q12 with 0 for none. Showdown applies the
+    /// whole chain once to the boosted stat (sim/battle-actions.ts getDamage,
+    /// sim/battle.ts chainModify).
+    pub attacker_stat_mod: u32,
+    /// The same for the defensive stat's ModifyDef / ModifySpD chain.
+    pub defender_stat_mod: u32,
 }
 
 /// Build the `DamageContext` template for one hit from the caller's
@@ -2892,6 +2918,8 @@ pub(crate) fn ctx_from_inputs(inputs: DamageInputs) -> DamageContext {
         champions: inputs.champions,
         defender_resist_berry: inputs.defender_resist_berry,
         parental_bond_hit: inputs.parental_bond_hit,
+        attacker_stat_mod: inputs.attacker_stat_mod,
+        defender_stat_mod: inputs.defender_stat_mod,
     }
 }
 
@@ -2931,13 +2959,13 @@ pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u1
         attacker,
         defender,
         move_id,
-        DamageContext { crit: false, roll: DamageContext::MIN_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+        DamageContext { crit: false, roll: DamageContext::MIN_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
     );
     let max = calculate_damage(
         attacker,
         defender,
         move_id,
-        DamageContext { crit: false, roll: DamageContext::MAX_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+        DamageContext { crit: false, roll: DamageContext::MAX_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
     );
     (min, max)
 }
@@ -3248,7 +3276,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let dmg_heavy_vs_light = calculate_damage(&heavy, &target, hs, ctx);
         // Heavy (Snorlax 460 kg) vs light (Pichu 2 kg): ratio ≫ 5 → 120 BP.
         // Vs a same-weight target (Snorlax vs Snorlax-equivalent),
@@ -3280,7 +3308,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let dmg = calculate_damage(&slow, &fast, gb, ctx);
         assert!(dmg > 0, "Gyro Ball must deal damage (got {dmg})");
     }
@@ -3304,7 +3332,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let dmg_heavy = calculate_damage(&attacker, &heavy, lk, ctx);
         let dmg_light = calculate_damage(&attacker, &light, lk, ctx);
         // Heavy target gets 120 BP; light gets 20 BP — 6x BP ratio.
@@ -3333,7 +3361,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let float_stone = data::ITEMS.iter()
             .position(|i| i.slug == "floatstone").expect("floatstone") as u16;
         let mut plain = make_mon("skarmory", 50, "hardy", StatSpread::ZERO);
@@ -3362,7 +3390,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
 
         // Normal vs Ghost: 0× normally, neutral with Ring Target.
         let normal_user = make_mon("snorlax", 50, "adamant",
@@ -3430,7 +3458,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let dmg_fd = calculate_damage(&attacker, &target, fd, ctx);
         let dmg_ib = calculate_damage(&attacker, &target, ib, ctx);
         // Freeze-Dry: 70 BP × 2 (SE override). Ice Beam: 90 BP × 0.5
@@ -3464,7 +3492,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let dmg_fp = calculate_damage(&attacker, &target, fp, ctx);
         let dmg_baseline = calculate_damage(&attacker, &target, lk, ctx);
         // Vs Grass-type Tangrowth: Fighting neutral, Flying 2x → 2x net.
@@ -3510,7 +3538,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         let dmg_spa = calculate_damage(
             &necrozma_spa, &target, pg,
@@ -3520,7 +3548,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         // Adamant 252+ Atk Necrozma has higher Atk than its SpA. The
         // physical branch then hits Blissey's tiny Def — should land
@@ -3569,7 +3597,7 @@ mod tests {
             &attacker,
             &defender,
             move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 },
         );
         assert_eq!(dmg, 444);
     }
@@ -3596,7 +3624,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let pelipper = make_mon("pelipper", 50, "modest", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &pelipper, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         assert_eq!(dmg, 0);
     }
 
@@ -3605,9 +3633,9 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         assert!(crit > no_crit);
         // 148 * 3/2 = 222; × roll 100/100 = 222; × STAB 3/2 = 333; × type 2 = 666
         assert_eq!(crit, 666);
@@ -3619,7 +3647,7 @@ mod tests {
         attacker.status = Status::Burn;
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let burned = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // 444 / 2 = 222
         assert_eq!(burned, 222);
     }
@@ -3630,9 +3658,9 @@ mod tests {
         attacker.boosts[0] = -2; // -50% atk pre-crit
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // With -2 atk boost ignored on crit, crit damage > no-crit (with -2 applied).
         assert!(crit > no_crit * 2, "crit should ignore -2 atk boost");
     }
@@ -3643,7 +3671,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &defender, move_id("tackle"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // base = 22 * 40 * 200 / 60 / 50 + 2 = 176000/3000 + 2 = 58 + 2 = 60.
         // × 100/100 × 1.0 STAB × 1.0 type = 60.
         assert_eq!(dmg, 60);
@@ -3654,7 +3682,7 @@ mod tests {
         // PS data/moves.ts struggle onModifyMove: `move.type = '???'`. No
         // STAB for a Normal-type user and no type chart (it hits Ghosts).
         // Study 8b67530c3a (Struggle into Sableye).
-        let ctx = DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let struggle = move_id("struggle");
         let mut attacker = make_mon("snorlax", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 0 });
         let defender = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
@@ -3679,7 +3707,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let flamethrower = move_id("flamethrower");
 
         // --- Offensive STAB.
@@ -3726,7 +3754,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let defender = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
 
         // Electric move: ×2 with Charge.
@@ -3757,7 +3785,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread::ZERO);
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &defender, move_id("protect"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         assert_eq!(dmg, 0);
     }
 
@@ -3771,7 +3799,7 @@ mod tests {
         let d = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         // With atk = 300 and the same setup as the Garchomp test, damage scales linearly.
         let dmg = calculate_damage(&m, &d, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // base = 22 * 100 * 300 / 60 / 50 + 2 = 22 * 100 * 300 / 3000 + 2 = 220 + 2 = 222
         // × STAB 3/2 = 333, × type 2 = 666.
         assert_eq!(dmg, 666);
@@ -3792,7 +3820,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let aura = calculate_damage(&atk, &def, mid,
             DamageContext { crit: false, roll: 15, is_spread: false,
                 weather: crate::weather::Weather::None,
@@ -3800,7 +3828,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: true, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // Aura BP factor ≈ 5448/4096 = 1.3301; damage ratio matches.
         assert!(aura > base, "Fairy Aura should boost ({} > {})", aura, base);
         let ratio_x100 = (aura as u32) * 100 / (base.max(1) as u32);
@@ -3823,7 +3851,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let broken = calculate_damage(&atk, &def, mid,
             DamageContext { crit: false, roll: 15, is_spread: false,
                 weather: crate::weather::Weather::None,
@@ -3831,7 +3859,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: true, dark_aura_active: false,
-                aura_break_active: true, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: true, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
     }
@@ -3851,7 +3879,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let eq = move_id("earthquake");
         let tackle = move_id("tackle");
         let dry = mk(crate::weather::Weather::None, eq);
@@ -3874,7 +3902,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let no_crit = mk(&atk, false);
         let plain_crit = mk(&atk, true);
         let sn_id = data::ABILITIES.iter()
@@ -3902,7 +3930,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let punch = move_id("drainpunch");
         let tackle = move_id("tackle");
         let no_punch = mk(&atk, punch);
@@ -3932,7 +3960,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let bullet = move_id("bulletpunch"); // 40 BP — eligible
         let quake = move_id("earthquake");   // 100 BP — not eligible
         let no_bullet = mk(&atk, bullet);
@@ -3962,7 +3990,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let tackle = move_id("tackle");
         let base = mk(&atk, tackle);
         let mask_id = data::ITEMS.iter()
@@ -3997,7 +4025,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let firepunch = move_id("firepunch");
         let tackle = move_id("tackle");
         let base_fire = mk(&atk, firepunch);
@@ -4023,7 +4051,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let aura = move_id("aurasphere");
         let psy = move_id("psychic");
         let no_aura = mk(&atk, aura);
@@ -4050,7 +4078,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let crunch = move_id("crunch");
         let tackle = move_id("tackle");
         let no_crunch = mk(&atk, crunch);
@@ -4078,7 +4106,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let slash = move_id("leafblade");
         let tackle = move_id("tackle");
         let no_slash = mk(&atk, slash);
@@ -4111,7 +4139,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // Control (Garchomp has no Pixilate): Normal vs Ghost = immune.
         let ctrl_ghost = mk(&atk, &ghost);
         let ctrl_neutral = mk(&atk, &neutral);
@@ -4146,7 +4174,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // Control (Primarina's default ability is not Liquid Voice here): Normal
         // vs Ghost = immune.
         let ctrl_ghost = mk(&atk, &ghost);
@@ -4179,7 +4207,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // Control (no ability): Normal Hyper Voice is immune vs Ghost.
         let ctrl_ghost = mk(&atk, &ghost);
         let ctrl_neutral = mk(&atk, &neutral);
@@ -4206,7 +4234,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let fire = move_id("flamethrower");
         let elec = move_id("thunderbolt");
         let ctrl_fire = mk(&atk, fire);
@@ -4234,7 +4262,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let fire = move_id("flamethrower");
         let water = move_id("surf");
         let ctrl_fire = mk(&atk, fire);
@@ -4253,7 +4281,7 @@ mod tests {
         // PS sim/pokemon.ts:2193 effectiveWeather: during a Mega Sol user's
         // move it reads 'sunnyday', so Weather Ball (data/moves.ts:20701)
         // is a 100 BP Fire move. Study 4598041866.
-        let ctx = DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let mut atk = make_mon("snorlax", 50, "modest", StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 0 });
         atk.ability_id = data::ability_id::MEGASOL;
         let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
@@ -4303,7 +4331,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let ghost = move_id("shadowball");
         let other = move_id("sludgebomb"); // Poison special, similar BP
         let ctrl_ghost = mk(&def, ghost);
@@ -4333,7 +4361,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let eq = move_id("earthquake"); // physical
         let base_phys = mk(&atk, eq);
         let gt_id = data::ABILITIES.iter()
@@ -4363,7 +4391,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let phys = move_id("earthquake"); // physical
         let spec = move_id("flamethrower"); // special
         let base_phys = mk(&atk, phys);
@@ -4394,7 +4422,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let evs = StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 };
         let aqua = make_mon("taurospaldeaaqua", 50, "adamant", evs);
         let combat = make_mon("taurospaldeacombat", 50, "adamant", evs);
@@ -4419,7 +4447,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let phys = move_id("earthquake"); // physical
         let spec = move_id("psychic"); // special
         let base_phys = mk(&atk, phys);
@@ -4457,7 +4485,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         assert_eq!(mk(DamageContext::MIN_ROLL), 306, "calc min roll");
         assert_eq!(mk(DamageContext::MAX_ROLL), 360, "calc max roll");
     }
@@ -4476,7 +4504,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let tackle = move_id("tackle");
         let eq = move_id("earthquake");
         let no_t_tackle = mk(&atk, tackle);
@@ -4508,7 +4536,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: fallen, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: fallen, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let zero = mk(0);
         let five = mk(5);
         let ratio_x100 = (five as u32) * 100 / (zero.max(1) as u32);
@@ -4532,7 +4560,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let base = mk(&atk);
         let ada_id = data::ABILITIES.iter()
             .position(|a| a.slug == "adaptability").unwrap() as u16;
@@ -4563,7 +4591,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let first = mk(&atk);
         // Simulate battle.rs setting the consumed-type bit after first hit.
         atk.stellar_boosted_types |= 1u32 << 8; // Ground = 8
@@ -4590,7 +4618,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: dark_aura,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let crunch = move_id("crunch");
         let dazzle = move_id("dazzlinggleam");
         assert!(mk(true, crunch) > mk(false, crunch), "Dark Aura boosts Crunch");
@@ -4615,7 +4643,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let base = mk(&atk);
         atk.terastallized = true;
         let tera = mk(&atk);
@@ -4642,7 +4670,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let base = mk(&atk);
         atk.terastallized = true;
         let tera = mk(&atk);
@@ -4666,7 +4694,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let base = mk(&atk);
         atk.terastallized = true;
         let tera = mk(&atk);
@@ -4693,7 +4721,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let pre = mk(&atk);
         atk.terastallized = true;
         let post = mk(&atk);
@@ -4722,7 +4750,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // Same but reset Atk to 0 stage and pump SpA: should use Special.
         atk.boosts[0] = 0;
         atk.boosts[2] = 6;
@@ -4733,7 +4761,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         // Iron Hands base Atk 140, base SpA 50 — boosted ×4 either way,
         // physical with +6 Atk should exceed special with +6 SpA.
         assert!(phys > spec, "Iron Hands Tera Blast physical ({phys}) > special ({spec})");
@@ -4757,7 +4785,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let base = mk(&def);
         def.terastallized = true;
         let tera = mk(&def);
@@ -4785,7 +4813,7 @@ mod tests {
                 defender_has_aurora_veil: false, is_doubles: false,
                 terrain: crate::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false,
-                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false });
+                aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 });
         let shell_on = mk(&def);
         // Drop HP below max — Tera Shell deactivates.
         def.current_hp = def.stats.hp - 1;
@@ -4811,7 +4839,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         let healthy = calculate_damage(&atk, &def, move_id("earthquake"), ctx);
         atk.status = Status::Burn;
         let burned = calculate_damage(&atk, &def, move_id("earthquake"), ctx);
@@ -4840,7 +4868,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         // Unstatused — no boost.
         let baseline = calculate_damage(&atk, &def, eq, ctx);
         // Burn the defender — Marvel Scale fires.
@@ -4886,7 +4914,7 @@ mod tests {
             defender_has_aurora_veil: false, is_doubles: false,
             terrain: crate::terrain::Terrain::None,
             fairy_aura_active: false, dark_aura_active: false,
-            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false };
+            aura_break_active: false, attacker_total_fainted_allies: 0, speed_stats: None, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0 };
         // Neutral ability — baseline.
         def.ability_id = neutral;
         let baseline = calculate_damage(&atk, &def, eq, ctx);

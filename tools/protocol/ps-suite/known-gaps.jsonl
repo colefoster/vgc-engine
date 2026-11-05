@@ -137,10 +137,7 @@
 {"game":"Court Change should swap certain side conditions to the opponent's side and vice versa","format":"gen9customgame"}
 {"game":"Curse should curse a non-Ghost user with Protean","format":"gen9customgame"}
 {"game":"Dragon Darts should hit one target twice if the other is protected by an ability","format":"gen9doublescustomgame"}
-{"game":"Follow Me should redirect charging moves if used on the resolution turn","format":"gen9doublescustomgame"}
 {"game":"Future Sight should only cause the user to take Life Orb recoil on its damaging turn","format":"gen9customgame"}
-{"game":"Future Sight should not be affected by Life Orb if not the original user","format":"gen9customgame"}
-{"game":"Future Sight should be boosted by Terrain even if the user is not on the field, as long as the user is not Flying-type","format":"gen9customgame"}
 {"game":"Future Sight should target particular slots in Doubles","format":"gen9doublescustomgame"}
 {"game":"Grassy Terrain should heal grounded Pokemon by 1/16 of their max HP","format":"gen9customgame"}
 {"game":"Heal Bell should not heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
