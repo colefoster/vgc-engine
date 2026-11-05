@@ -19104,7 +19104,23 @@ self.trigger_emergency_exits();
                     // yawn onEnd: `-end [silent]`, then trySetStatus('slp').
                     self.p_res(23, 0, Some((side, slot)));
                     pmon!(self, "-end", side, slot, "|move: Yawn|[silent]");
+                    // misty / electric terrain onSetStatus print for Yawn (data/moves.ts).
+                    let grounded = self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_grounded() && m.semi_invuln == 0);
+                    // Uproar's onAnySetStatus runs first and stops the event.
+                    let uproar = [SideRef::P1, SideRef::P2].iter().any(|&sd| {
+                        (0..self.format().active_count()).any(|sl| self.side(sd).active_mon(sl).is_some_and(|m| m.is_alive() && m.volatiles.has(crate::pokemon::VolatileKind::Uproar)))
+                    });
+                    match self.terrain {
+                        _ if uproar => {}
+                        crate::terrain::Terrain::Misty if grounded => pmon!(self, "-activate", side, slot, "|move: Misty Terrain"),
+                        crate::terrain::Terrain::Electric if grounded => pmon!(self, "-activate", side, slot, "|move: Electric Terrain"),
+                        _ => {}
+                    }
                     self.try_set_status_from(side, slot, Status::Sleep, src_side);
+                    // lumberry onAfterSetStatus (data/items.ts).
+                    if self.side(side).active_mon(slot as usize).is_some_and(|m| m.status == Status::Sleep && m.effective_item_id() == data::item_id::LUMBERRY) {
+                        crate::item::on_update_cures(self, side, slot);
+                    }
                 } else if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     if let Some(pos) = m.volatiles.position(crate::pokemon::VolatileKind::Yawn) {
                         m.volatiles.items[pos].turns_remaining = rem;
