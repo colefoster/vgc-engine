@@ -10737,6 +10737,14 @@ self.trigger_emergency_exits();
             choice: Choice::Move { actor_slot: slot, move_slot: 3, target: None },
         };
         self.resolve_move_with_pending(action, pending_kind, true);
+        // The called move's useMove runs its own hit loop, closing Update
+        // included (data/mods/champions/scripts.ts:575), inside the caller's hit.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && self.ps_loop_hits > 0 {
+            self.ps_hit_loop_faint_ends();
+            self.ps_loop_end_update(side, slot);
+            self.ps_loop_hits = 0;
+        }
         self.called_from = outer;
         self.called_ran = true;
         if let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) {
