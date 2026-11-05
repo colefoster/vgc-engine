@@ -161,6 +161,11 @@ pub struct SideConditions {
     /// immune. Cleared by Defog / Rapid Spin / Tidy Up / Court Change /
     /// Mortal Spin in later PRs.
     pub sticky_web: bool,
+    /// Order the hazards went up, for sim/battle.ts's effectOrder sort on
+    /// switch-in: [Stealth Rock, Spikes, Toxic Spikes, Sticky Web], 0 = absent
+    /// or unknown.
+    #[serde(default)]
+    pub hazard_order: [u8; 4],
     /// True once this side has used Terastallize this battle. Gen-9
     /// rule: at most one mon per side may Terastallize per battle.
     /// PS `side.terastallized` mirror. Not on a `SideConditions` tick.
@@ -181,6 +186,15 @@ pub struct SideConditions {
     /// clears its own bit.
     #[serde(default)]
     pub faint_handled: u8,
+}
+
+impl SideConditions {
+    /// A hazard went up: it runs after the ones already down.
+    pub(crate) fn note_hazard(&mut self, hazard: usize) {
+        if self.hazard_order[hazard] == 0 {
+            self.hazard_order[hazard] = self.hazard_order.iter().copied().max().unwrap_or(0) + 1;
+        }
+    }
 }
 
 impl Side {
