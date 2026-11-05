@@ -1297,6 +1297,8 @@ impl Pokemon {
     pub fn set_type_override(&mut self, primary: u8, secondary: Option<u8>) {
         self.type_override = [primary, secondary.unwrap_or(255)];
         self.added_type = 255;
+        // setType refreshes apparentType (sim/pokemon.ts setType).
+        self.type_unseen = false;
     }
 
     /// Burn Up's self effect (PS data/moves.ts:2092 burnup `self.onHit`):
@@ -1320,6 +1322,7 @@ impl Pokemon {
     #[inline]
     pub fn clear_type_override(&mut self) {
         self.type_override = [255, 255];
+        self.type_unseen = false;
     }
 
     /// Effective crit stage from on-mon contributors (held item,
