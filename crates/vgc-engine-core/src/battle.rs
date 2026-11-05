@@ -4459,7 +4459,6 @@ self.trigger_emergency_exits();
     /// without drawing; Dragon Darts keeps a living target; Snipe Shot and
     /// Stalwart / Propeller Tail keep an active original target.
     #[cfg(feature = "ps-rng")]
-    #[track_caller]
     fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) -> Option<Target> {
         let n_active = self.format().active_count();
         let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
@@ -10735,6 +10734,11 @@ self.trigger_emergency_exits();
         // included (data/mods/champions/scripts.ts:575), inside the caller's hit.
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() && self.ps_loop_hits > 0 {
+            if windowed {
+                let dead = self.ps_hit_dead;
+                self.ps_hit_update();
+                self.ps_hit_dead = dead;
+            }
             self.ps_hit_loop_faint_ends();
             self.ps_loop_end_update(side, slot);
             self.ps_loop_hits = 0;
@@ -16060,7 +16064,7 @@ self.trigger_emergency_exits();
     /// Safety Goggles — PS `data/items.ts:safetygoggles`:
     ///   `onTryHit(pokemon, source, move) { if (move.flags['powder']) return null; }`
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Safety_Goggles>.
-    fn target_is_powder_immune(&self, side: SideRef, slot: u8) -> bool {
+    pub(crate) fn target_is_powder_immune(&self, side: SideRef, slot: u8) -> bool {
         let m = match self.side(side).active_mon(slot as usize) {
             Some(m) => m,
             None => return false,
