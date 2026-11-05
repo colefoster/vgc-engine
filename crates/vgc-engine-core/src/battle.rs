@@ -7642,6 +7642,10 @@ self.trigger_emergency_exits();
             }
             return;
         }
+        // A wake-up or thaw in BeforeMove (Guts, Flare Boost read the live status).
+        if let Some(live) = self.side(actor_side).active_mon(actor_slot as usize) {
+            attacker.status = live.status;
+        }
         #[cfg(feature = "ps-rng")]
         {
             self.ps_move_used = true;
