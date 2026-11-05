@@ -6723,14 +6723,24 @@ self.trigger_emergency_exits();
             self.healing_wish[side as usize][(actor_slot as usize).min(1)] = false;
             self.p_heal(side, actor_slot, "|[from] move: Healing Wish");
         }
-        self.apply_stealth_rock_to(side, actor_slot);
-        self.apply_spikes_to(side, actor_slot);
-        self.apply_toxic_spikes_to(side, actor_slot);
-        // White Herb's onAnySwitchIn (priority -2) comes after every hazard of the
-        // batch (sim/battle.ts fieldEvent, data/items.ts whiteherb).
-        let defer = std::mem::replace(&mut self.defer_white_herb, true);
-        self.apply_sticky_web_to(side, actor_slot);
-        self.defer_white_herb = defer;
+        // Hazards run in the order they were laid (effectOrder, sim/battle.ts
+        // comparePriority). White Herb's onAnySwitchIn (priority -2) comes after
+        // every hazard of the batch (sim/battle.ts fieldEvent, data/items.ts whiteherb).
+        let laid = self.side(side).conditions.hazard_order;
+        let mut hazards = [0u8, 1, 2, 3];
+        hazards.sort_by_key(|&h| if laid[h as usize] == 0 { (1u8, h) } else { (0, laid[h as usize]) });
+        for h in hazards {
+            match h {
+                0 => self.apply_stealth_rock_to(side, actor_slot),
+                1 => self.apply_spikes_to(side, actor_slot),
+                2 => self.apply_toxic_spikes_to(side, actor_slot),
+                _ => {
+                    let defer = std::mem::replace(&mut self.defer_white_herb, true);
+                    self.apply_sticky_web_to(side, actor_slot);
+                    self.defer_white_herb = defer;
+                }
+            }
+        }
         if let Some(l) = self.protocol.log_mut() {
             l.hold_for = None;
         }
@@ -6955,6 +6965,7 @@ self.trigger_emergency_exits();
             Outcome::None => {}
             Outcome::Absorb => {
                 self.side_mut(side).conditions.toxic_spikes_layers = 0;
+                self.side_mut(side).conditions.hazard_order[2] = 0;
                 // removeSideCondition's onSideEnd (data/moves.ts toxicspikes).
                 if self.plog() {
                     let s = self.p_side_ident(side);
@@ -7103,6 +7114,7 @@ self.trigger_emergency_exits();
         c.toxic_spikes_layers = 0;
         c.stealth_rock = false;
         c.sticky_web = false;
+        c.hazard_order = [0; 4];
         cleared
     }
 
@@ -11631,6 +11643,7 @@ self.trigger_emergency_exits();
                 let opp = actor_side.opposing();
                 let added = !self.side(opp).conditions.stealth_rock;
                 self.side_mut(opp).conditions.stealth_rock = true;
+                self.side_mut(opp).conditions.note_hazard(0);
                 // stealthrock onSideStart (data/moves.ts stealthrock).
                 if added && self.plog() {
                     self.p_tag_step(crate::protocol::step::AFTER_HIT);
@@ -21650,6 +21663,7 @@ self.trigger_emergency_exits();
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stealth_Rock_(move)>
                 self.side_mut(opp_side).conditions.stealth_rock = true;
+                self.side_mut(opp_side).conditions.note_hazard(0);
             }
             data::move_id::TOXICSPIKES => {
                 self.p_side_start(opp_side, self.side(opp_side).conditions.toxic_spikes_layers < 2, "move: Toxic Spikes", actor_slot);
@@ -21659,6 +21673,7 @@ self.trigger_emergency_exits();
                 // happens at `apply_toxic_spikes_to`, not here.
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Spikes_(move)>
+                self.side_mut(opp_side).conditions.note_hazard(2);
                 let layers = &mut self.side_mut(opp_side).conditions.toxic_spikes_layers;
                 if *layers < 2 {
                     *layers += 1;
@@ -21672,6 +21687,7 @@ self.trigger_emergency_exits();
                 // happens at `apply_spikes_to`, not here.
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Spikes_(move)>
+                self.side_mut(opp_side).conditions.note_hazard(1);
                 let layers = &mut self.side_mut(opp_side).conditions.spikes_layers;
                 if *layers < 3 {
                     *layers += 1;
@@ -21686,6 +21702,7 @@ self.trigger_emergency_exits();
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Web_(move)>
                 self.side_mut(opp_side).conditions.sticky_web = true;
+                self.side_mut(opp_side).conditions.note_hazard(3);
             }
             data::move_id::HEALBELL | data::move_id::AROMATHERAPY => {
                 pmon!(self, "-activate", actor_side, actor_slot, "|move: {}", m.name);
@@ -21907,6 +21924,7 @@ self.trigger_emergency_exits();
                 swap_cond!(aurora_veil_turns);
                 swap_cond!(stealth_rock);
                 swap_cond!(toxic_spikes_layers);
+                swap_cond!(hazard_order);
                 swap_cond!(spikes_layers);
                 swap_cond!(sticky_web);
             }
