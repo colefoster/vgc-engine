@@ -8017,6 +8017,20 @@ self.trigger_emergency_exits();
             self.p_try_fail(actor_side, actor_slot);
             return;
         }
+        // Spit Up — PS data/moves.ts spitup onTry: needs Stockpile.
+        if move_id == data::move_id::SPITUP
+            && !self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| u.volatiles.has(crate::pokemon::VolatileKind::Stockpile))
+        {
+            self.p_try_fail(actor_side, actor_slot);
+            return;
+        }
+        // Belch — PS data/moves.ts belch onTry: `source.ateBerry`.
+        if move_id == data::move_id::BELCH
+            && !self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| u.ate_berry)
+        {
+            self.p_try_fail(actor_side, actor_slot);
+            return;
+        }
         // Snore — PS data/moves.ts snore onTry: only while the user sleeps
         // or has Comatose.
         if move_id == data::move_id::SNORE
@@ -8068,6 +8082,7 @@ self.trigger_emergency_exits();
                 data::move_id::HEATCRASH | data::move_id::HEAVYSLAM | data::move_id::LOWKICK
                     | data::move_id::GRASSKNOT | data::move_id::GYROBALL | data::move_id::ELECTROBALL
                     | data::move_id::HARDPRESS
+                    | data::move_id::FLAIL | data::move_id::REVERSAL | data::move_id::SPITUP
                     // Fixed-damage / damage-callback moves carry
                     // basePower: 0 in PS but still deal damage via the
                     // `damage` / `damageCallback` early returns in
@@ -10350,6 +10365,56 @@ self.trigger_emergency_exits();
 
     /// charge onAfterMove: removeVolatile('charge'), whose onEnd prints a
     /// silent `-end` (data/conditions.ts charge).
+    /// data/moves.ts stockpile condition onEnd: undoes the stat changes it made.
+    fn end_stockpile(&mut self, side: SideRef, slot: u8) {
+        use crate::pokemon::VolatileKind as V;
+        let Some(state) = self.side(side).active_mon(slot as usize).and_then(|m| m.volatiles.get(V::Stockpile).map(|v| v.payload)) else {
+            return;
+        };
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.volatiles.remove(V::Stockpile);
+        }
+        let (def, spd) = ((state >> 2 & 3) as i8, (state >> 4 & 3) as i8);
+        let mut buf = [(0u8, 0i8); 2];
+        let mut k = 0;
+        if def != 0 { buf[k] = (1, -def); k += 1; }
+        if spd != 0 { buf[k] = (3, -spd); k += 1; }
+        if k > 0 && self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive()) {
+            self.apply_boosts(side, slot, &buf[..k], side, slot);
+        }
+        pmon!(self, "-end", side, slot, "|Stockpile");
+    }
+
+    /// sim/pokemon.ts eatItem(true) for Teatime and Stuff Cheeks: `-enditem|[eat]`,
+    /// then the berry's Eat.
+    fn eat_item_forced(&mut self, side: SideRef, slot: u8) {
+        let Some(berry) = self.side(side).active_mon(slot as usize).map(|m| m.item_id) else { return };
+        if berry == u16::MAX {
+            return;
+        }
+        self.p_item_line("-enditem", side, slot, berry, "|[eat]");
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.consume_item();
+        }
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+        crate::item::cud_chew_reeat(self, side, slot, berry, &mut rng);
+        self.rng = rng;
+    }
+
+    /// data/moves.ts burnup / doubleshock self.onHit: the lost type stays as `???`.
+    fn p_lose_type_line(&mut self, side: SideRef, slot: u8, lost: u8, mv: &str) {
+        if !self.plog() {
+            return;
+        }
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        let (types, n) = m.effective_types();
+        let names: Vec<&str> = types[..n as usize].iter()
+            .map(|&t| if t == lost { "???" } else { crate::battle_protocol::type_name(t) })
+            .collect();
+        let joined = names.join("/");
+        pmon!(self, "-start", side, slot, "|typechange|{joined}|[from] move: {mv}");
+    }
+
     fn end_charge(&mut self, side: SideRef, slot: u8) {
         let was = self.side(side).active_mon(slot as usize).is_some_and(|a| a.is_charged());
         if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -12425,6 +12490,10 @@ self.trigger_emergency_exits();
         if fired_electric {
             self.end_charge(actor_side, actor_slot);
         }
+        // Spit Up — PS data/moves.ts spitup onAfterMove: removes Stockpile.
+        if move_id == data::move_id::SPITUP {
+            self.end_stockpile(actor_side, actor_slot);
+        }
 
         // A hit Disguise absorbed (0 move damage) still counts as a hit:
         // PS gates selfSwitch on the move hitting, not on HP lost
@@ -14436,10 +14505,10 @@ self.trigger_emergency_exits();
         // Burn Up — PS data/moves.ts:2092 `self.onHit`: once the move has
         // hit, the user's Fire type becomes '???'.
         if move_id == data::move_id::BURNUP && any_damage_dealt > 0 {
+            self.p_lose_type_line(actor_side, actor_slot, 1, "Burn Up");
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.lose_fire_type();
             }
-            self.p_typechange(actor_side, actor_slot, "|[from] move: Burn Up");
         }
         // Double Shock's self.onHit: Electric becomes '???'.
         if move_id == data::move_id::DOUBLESHOCK && any_damage_dealt > 0 {
@@ -22388,29 +22457,34 @@ self.trigger_emergency_exits();
                 // (self-target, no accuracy). Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Stockpile_(move)>.
                 if move_id == data::move_id::STOCKPILE {
-                    let layers = self
-                        .side(actor_side)
-                        .active_mon(actor_slot as usize)
-                        .and_then(|m| {
-                            m.volatiles
-                                .get(crate::pokemon::VolatileKind::Stockpile)
-                                .map(|v| v.payload)
-                        })
-                        .unwrap_or(0);
+                    // payload: layers (bits 0-1), successful Def changes (2-3),
+                    // successful SpD changes (4-5); data/moves.ts stockpile condition.
+                    use crate::pokemon::VolatileKind as V;
+                    let state = self.side(actor_side).active_mon(actor_slot as usize)
+                        .and_then(|m| m.volatiles.get(V::Stockpile).map(|v| v.payload)).unwrap_or(0);
+                    let layers = state & 3;
                     if layers >= 3 {
                         return;
                     }
+                    let before = self.side(actor_side).active_mon(actor_slot as usize).map_or([0; 7], |m| m.boosts);
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.volatiles.remove(V::Stockpile);
                         let _ = a.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::Stockpile,
-                            turns_remaining: 0,
-                            payload: layers + 1,
+                            kind: V::Stockpile, turns_remaining: 0, payload: (state & !3) | (layers + 1),
                         });
                     }
                     pmon!(self, "-start", actor_side, actor_slot, "|stockpile{}", layers + 1);
                     let boosts: &[(u8, i8)] = &[(1, 1), (3, 1)];
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
-                    // A foe's Mirror Herb copies the Def/SpD increase.
+                    let after = self.side(actor_side).active_mon(actor_slot as usize).map_or([0; 7], |m| m.boosts);
+                    let mut add = 0;
+                    if before[1] != after[1] { add += 1 << 2; }
+                    if before[3] != after[3] { add += 1 << 4; }
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: V::Stockpile, turns_remaining: 0, payload: ((state & !3) | (layers + 1)) + add,
+                        });
+                    }
                     crate::item::try_consume_mirror_herb_on_foe_boost(
                         self, actor_side, actor_slot, boosts,
                     );

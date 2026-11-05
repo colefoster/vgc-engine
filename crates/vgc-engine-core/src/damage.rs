@@ -909,6 +909,7 @@ pub(crate) fn calculate_damage_with_bp(
             | data::move_id::LOWKICK | data::move_id::GRASSKNOT
             | data::move_id::GYROBALL | data::move_id::ELECTROBALL
             | data::move_id::FLING | data::move_id::HARDPRESS
+            | data::move_id::FLAIL | data::move_id::REVERSAL | data::move_id::SPITUP
     ) {
         return 0;
     }
@@ -979,6 +980,30 @@ pub(crate) fn calculate_damage_with_bp(
         let (hp, max) = (defender.current_hp as u64, defender.stats.hp.max(1) as u64);
         let bp = ((100 * (100 * (hp * 4096 / max)) + 2047) / 4096) / 100;
         (m.type_, bp.max(1) as u32)
+    } else if matches!(move_id, data::move_id::FLAIL | data::move_id::REVERSAL) {
+        // PS data/moves.ts flail / reversal basePowerCallback.
+        let ratio = (attacker.current_hp as u32 * 48 / attacker.stats.hp.max(1) as u32).max(1);
+        let bp = match ratio {
+            0..=1 => 200,
+            2..=4 => 150,
+            5..=9 => 100,
+            10..=16 => 80,
+            17..=32 => 40,
+            _ => 20,
+        };
+        (m.type_, bp)
+    } else if move_id == data::move_id::ASSURANCE {
+        // PS data/moves.ts assurance basePowerCallback: `target.hurtThisTurn`.
+        let bp = m.base_power as u32 * if defender.damaged_this_turn() { 2 } else { 1 };
+        (m.type_, bp)
+    } else if move_id == data::move_id::VENOSHOCK {
+        // PS data/moves.ts venoshock onBasePower: doubled against psn / tox.
+        let poisoned = matches!(defender.status, crate::pokemon::Status::Poison | crate::pokemon::Status::Toxic);
+        (m.type_, m.base_power as u32 * if poisoned { 2 } else { 1 })
+    } else if move_id == data::move_id::SPITUP {
+        // PS data/moves.ts spitup basePowerCallback: 100 per Stockpile layer.
+        let layers = attacker.volatiles.get(crate::pokemon::VolatileKind::Stockpile).map_or(0, |v| v.payload & 3);
+        (m.type_, layers as u32 * 100)
     } else if move_id == data::move_id::RAGEFIST {
         // PS data/moves.ts:14583 ragefist basePowerCallback:
         // `Math.min(350, 50 + 50 * pokemon.timesAttacked)`.
