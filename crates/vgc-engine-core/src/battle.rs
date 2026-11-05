@@ -476,7 +476,7 @@ pub struct Battle {
     pub(crate) pending_queue_reorder: Option<(SideRef, u8, bool)>,
     /// The user whose runMove reached its AfterMove event this action.
     #[serde(skip)]
-    pub(crate) after_move_user: Option<(SideRef, u8)>,
+    pub(crate) after_move_user: Option<(SideRef, u8, u8)>,
     /// Trick-or-Treat / Forest's Curse did not add its type this action.
     #[serde(skip)]
     pub(crate) status_hit_failed: bool,
@@ -10825,7 +10825,9 @@ self.trigger_emergency_exits();
 
     /// lockedmove onAfterMove: a lock on its last turn ends.
     fn locked_move_after_move(&mut self) {
-        let Some((side, slot)) = self.after_move_user.take() else { return };
+        let Some((side, slot, idx)) = self.after_move_user.take() else { return };
+        // Ally Switch may have moved the user.
+        let Some(slot) = self.side(side).active.iter().position(|&i| i == idx).map(|p| p as u8).or(Some(slot)) else { return };
         let ends = self.side(side).active_mon(slot as usize).is_some_and(|a| {
             a.lockin_turns == 1 && !a.volatiles.has(crate::pokemon::VolatileKind::Uproar)
         });
@@ -14428,7 +14430,7 @@ self.trigger_emergency_exits();
         // useMoveInner's `|move|` (sim/battle-actions.ts:457), held pending:
         // Focus Punch's beforeMoveCallback and Gravity's BeforeMove print
         // their `cant` before it, so they cancel it.
-        self.after_move_user = Some((actor_side, actor_slot));
+        self.after_move_user = Some((actor_side, actor_slot, self.side(actor_side).active[actor_slot as usize]));
         self.p_move_announce(actor_side, actor_slot, move_id, attacker, target);
         if matches!(
             move_id,
