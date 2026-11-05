@@ -168,6 +168,10 @@ impl Battle {
                 // handlers are skipped after the sort (sim/battle.ts:512-514).
                 let skip = self.p_faint_logged(side, idx);
                 let mon = |order: u8, sub: u8| ResId::Mon(s, slot, order, sub);
+                // futuremove's slot condition handler (data/conditions.ts, order 3).
+                if self.future_pending[side as usize][slot as usize].is_some() {
+                    push(&mut e, (3, 0, spe, 3), mon(3, 3), false, false);
+                }
                 match m.status {
                     _ if skip => {}
                     Status::Burn => push(&mut e, (10, 0, spe, 0), mon(10, 0), false, skip),
