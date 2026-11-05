@@ -2323,6 +2323,12 @@ impl Battle {
             return;
         }
         let boosts_before = self.side(target_side).active_mon(target_slot as usize).map(|m| m.boosts);
+        // Opportunist sees the capped boost (sim/battle.ts boost: getCappedBoost).
+        let mut capped = [(0u8, 0i8); 7];
+        for (c, &(idx, delta)) in capped.iter_mut().zip(deltas) {
+            let cur = boosts_before.map_or(0, |b| b[idx as usize]);
+            *c = (idx, (cur + delta).clamp(-6, 6) - cur);
+        }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             let mut changed = false;
             for &(idx, delta) in deltas {
@@ -2344,7 +2350,7 @@ impl Battle {
         if let Some(before) = boosts_before.filter(|_| self.plog()) {
             self.p_boost_lines(target_side, target_slot, deltas, before, fx);
         }
-        self.mirror_to_opportunist(target_side, target_slot, deltas);
+        self.mirror_to_opportunist(target_side, target_slot, &capped[..deltas.len().min(7)]);
     }
 
     /// Opportunist — PS `data/abilities.ts:opportunist` `onFoeAfterBoost`.
