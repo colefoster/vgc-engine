@@ -934,6 +934,8 @@ impl<'a> Parser<'a> {
                 return self.err(format!("Can't move: {move_name} needs a target"));
             }
             if !self.valid_target_loc(loc, index, &target_type) {
+                // 'recharge' isn't in the dex, so its name stays the id (sim/side.ts chooseMove).
+                let move_name = if moveid == "recharge" { "recharge" } else { move_name };
                 return self.err(format!("Can't move: Invalid target for {move_name}"));
             }
         } else if loc != 0 {
