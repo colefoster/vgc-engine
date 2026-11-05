@@ -785,11 +785,20 @@ pub fn ignores_defensive_boosts(move_id: u16) -> bool {
 /// Tera Star Storm (user's Tera type), Weather Ball, Terrain Pulse. All
 /// other moves keep their data type. Used by the Wonder Guard immunity
 /// gate, which must know the post-context type to judge effectiveness.
+/// PS's `'???'` move type: matches no type, item or chart entry.
+pub const TYPELESS: u8 = 255;
+
 pub fn move_type_in_ctx(
     attacker: &Pokemon,
     move_id: u16,
     ctx: &DamageContext,
 ) -> u8 {
+    // Struggle's own ModifyMove sets `move.type = '???'` before the ModifyType
+    // event, so no -ate, Normalize or Electrify sees it (data/moves.ts struggle;
+    // sim/battle-actions.ts useMoveInner).
+    if move_id == data::move_id::STRUGGLE {
+        return TYPELESS;
+    }
     let t = base_move_type_in_ctx(attacker, move_id, ctx);
     // data/moves.ts electrify condition onModifyType (priority -2, after -ate).
     if attacker.volatiles.has(crate::pokemon::VolatileKind::Electrify) && move_id != data::move_id::STRUGGLE {
@@ -1391,6 +1400,10 @@ pub(crate) fn calculate_damage_with_bp(
     // Mega / many VGC pivots. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Aerilate_(Ability)> et al.
     let mut ate_boost = false;
+    // Struggle is `'???'` by now (data/moves.ts struggle onModifyMove).
+    if move_id == data::move_id::STRUGGLE {
+        move_type = TYPELESS;
+    }
     if move_type == 0 // Normal
         && attacker.effective_ability_id() != u16::MAX
         && !matches!(
