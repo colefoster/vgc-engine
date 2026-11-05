@@ -12168,6 +12168,10 @@ self.trigger_emergency_exits();
             self.ps_status_missed = false;
         }
         self.ps_status_sub_null = false;
+        #[cfg(feature = "ps-rng")]
+        let had_stockpile = move_id == data::move_id::SWALLOW
+            && self.side(actor_side).active_mon(actor_slot as usize)
+                .is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::Stockpile));
         self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
         // A status move whose effect failed (runMoveEffects' hit result is
         // false for every target) leaves the hit loop at hit 1 with no Update
@@ -12188,8 +12192,11 @@ self.trigger_emergency_exits();
                 // (data/moves.js healpulse / floralhealing, and the weather
                 // heals at full HP), and the moves whose onHit returns nothing
                 // even if it changed nothing.
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis" | "swallow"
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis"
                     | "partingshot" | "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit")
+                // onTry fails without a Stockpile, before the hit loop
+                // (data/moves.ts swallow).
+                || (m.slug == "swallow" && had_stockpile)
                 || (matches!(m.slug, "roar" | "whirlwind")
                     && self.force_switch_flags.iter().flatten().any(|&f| f)))
         {
