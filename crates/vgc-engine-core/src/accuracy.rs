@@ -115,6 +115,12 @@ pub(crate) fn effective_accuracy(
     if base_acc == 255 || protect_blocked {
         return AccuracyComputation { threshold: None, consumed_micle: false };
     }
+    // data/moves.ts lockon condition onSourceAccuracy.
+    if attacker.volatiles.get(crate::pokemon::VolatileKind::LockOn)
+        .is_some_and(|v| v.payload == (tside as u8 as u32) << 1 | tslot as u32)
+    {
+        return AccuracyComputation { threshold: None, consumed_micle: false };
+    }
 
     let acc_stage = attacker.boosts[5] as i32;
     // `ignoreEvasion` moves skip the target's evasion stage entirely (PS

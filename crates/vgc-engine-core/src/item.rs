@@ -541,12 +541,57 @@ pub fn cud_chew_reeat(
         battle.p_heal(side, slot, "|[from] item: Sitrus Berry");
         return;
     }
+    // Status berries (data/items.ts lumberry et al. onEat), reached by
+    // Bug Bite, Fling, Teatime and Cud Chew.
+    let cures = match berry_id {
+        data::item_id::LUMBERRY => Some(None),
+        data::item_id::CHERIBERRY => Some(Some(crate::pokemon::Status::Paralysis)),
+        data::item_id::CHESTOBERRY => Some(Some(crate::pokemon::Status::Sleep)),
+        data::item_id::PECHABERRY => Some(Some(crate::pokemon::Status::Poison)),
+        data::item_id::RAWSTBERRY => Some(Some(crate::pokemon::Status::Burn)),
+        data::item_id::ASPEARBERRY => Some(Some(crate::pokemon::Status::Freeze)),
+        _ => None,
+    };
+    if let Some(want) = cures {
+        use crate::pokemon::Status as St;
+        let Some(cur) = battle.side(side).active_mon(slot as usize).map(|m| m.status) else { return };
+        let hit = match want {
+            None => cur != St::None,
+            Some(St::Poison) => matches!(cur, St::Poison | St::Toxic),
+            Some(x) => cur == x,
+        };
+        if hit {
+            pmon!(battle, "-curestatus", side, slot, "|{}|[msg]", crate::battle_protocol::status_id(cur));
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.status = St::None;
+            }
+        }
+        if berry_id == data::item_id::LUMBERRY {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                if m.volatiles.has(crate::pokemon::VolatileKind::Confusion) {
+                    m.volatiles.remove(crate::pokemon::VolatileKind::Confusion);
+                    pmon!(battle, "-end", side, slot, "|confusion");
+                }
+            }
+        }
+        return;
+    }
+    if berry_id == data::item_id::PERSIMBERRY {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if m.volatiles.has(crate::pokemon::VolatileKind::Confusion) {
+                m.volatiles.remove(crate::pokemon::VolatileKind::Confusion);
+                pmon!(battle, "-end", side, slot, "|confusion");
+            }
+        }
+        return;
+    }
     if berry_id == data::item_id::ORANBERRY {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !m.is_heal_blocked() {
                 m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
             }
         }
+        battle.p_heal(side, slot, "|[from] item: Oran Berry");
         return;
     }
     if matches!(

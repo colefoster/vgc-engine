@@ -442,6 +442,11 @@ pub enum VolatileKind {
     /// dropped when the source switches out, ignored once it has fainted.
     /// Payload: `side << 16 | team index` of the source.
     Trapped,
+    /// Power Trick (data/moves.ts powertrick): Atk and Def swapped in `stats`.
+    PowerTrick,
+    /// Lock-On (data/moves.ts lockon), duration 2. Payload: `side << 1 | slot`
+    /// of the locked target.
+    LockOn,
 }
 
 /// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
@@ -986,6 +991,9 @@ pub struct Pokemon {
     /// hashed: it is always reset before it can matter again.
     #[serde(default)]
     pub used_item_this_turn: bool,
+    /// PS `pokemon.ateBerry` (sim/pokemon.ts eatItem), for Belch. Survives switching.
+    #[serde(skip)]
+    pub ate_berry: bool,
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
     /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
@@ -1121,6 +1129,7 @@ impl Pokemon {
             cud_chew_counter: 0,
             supreme_overlord_fallen: u8::MAX,
             used_item_this_turn: false,
+            ate_berry: false,
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
             moves_used: 0,
@@ -1383,6 +1392,9 @@ impl Pokemon {
     #[inline]
     pub fn consume_item(&mut self) {
         self.consumed_item = self.item_id;
+        if self.item_id != u16::MAX && data::ITEMS[self.item_id as usize].is_berry {
+            self.ate_berry = true;
+        }
         self.used_item_this_turn = true;
         self.item_id = u16::MAX;
         self.sync_can_mega_evolve();
