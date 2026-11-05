@@ -8178,9 +8178,14 @@ self.trigger_emergency_exits();
         // Metronome's volatile onTryMove (data/items.ts metronome): `skip_pp_deduct`
         // is a two-turn move's release, when `twoturnmove` is still up.
         if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            // hasItem is false under Magic Room or Embargo, and the volatile goes for
+            // good: it only comes back with the item's Start on a switch-in. u16::MAX - 1
+            // marks that.
             if a.effective_item_id() != data::item_id::METRONOME {
                 a.metronome_count = 0;
-                a.metronome_move = u16::MAX;
+                a.metronome_move = if a.item_id == data::item_id::METRONOME { u16::MAX - 1 } else { u16::MAX };
+            } else if a.metronome_move == u16::MAX - 1 {
+                a.metronome_count = 0;
             } else if !matches!(
                 move_id,
                 data::move_id::ASSIST | data::move_id::COPYCAT | data::move_id::MEFIRST | data::move_id::METRONOME
