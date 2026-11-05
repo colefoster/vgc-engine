@@ -292,7 +292,11 @@ pub fn on_after_damage(
     rng: &mut crate::rng::Rng,
 ) {
     hp_berries_on_update(battle, side, slot, rng);
-    on_update_cures(battle, side, slot);
+    // The Update before runSwitch sees no status yet: the engine has applied the
+    // hazards, whose handlers PS runs in runSwitch (sim/battle-actions.ts).
+    if battle.unnerve_unstarted == 0 {
+        on_update_cures(battle, side, slot);
+    }
 }
 
 fn hp_berries_on_update(
