@@ -173,6 +173,20 @@ impl PsSession {
         &self.base
     }
 
+    /// Swap the committed battle for one that went through `load` (a save
+    /// and reload), keeping what a snapshot does not carry: the protocol log
+    /// and the opt-in `ally_targets`. The save/load differential test uses
+    /// it; a mid-turn stop reloads the turn start its replay runs from.
+    #[doc(hidden)]
+    pub fn reload_battle(&mut self, load: impl FnOnce(&Battle) -> Result<Battle, String>) -> Result<(), String> {
+        let mut back = load(&self.base)?;
+        back.ally_targets = self.base.ally_targets;
+        back.protocol = std::mem::take(&mut self.base.protocol);
+        back.rehydrate_caches();
+        self.base = back;
+        Ok(())
+    }
+
     /// Set the battle's opt-in [`Battle::ally_targets`] flag (it only
     /// changes `legal_choices`; PS choice strings may always target the ally).
     pub fn set_ally_targets(&mut self, on: bool) {

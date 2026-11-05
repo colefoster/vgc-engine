@@ -291,12 +291,89 @@ pub fn on_after_damage(
     slot: u8,
     rng: &mut crate::rng::Rng,
 ) {
+    if battle.side(side).active_mon(slot as usize).map_or(true, update_idle) {
+        return;
+    }
     hp_berries_on_update(battle, side, slot, rng);
     // The Update before runSwitch sees no status yet: the engine has applied the
     // hazards, whose handlers PS runs in runSwitch (sim/battle-actions.ts).
     if battle.unnerve_unstarted == 0 {
         on_update_cures(battle, side, slot);
     }
+}
+
+/// A bitset of ids, for handlers that every active asks about after every hit.
+const fn id_mask<const N: usize>(ids: [u16; N]) -> [u64; 16] {
+    let mut mask = [0u64; 16];
+    let mut k = 0;
+    while k < N {
+        // Out of range fails the build.
+        mask[(ids[k] >> 6) as usize] |= 1 << (ids[k] & 63);
+        k += 1;
+    }
+    mask
+}
+
+#[inline]
+fn in_mask(mask: &[u64; 16], id: u16) -> bool {
+    mask.get((id >> 6) as usize).is_some_and(|w| w >> (id & 63) & 1 != 0)
+}
+
+/// The items `hp_berries_on_update` acts on.
+const HP_BERRIES: [u64; 16] = id_mask([
+    data::item_id::SITRUSBERRY,
+    data::item_id::ORANBERRY,
+    data::item_id::FIGYBERRY,
+    data::item_id::WIKIBERRY,
+    data::item_id::MAGOBERRY,
+    data::item_id::AGUAVBERRY,
+    data::item_id::IAPAPABERRY,
+    data::item_id::LIECHIBERRY,
+    data::item_id::GANLONBERRY,
+    data::item_id::PETAYABERRY,
+    data::item_id::APICOTBERRY,
+    data::item_id::SALACBERRY,
+    data::item_id::MICLEBERRY,
+    data::item_id::LANSATBERRY,
+    data::item_id::STARFBERRY,
+]);
+
+/// The items `on_update_cures` acts on.
+const UPDATE_CURE_ITEMS: [u64; 16] = id_mask([
+    data::item_id::LEPPABERRY,
+    data::item_id::CHERIBERRY,
+    data::item_id::CHESTOBERRY,
+    data::item_id::PECHABERRY,
+    data::item_id::RAWSTBERRY,
+    data::item_id::ASPEARBERRY,
+    data::item_id::LUMBERRY,
+    data::item_id::PERSIMBERRY,
+    data::item_id::MENTALHERB,
+]);
+
+/// The abilities `on_update_cures` acts on.
+const UPDATE_CURE_ABILITIES: [u64; 16] = id_mask([
+    data::ability_id::IMMUNITY,
+    data::ability_id::PASTELVEIL,
+    data::ability_id::INSOMNIA,
+    data::ability_id::VITALSPIRIT,
+    data::ability_id::LIMBER,
+    data::ability_id::MAGMAARMOR,
+    data::ability_id::THERMALEXCHANGE,
+    data::ability_id::WATERBUBBLE,
+    data::ability_id::WATERVEIL,
+    data::ability_id::OWNTEMPO,
+    data::ability_id::OBLIVIOUS,
+]);
+
+/// `on_after_damage` has nothing to do for this mon. It runs for every active
+/// after every action and hit. The HP berries eat at half HP at most (a quarter,
+/// or a half with Gluttony); the rest of eachEvent('Update') is `on_update_cures`.
+#[inline]
+pub(crate) fn update_idle(m: &crate::pokemon::Pokemon) -> bool {
+    !(in_mask(&HP_BERRIES, m.item_id) && m.current_hp * 2 <= m.stats.hp)
+        && !in_mask(&UPDATE_CURE_ITEMS, m.item_id)
+        && !in_mask(&UPDATE_CURE_ABILITIES, m.effective_ability_id())
 }
 
 fn hp_berries_on_update(
@@ -563,6 +640,11 @@ fn after_berry_eaten(battle: &mut Battle, side: SideRef, slot: u8, item_id: u16)
 /// data/abilities.ts immunity et al. `onUpdate`).
 pub fn on_update_cures(battle: &mut Battle, side: SideRef, slot: u8) {
     use crate::pokemon::{Status, VolatileKind as VK};
+    // Called for every active after every action: nothing below concerns most mons.
+    let Some(m) = battle.side(side).active_mon(slot as usize) else { return };
+    if !m.is_alive() || !(in_mask(&UPDATE_CURE_ITEMS, m.item_id) || in_mask(&UPDATE_CURE_ABILITIES, m.effective_ability_id())) {
+        return;
+    }
     // leppaberry onUpdate (data/items.ts).
     on_pp_depleted(battle, side, slot);
     let Some(m) = battle.side(side).active_mon(slot as usize) else { return };

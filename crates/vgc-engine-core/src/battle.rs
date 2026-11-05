@@ -312,6 +312,46 @@ pub struct WishEffect {
     pub heal: u16,
 }
 
+/// `Battle::ended`. JSON would print both `None` and `Some(None)` (a tie) as
+/// `null`, and a tied game would load as still running, so JSON writes the tie
+/// as `"Tie"`. bincode tells the two apart by itself.
+mod ended_serde {
+    use super::SideRef;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum Text {
+        Won(SideRef),
+        Tie(Tie),
+    }
+
+    #[derive(Serialize, Deserialize)]
+    enum Tie {
+        Tie,
+    }
+
+    pub fn serialize<S: Serializer>(v: &Option<Option<SideRef>>, s: S) -> Result<S::Ok, S::Error> {
+        if s.is_human_readable() && *v == Some(None) {
+            Tie::Tie.serialize(s)
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<SideRef>>, D::Error> {
+        if d.is_human_readable() {
+            Ok(match Option::<Text>::deserialize(d)? {
+                None => None,
+                Some(Text::Won(w)) => Some(Some(w)),
+                Some(Text::Tie(_)) => Some(None),
+            })
+        } else {
+            Option::<Option<SideRef>>::deserialize(d)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
     /// Opt-in PS protocol log (`crate::protocol`). Off unless the battle
@@ -335,11 +375,11 @@ pub struct Battle {
     pub(crate) struggle_zero_hit: bool,
     /// Per active seat (side * 2 + slot): the seats that damaged it this turn
     /// (Pokemon.attackedBy, for Avalanche and Revenge).
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_damaged_by: [u8; 4],
     /// Damage a Substitute absorbed during the current move, which Shell Bell's
     /// move.totalDamage doesn't count.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) move_sub_absorbed: u16,
     /// The format doesn't enforce legal abilities, so requests don't hint at a
     /// foe's possible trapping abilities (sim/battle.ts getRequests).
@@ -365,7 +405,7 @@ pub struct Battle {
     white_herb_move_defer: bool,
     /// The current move hit a Disguise (no damage dealt, but PS's
     /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
-    #[serde(skip)]
+    #[serde(default)]
     disguise_hit_this_move: bool,
     /// Set while the residual action runs: PS's action queue is empty
     /// then, which Cud Chew's onEatItem reads (`!this.queue.peek()`).
@@ -378,23 +418,23 @@ pub struct Battle {
     pub(crate) unnerve_unstarted: u8,
     /// The status move being resolved cannot miss its target (Glaive Rush
     /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
-    #[serde(skip)]
+    #[serde(default)]
     status_sure_hit: bool,
     /// The status move's net accuracy stage against its resolved target
     /// (user accuracy minus target evasion, clamped to +-6), applied by
     /// `rolled_accuracy_passed`.
-    #[serde(skip)]
+    #[serde(default)]
     status_acc_boost: i8,
     /// The status move's user and target, and the pending-action map, for
     /// `accuracy::effective_accuracy` in `rolled_accuracy_passed`.
-    #[serde(skip)]
+    #[serde(default)]
     status_acc_pair: Option<(SideRef, u8, SideRef, u8)>,
     /// A spread status move rolling accuracy: PS `move.spreadHit`, so a miss
     /// names this roll's target and adds no `[miss]` (hitStepAccuracy,
     /// sim/battle-actions.ts). Log only.
     #[serde(skip)]
     pub(crate) status_spread_rolls: bool,
-    #[serde(skip)]
+    #[serde(default)]
     status_pending_kind: [[u8; 2]; 2],
     /// The status move in progress stops at a target's Substitute: no `bypasssub`
     /// (data/moves.ts substitute onTryPrimaryHit).
@@ -405,19 +445,19 @@ pub struct Battle {
     #[serde(skip, default = "no_move")]
     pub(crate) called_from: u16,
     /// A called move ran, for the caller's result.
-    #[serde(skip)]
+    #[serde(default)]
     called_ran: bool,
     /// PS `battle.lastMove` (sim/battle.ts clearActiveMove), for Copycat.
-    #[serde(skip, default = "no_move")]
+    #[serde(default = "no_move")]
     last_move_any: u16,
-    #[serde(skip, default = "no_move")]
+    #[serde(default = "no_move")]
     last_move_before: u16,
     /// Item thrown by Fling: its `-enditem` waits for the next Update
     /// (data/moves.ts fling condition onUpdate).
-    #[serde(skip)]
+    #[serde(default)]
     fling_pending: Option<(SideRef, u8, u16)>,
     /// data/moves.ts healingwish slot condition: `[side][slot]`.
-    #[serde(skip)]
+    #[serde(default)]
     healing_wish: [[bool; 2]; 2],
     pub config: BattleConfig,
     pub p1: Side,
@@ -483,13 +523,13 @@ pub struct Battle {
     #[serde(skip)]
     pub(crate) after_move_user: Option<(SideRef, u8, u8)>,
     /// Trick-or-Treat / Forest's Curse did not add its type this action.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) status_hit_failed: bool,
     /// Whether the multi-hit move's current hit (after the first) is a crit.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) last_hit_crit: bool,
     /// A status move stopped at the target's Substitute this action.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_status_sub_null: bool,
     /// An aborted Electric move's Charge ends once the pending self-hit lands.
     #[serde(default)]
@@ -513,7 +553,7 @@ pub struct Battle {
     /// This turn's fixed per-slot sort keys (Quick Claw, fractional
     /// priority, After You / Quash) for the gen-8+ re-sort. Rebuilt with
     /// every turn's queue.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) turn_keys: crate::order::TurnKeys,
     /// This turn's Quick Draw / Quick Claw outcomes per active slot, rolled
     /// as the choices commit (PS resolveAction, sim/battle-queue.ts:249) and
@@ -587,6 +627,7 @@ pub struct Battle {
     pub(crate) wish_pending: [[Option<WishEffect>; 2]; 2],
     pub(crate) rng: Rng,
     pub(crate) turn: u32,
+    #[serde(with = "ended_serde")]
     pub(crate) ended: Option<Option<SideRef>>,
     /// Transient (step-scoped) bitset of absolute active slots that are
     /// targeted by ≥2 move-actions THIS turn — set just before each
@@ -711,14 +752,14 @@ pub struct Battle {
     /// `eachEvent('WeatherChange' / 'TerrainChange')` PS runs on every
     /// change. `None` until the battle-start sequence arms it.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_field_seen: Option<(crate::weather::Weather, crate::terrain::Terrain)>,
     /// `ps-rng` only: hits the current move landed (`hitStepMoveHitLoop`
     /// iterations that reached spreadMoveHit), and whether its per-hit
     /// `eachEvent('Update')` is drawn inline (single-target) or after the
     /// spread window.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_loop_hits: u8,
     /// `ps-rng` only: the action Instruct queued with `prioritizeAction`,
     /// run after Instruct's own action ends (its Update and re-sort).
@@ -729,18 +770,18 @@ pub struct Battle {
     /// targetless `scripted` move (Counter, Mirror Coat, Metal Burst), PS's
     /// `targetLoc` for its later getTarget calls; 255 = none.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_scripted_pick: [[u8; 2]; 2],
     /// `ps-rng` only: per active slot, the copied moves of a transformed
     /// mon that fainted this turn (its moves revert on faint, but PS's
     /// queued action keeps the chosen move for the re-sort's getTarget);
     /// `[u16::MAX; 4]` = none.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_fainted_transform_moves: [[[u16; 4]; 2]; 2],
     /// Whether any mon in either team starts with Receiver / Power of
     /// Alchemy (`faint_events`); computed on first use.
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) receiver_possible: Option<bool>,
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
@@ -748,27 +789,27 @@ pub struct Battle {
     /// `ps-rng` only: PS `Pokemon.speed` per team member, the cached Speed
     /// every speed sort reads. See [`Battle::ps_update_speed`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_speed_cache: [[i64; 6]; 2],
     /// `ps-rng` only: the current status move's accuracy roll missed.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_status_missed: bool,
     /// `ps-rng` only: active slots alive when the current action started
     /// (bit `side * 2 + slot`); see [`Battle::ps_hit_update`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_action_live: u8,
     /// `ps-rng` only: active slots at 0 HP at the current action's last
     /// per-hit Update (same bits); see [`Battle::ps_loop_end_update`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_hit_dead: u8,
     /// `ps-rng` only: team indices (bit per index, per side) that released
     /// a two-turn move this turn; their `twoturnmove` volatile lasts to the
     /// residual. See [`Battle::ps_residual_ties`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_twoturn_release: [u8; 2],
     /// `ps-rng` only: team indices (bit per index, per side) whose
     /// priorityChargeCallback or beforeTurnCallback added a duration-1
@@ -776,7 +817,7 @@ pub struct Battle {
     /// mirrorcoat), which lasts to the
     /// residual unless the mon leaves. See [`Battle::ps_residual_ties`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_charge_volatile: [u8; 2],
     /// `ps-rng` only: active slots (bit per slot, per side) whose queued
     /// 'recharge' action Champions Encore replaced this turn
@@ -789,18 +830,18 @@ pub struct Battle {
     /// actives whose status checkFainted set to 'fnt' at the end of an
     /// earlier turn (sim/battle.js:2066-2073): no status residual handler.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_status_fnt: [u8; 2],
     /// `ps-rng` only: the current action's move got past BeforeMove, so
     /// runMove ends with `runEvent('AfterMove')`; see
     /// [`Battle::ps_after_move_ties`].
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_move_used: bool,
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_commit_moves: ([(u8, u8); 4], u8),
     /// Keyed oracle: the move order PS's commitChoices queue.sort produced
     /// (`keyed_commit_sort`), applied before the first re-sort.
@@ -814,11 +855,11 @@ pub struct Battle {
     commit_switch_order: Option<([(u8, u8); 4], u8)>,
     /// `ps-rng` only: this turn's Mega Evolutions in commit-sort order.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_commit_megas: ([(u8, u8); 4], u8),
     /// `ps-rng` only: this turn's Terastallizations in commit-sort order.
     #[cfg(feature = "ps-rng")]
-    #[serde(skip)]
+    #[serde(default)]
     pub(crate) ps_commit_teras: ([(u8, u8); 4], u8),
 }
 
@@ -1371,7 +1412,10 @@ impl Battle {
     /// safety net (`sync_weather_terrain_cache`), but `move_locks` /
     /// `can_mega_evolve` do not — so this is their only rehydration hook.
     pub fn rehydrate_caches(&mut self) {
-        self.sync_weather_terrain_cache();
+        // Not `sync_weather_terrain_cache`: the field didn't change, so nothing
+        // runs its WeatherChange / TerrainChange (Mimicry would retype the mon).
+        self.cached_weather = self.recompute_effective_weather();
+        self.cached_terrain = self.recompute_effective_terrain();
         for side in [SideRef::P1, SideRef::P2] {
             for mon in self.side_mut(side).team.iter_mut() {
                 mon.sync_move_locks();
@@ -2383,6 +2427,11 @@ impl Battle {
     /// onResidual (data/abilities.ts opportunist, data/items.ts mirrorherb). The
     /// copy writes the stages directly, so it can't chain into another copy.
     pub(crate) fn flush_foe_boost_copies(&mut self) {
+        // Nothing pending is the common case: skip the Speed sort.
+        let pending = |sd: &Side| sd.active[..self.format().active_count().min(2)].iter().any(|&i| sd.team.get(i as usize).is_some_and(|m| m.foe_boosts_pending != [0; 7]));
+        if !pending(&self.p1) && !pending(&self.p2) {
+            return;
+        }
         let (order, k) = self.residual_speed_order();
         for &(side, slot) in &order[..k] {
             let Some(m) = self.side(side).active_mon(slot as usize) else { continue };
@@ -5524,6 +5573,9 @@ self.trigger_emergency_exits();
         let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
+                if self.side(side).active_mon(slot as usize).map_or(true, crate::item::update_idle) {
+                    continue;
+                }
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::item::on_after_damage(self, side, slot, &mut rng);
                 self.rng = rng;
@@ -5761,6 +5813,11 @@ self.trigger_emergency_exits();
             }
         }
         self.turn = self.turn.saturating_add(1);
+        // A Cloud Nine holder that fainted stops suppressing the weather: the
+        // cache must agree with a reload at the replacement stop.
+        if self.cached_weather != self.weather {
+            self.cached_weather = self.recompute_effective_weather();
+        }
         let p1_dead = self.p1.is_defeated();
         let p2_dead = self.p2.is_defeated();
         let winner = match (p1_dead, p2_dead) {
@@ -6694,6 +6751,7 @@ self.trigger_emergency_exits();
                 m.status = Status::None;
             }
             self.healing_wish[side as usize][(actor_slot as usize).min(1)] = false;
+            self.sync_status_dot_bit(side, actor_slot);
             self.p_heal(side, actor_slot, "|[from] move: Healing Wish");
         }
         self.apply_stealth_rock_to(side, actor_slot);
@@ -11324,6 +11382,10 @@ self.trigger_emergency_exits();
     /// check and `trueDuration--`. No order of its own, so after every other
     /// handler (sim/battle.ts fieldEvent).
     fn locked_move_residual(&mut self) {
+        let locked = |sd: &Side| sd.active.iter().any(|&i| sd.team.get(i as usize).is_some_and(|a| a.lockin_turns != 0));
+        if !locked(&self.p1) && !locked(&self.p2) {
+            return;
+        }
         let (order, k) = self.actives_by_speed();
         for &(side, slot) in &order[..k] {
             let Some(a) = self.side(side).active_mon(slot as usize) else { continue };
@@ -13242,7 +13304,12 @@ self.trigger_emergency_exits();
         // the borrow (mem::replace idiom).
         self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
         let mut busted = false;
-        if !hit_sub {
+        let update_idle = self.fling_pending.is_none()
+            && !disguised
+            && [SideRef::P1, SideRef::P2].iter().all(|&s| {
+                (0..self.format().active_count() as u8).all(|sl| self.side(s).active_mon(sl as usize).map_or(true, crate::item::update_idle))
+            });
+        if !hit_sub && !update_idle {
             // eachEvent('Update') over the actives in speed order: the
             // target, and the attacker when this hit cost it HP (Rocky
             // Helmet / Rough Skin), eat their berries here, before recoil
@@ -14434,6 +14501,13 @@ self.trigger_emergency_exits();
             // (it doesn't need a hint) — saves two calculate_damage
             // calls per hit on the hot perf-bench path.
             Rng::Splitmix(_) => {
+                let ctx = crate::damage::ctx_from_inputs(inputs);
+                (ctx, self.rng.damage_roll())
+            }
+            // PS's PRNG draws without the hint or the segments, which took up
+            // to 18 damage calculations per hit.
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(_) => {
                 let ctx = crate::damage::ctx_from_inputs(inputs);
                 (ctx, self.rng.damage_roll())
             }
@@ -20182,10 +20256,22 @@ self.trigger_emergency_exits();
         (order, k)
     }
 
+    /// Whether a live active has an effective ability `f` accepts.
+    #[inline]
+    fn any_active_ability(&self, f: impl Fn(u16) -> bool) -> bool {
+        [&self.p1, &self.p2].iter().any(|sd| {
+            sd.active.iter().any(|&i| sd.team.get(i as usize).is_some_and(|m| m.is_alive() && f(m.effective_ability_id())))
+        })
+    }
+
     fn eot_cure_abilities(&mut self) {
         let n = self.format().active_count() as u8;
         // fieldEvent runs the handlers by speed, so their draws (Moody, Shed Skin,
         // Harvest, Healer) come in that order (sim/battle.ts fieldEvent).
+        // on_residual_cures acts on these alone: skip the Speed sort without them.
+        if !self.plog() && !self.any_active_ability(|a| matches!(a, data::ability_id::SHEDSKIN | data::ability_id::HYDRATION | data::ability_id::HEALER)) {
+            return;
+        }
         let (order, k) = self.residual_speed_order();
         for &(side, slot) in &order[..k] {
             let _ = n;
@@ -20203,6 +20289,22 @@ self.trigger_emergency_exits();
         let n = self.format().active_count() as u8;
         // fieldEvent runs the handlers by speed, so their draws (Moody, Shed Skin,
         // Harvest, Healer) come in that order (sim/battle.ts fieldEvent).
+        // on_residual acts on these alone: skip the Speed sort without them.
+        if !self.plog()
+            && !self.any_active_ability(|a| {
+                matches!(
+                    a,
+                    data::ability_id::PICKUP
+                        | data::ability_id::CUDCHEW
+                        | data::ability_id::SLOWSTART
+                        | data::ability_id::HARVEST
+                        | data::ability_id::SPEEDBOOST
+                        | data::ability_id::MOODY
+                )
+            })
+        {
+            return;
+        }
         let (order, k) = self.residual_speed_order();
         for &(side, slot) in &order[..k] {
             let _ = n;
@@ -26142,13 +26244,17 @@ fn adds_flinch_secondary(battle: &Battle, target_side: SideRef, target_slot: u8,
     // (data/abilities.ts stench, data/items.ts kingsrock).
     let source = a.effective_ability_id() == data::ability_id::STENCH
         || matches!(a.effective_item_id(), data::item_id::KINGSROCK | data::item_id::RAZORFANG);
+    // Almost every hit stops here; the rest of this reads a linear move scan.
+    if !source {
+        return false;
+    }
     let category = data::MOVES.iter().find(|mv| mv.slug == move_slug).map_or(2, |mv| mv.category);
     let breaks_mold = matches!(a.effective_ability_id(), data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE);
     let filtered = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|d| {
         d.effective_item_id() == data::item_id::COVERTCLOAK
             || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
     });
-    source && category != 2 && !filtered && flinch_chance(move_slug, battle.champions).is_none()
+    category != 2 && !filtered && flinch_chance(move_slug, battle.champions).is_none()
 }
 
 fn apply_move_secondary(
