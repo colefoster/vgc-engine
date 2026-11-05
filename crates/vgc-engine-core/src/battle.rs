@@ -17100,6 +17100,9 @@ self.trigger_emergency_exits();
                         self.p_attr("[still]");
                     } else if immune {
                         pmon!(self, "-immune", source_side, source_slot);
+                    } else if source_side != side && self.side(source_side).conditions.safeguard_turns > 0 {
+                        // data/moves.ts safeguard onSetStatus names Synchronize.
+                        pmon!(self, "-activate", source_side, source_slot, "|move: Safeguard");
                     }
                 }
                 self.try_set_status_from(source_side, source_slot, status, side);
