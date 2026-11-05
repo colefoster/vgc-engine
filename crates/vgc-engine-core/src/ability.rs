@@ -1379,6 +1379,10 @@ pub fn on_residual_cures(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut
             // healer `randomChance(1, 2)`).
             let (num, den) = if battle.champions { (1, 2) } else { (3, 10) };
             if proc_chance(battle, rng, (side, slot), ability_id, num, den) {
+                pmon!(battle, "-activate", side, slot, "|ability: Healer");
+                if let Some(st) = battle.side(side).active_mon(s as usize).map(|m| crate::battle_protocol::status_id(m.status)) {
+                    pmon!(battle, "-curestatus", side, s, "|{st}|[msg]");
+                }
                 if let Some(ally) = battle.side_mut(side).active_mon_mut(s as usize) {
                     ally.status = crate::pokemon::Status::None;
                 }
