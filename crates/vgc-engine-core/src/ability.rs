@@ -2311,7 +2311,9 @@ pub fn on_damaging_hit(
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.is_alive());
-        if attacker_alive && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) {
+        // The roll comes first, a fainted attacker included (data/abilities.ts
+        // cutecharm onDamagingHit): Rocky Helmet may have just knocked it out.
+        if proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) && attacker_alive {
             // Gender gate: opposite, non-genderless (M↔F). Source = the
             // Cute Charm holder; target of infatuation = the attacker.
             let holder_gender = battle

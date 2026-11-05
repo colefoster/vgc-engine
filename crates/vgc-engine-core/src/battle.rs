@@ -3507,20 +3507,71 @@ self.trigger_emergency_exits();
                         n += 1;
                     }
                 }
-                let list = &mut h[..n];
-                list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                let mut st = 0;
-                while st < n {
-                    let mut end = st + 1;
-                    while end < n && list[end] == list[st] {
-                        end += 1;
-                    }
-                    for i in st..end - 1 {
-                        let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
-                    }
-                    st = end;
-                }
+                self.ps_handler_ties(&mut h[..n]);
+                self.ps_trap_ties(side, slot, spe);
             }
+        }
+    }
+
+    /// `ps-rng` only: endTurn's `runEvent('TrapPokemon', pokemon)` and
+    /// `runEvent('MaybeTrapPokemon', pokemon)`, right after that mon's
+    /// DisableMove (sim/battle.js endTurn). Handlers that can tie: the mon's
+    /// own `trapped`, `partiallytrapped`, `ingrain` and `octolock` volatiles
+    /// (subOrder 2, its Speed), and each foe's Shadow Tag, Arena Trap or
+    /// Magnet Pull (`onFoeTrapPokemon`, 7, the foe's Speed).
+    #[cfg(feature = "ps-rng")]
+    fn ps_trap_ties(&mut self, side: SideRef, slot: usize, spe: i64) {
+        use crate::pokemon::VolatileKind as V;
+        let Some(m) = self.side(side).active_mon(slot) else { return };
+        // (speed, subOrder)
+        let mut h = [(0i64, 0i64); 6];
+        let mut n = 0;
+        for k in [V::Trapped, V::PartialTrap, V::Ingrain, V::Octolock] {
+            if m.volatiles.has(k) {
+                h[n] = (spe, 2);
+                n += 1;
+            }
+        }
+        let (types, nt) = m.effective_types();
+        let trappable = !types[..nt as usize].contains(&13);
+        let foe = side.opposing();
+        let mut foes = [(0i64, 0i64); 2];
+        let mut nf = 0;
+        for fslot in 0..self.format().active_count().min(2) {
+            let trapper = self.side(foe).active_mon(fslot).is_some_and(|f| {
+                f.is_alive()
+                    && matches!(f.effective_ability_id(), data::ability_id::SHADOWTAG | data::ability_id::ARENATRAP | data::ability_id::MAGNETPULL)
+            });
+            if trapper {
+                let k = (self.ps_speed(foe, fslot).unwrap_or(0), 7);
+                foes[nf] = k;
+                nf += 1;
+                h[n] = k;
+                n += 1;
+            }
+        }
+        self.ps_handler_ties(&mut h[..n]);
+        if trappable {
+            self.ps_handler_ties(&mut foes[..nf]);
+        }
+    }
+
+    /// `ps-rng` only: `speedSort` over handlers of one priority and order,
+    /// as (speed, subOrder): a tied group draws its shuffle.
+    #[cfg(feature = "ps-rng")]
+    fn ps_handler_ties(&mut self, list: &mut [(i64, i64)]) {
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let n = list.len();
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end - 1 {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
         }
     }
 
@@ -3767,7 +3818,7 @@ self.trigger_emergency_exits();
                             V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13, V::Octolock => 14,
                             V::MagicCoat | V::Snatch | V::PowderShield | V::LaserFocus | V::Endure
                             | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch
-                            | V::BeakBlast => NONE,
+                            | V::BeakBlast | V::LockOn | V::Electrify => NONE,
                             _ => continue,
                         };
                         push(&mut h, (order, 0, spe, 2));
@@ -19710,7 +19761,14 @@ self.trigger_emergency_exits();
         }) || self
             .side(actor_side)
             .active_mon(actor_slot as usize)
-            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
+            .is_some_and(|a| {
+                let (types, n) = a.effective_types();
+                a.effective_ability_id() == data::ability_id::NOGUARD
+                    // hitStepAccuracy: gen 8+ Toxic from a Poison type is
+                    // `accuracy = true` (sim/battle-actions.ts), behind a
+                    // Substitute too.
+                    || (move_id == data::move_id::TOXIC && types[..n as usize].contains(&7))
+            });
         self.status_pending_kind = *pending_kind;
         self.status_sub_blocks = !m.is_sound && !matches!(m.target, 1 | 3)
             && self.side(actor_side).active_mon(actor_slot as usize).is_none_or(|u| u.effective_ability_id() != data::ability_id::INFILTRATOR);
@@ -21729,7 +21787,9 @@ self.trigger_emergency_exits();
                 let Some((ts, tslot)) = opp_target else { return };
                 if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.volatiles.has(V::LockOn)) { return; }
                 if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
-                let payload = (ts as u8 as u32) << 1 | tslot as u32;
+                // effectState.source is the mon, not the slot: its team index
+                // in the upper bits (data/moves.ts lockon onSourceAccuracy).
+                let payload = (ts as u8 as u32) << 1 | tslot as u32 | (self.side(ts).active[tslot as usize] as u32) << 8;
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     let _ = a.volatiles.add(crate::pokemon::Volatile { kind: V::LockOn, turns_remaining: 2, payload });
                 }
