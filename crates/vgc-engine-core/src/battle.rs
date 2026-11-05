@@ -16157,7 +16157,10 @@ self.trigger_emergency_exits();
             // A consecutive Destiny Bond removes the volatile and fails.
             "destinybond" => user.volatiles.has(crate::pokemon::VolatileKind::DestinyBond),
             // onHit fails on a target that has the type (or missed).
-            "trickortreat" | "forestscurse" => !self.status_hit_failed,
+            "trickortreat" | "forestscurse" | "spite" => !self.status_hit_failed,
+            // forceSwitch counts once the flag is set, the drag comes later
+            // (runMoveEffects' didSomething, sim/battle-actions.ts).
+            "roar" | "whirlwind" => self.force_switch_flags.iter().flatten().any(|&f| f),
             "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
             | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
@@ -21821,6 +21824,9 @@ self.trigger_emergency_exits();
             }
             data::move_id::SPITE => {
                 // data/moves.ts spite onHit: 4 PP off the target's last move.
+                // PP is left out of the status-move snapshot, so the result
+                // goes through status_hit_failed.
+                self.status_hit_failed = true;
                 if !self.rolled_accuracy_passed(m) { return; }
                 let Some((ts, tslot)) = opp_target else { return };
                 let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
@@ -21829,6 +21835,7 @@ self.trigger_emergency_exits();
                 let pp = t.pp.get(i).copied().unwrap_or(0);
                 let took = pp.min(4);
                 if took == 0 { return; }
+                self.status_hit_failed = false;
                 if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                     t.pp[i] = pp - took;
                 }
