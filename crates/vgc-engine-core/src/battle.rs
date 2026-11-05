@@ -20597,6 +20597,21 @@ self.trigger_emergency_exits();
                     a.fainted = true;
                 }
             }
+            data::move_id::ELECTRIFY => {
+                // data/moves.ts electrify onTryHit, condition onStart (duration 1).
+                use crate::pokemon::VolatileKind as V;
+                let Some((ts, tslot)) = opp_target else { return };
+                let k = pending_kind[ts as usize][(tslot as usize).min(1)];
+                let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
+                let active = t.move_actions > 0 || !t.volatiles.has(V::JustSwitchedIn);
+                if k != 1 && k != 2 && active { return; }
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                if t.volatiles.has(V::Electrify) { return; }
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile { kind: V::Electrify, turns_remaining: 1, payload: 0 });
+                }
+                pmon!(self, "-singleturn", ts, tslot, "|move: Electrify");
+            }
             data::move_id::SPICYEXTRACT => {
                 // data/moves.ts spicyextract: `boosts: {atk: 2, def: -2}`.
                 let Some((ts, tslot)) = opp_target else { return };
