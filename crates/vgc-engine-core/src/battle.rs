@@ -8306,7 +8306,13 @@ self.trigger_emergency_exits();
             let ((src_side_byte, src_slot), dmg) = match move_id {
                 data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
                 data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
-                _ => (attacker.last_attacker, attacker.last_damage_taken),
+                // getLastDamagedBy(true): only a foe's hit counts (data/moves.ts
+                // metalburst onTry; last_damage_taken also records an ally's).
+                _ => (attacker.last_attacker, match attacker.last_attacker_category {
+                    0 => attacker.last_phys_damage,
+                    1 => attacker.last_spec_damage,
+                    _ => 0,
+                }),
             };
             if dmg == 0 {
                 self.p_try_fail(actor_side, actor_slot);
@@ -9777,7 +9783,7 @@ self.trigger_emergency_exits();
                     t[..n as usize].contains(&9)
                 };
                 if darts_phase[ti] == 1 && darts_smart {
-                } else if defender.effective_ability_id() == data::ability_id::LEVITATE && !attacker_breaks_mold && !flying {
+                } else if matches!(defender.effective_ability_id(), data::ability_id::LEVITATE | data::ability_id::EELEVATE) && !attacker_breaks_mold && !flying {
                     pmon!(self, "-immune", tside, tslot, "|[from] ability: {}", crate::battle_protocol::ability_name(defender.effective_ability_id()));
                 } else {
                     pmon!(self, "-immune", tside, tslot);
@@ -12742,7 +12748,7 @@ self.trigger_emergency_exits();
         if !sub_takes_hit {
             self.p_tag(crate::protocol::step::DAMAGE, ctx.tside, ctx.tslot);
         }
-        let sub_absorbed = dmg.min(ctx.defender.substitute_hp());
+        let sub_absorbed = dmg.min(self.side(ctx.tside).active_mon(ctx.tslot as usize).map_or(0, |d| d.substitute_hp()));
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
         if ctx.move_id == data::move_id::STRUGGLE && !hit_sub && effective_dmg == 0 {
             self.struggle_zero_hit = true;
