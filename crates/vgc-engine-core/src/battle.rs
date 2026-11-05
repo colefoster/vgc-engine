@@ -5068,10 +5068,15 @@ self.trigger_emergency_exits();
             }
         }
         self.ps_action_live = live;
-        let windowed = self.ps_spread_window(action, pending_kind, true);
+        // queue.willAct(): a stall move instructed last fails (data/moves.ts protect).
+        let will_act = order[idx + 1..].iter().any(|a| {
+            matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                && !self.replaced_mid_turn[a.side as usize][(a.actor_slot as usize).min(1)]
+        });
+        let windowed = self.ps_spread_window(action, pending_kind, will_act);
         if !windowed {
             self.ps_inline_hit_updates = true;
-            self.resolve_move_with_pending(action, pending_kind, true);
+            self.resolve_move_with_pending(action, pending_kind, will_act);
         }
         if self.ps_loop_hits > 0 {
             if windowed {
