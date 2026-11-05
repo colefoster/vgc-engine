@@ -270,6 +270,7 @@ impl PsSession {
         }
         let mut p = Parser::new(&self.reqs[i], side, self.ended);
         let res = p.choose(input);
+        let partial_done = res.is_err() && p.done();
         let ans = p.answer();
         let text = p.choice_text(&self.base);
         let cant_undo = p.cant_undo;
@@ -283,10 +284,14 @@ impl PsSession {
         }
         match res {
             Err(()) => {
-                // Side.choose cleared the old choice before failing.
+                // Side.choose cleared the old choice before failing, but the
+                // parts parsed before the error stay in `side.choice`. If they
+                // fill the side, allChoicesDone counts it on the other side's
+                // next successful choice (sim/battle.ts Battle.choose,
+                // allChoicesDone; sim/side.ts isChoiceDone).
                 if was_open {
-                    self.answered[i] = None;
-                    self.choice_text[i] = None;
+                    self.answered[i] = partial_done.then_some(ans);
+                    self.choice_text[i] = partial_done.then_some(text);
                     self.cant_undo[i] = cant_undo;
                 }
                 self.side_out(i, out)
