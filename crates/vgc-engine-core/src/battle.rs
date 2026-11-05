@@ -10076,6 +10076,15 @@ self.trigger_emergency_exits();
                     if self.plog() {
                         pmon!(self, "-enditem", actor_side, actor_slot, "|Normal Gem|[from] gem|[move] {}", m.name);
                     }
+                    // addVolatile('gem'), duration 1 (data/conditions.ts gem,
+                    // data/items.ts normalgem): in the residual's sort.
+                    #[cfg(feature = "ps-rng")]
+                    {
+                        let i = self.side(actor_side).active[actor_slot as usize] as usize;
+                        if i < 8 {
+                            self.ps_charge_volatile[actor_side as usize] |= 1 << i;
+                        }
+                    }
                     crate::ability::on_item_consumed(self, actor_side, actor_slot);
                 }
             }
