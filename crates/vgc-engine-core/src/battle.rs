@@ -480,6 +480,9 @@ pub struct Battle {
     /// Trick-or-Treat / Forest's Curse did not add its type this action.
     #[serde(skip)]
     pub(crate) status_hit_failed: bool,
+    /// Whether the multi-hit move's current hit (after the first) is a crit.
+    #[serde(skip)]
+    pub(crate) last_hit_crit: bool,
     /// A status move stopped at the target's Substitute this action.
     #[serde(skip)]
     pub(crate) ps_status_sub_null: bool,
@@ -935,6 +938,7 @@ impl Battle {
             pending_queue_reorder: None,
             after_move_user: None,
             ps_status_sub_null: false,
+            last_hit_crit: false,
             status_hit_failed: false,
             round_on_try: false,
             round_chain: [[false; 2]; 2],
@@ -12440,9 +12444,9 @@ self.trigger_emergency_exits();
 
         // Anger Point onHit, runEvent('Hit') before the secondaries
         // (data/abilities.ts angerpoint; sim/battle-actions.ts runMoveEffects).
-        let hit_crit = if hit_idx == 0 { ctx.crit } else { self.protocol.log().is_some_and(|l| l.hit_crit) };
+        let hit_crit = if hit_idx == 0 { ctx.crit } else { self.last_hit_crit };
         if !hit_sub && hit_crit && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
-            t.is_alive() && t.effective_ability_id() == data::ability_id::ANGERPOINT
+            t.is_alive() && t.effective_ability_id() == data::ability_id::ANGERPOINT && t.boosts[0] < 6
         }) {
             self.p_tag(crate::protocol::step::EFFECTS, ctx.tside, ctx.tslot);
             self.p_boost_fx(crate::protocol::BoostFx::Silent);
@@ -13890,6 +13894,7 @@ self.trigger_emergency_exits();
                 } else {
                     self.rng.crit_with_stage(inv.crit_stage)
                 };
+                self.last_hit_crit = hc;
                 if let Some(l) = self.protocol.log_mut() {
                     l.hit_crit = hc;
                 }
@@ -13921,6 +13926,7 @@ self.trigger_emergency_exits();
                 } else {
                     self.rng.crit_with_stage(inv.crit_stage)
                 };
+                self.last_hit_crit = hc;
                 if let Some(l) = self.protocol.log_mut() {
                     l.hit_crit = hc;
                 }
