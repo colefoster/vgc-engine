@@ -1764,6 +1764,10 @@ fn try_consume_white_herb_inner(battle: &mut Battle, side: SideRef, slot: u8) {
     if battle.white_herb_deferred() {
         return;
     }
+    try_consume_white_herb_now(battle, side, slot);
+}
+
+fn try_consume_white_herb_now(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
