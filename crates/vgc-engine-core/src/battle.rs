@@ -5435,6 +5435,11 @@ self.trigger_emergency_exits();
         }
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
+            // Terrain's last turn: clearTerrain's eachEvent('TerrainChange')
+            // (sim/field.ts), inside the residual; the timer ticks below.
+            if self.terrain_turns == 1 && self.terrain != crate::terrain::Terrain::None {
+                self.ps_active_ties(false, "shuffle");
+            }
             self.ps_active_ties(false, "shuffle");
             // The turn's last action ran checkFainted: every fainted active's
             // status becomes 'fnt', on a side that can still switch
@@ -18167,6 +18172,10 @@ self.trigger_emergency_exits();
             // clearWeather's WeatherChange event (sim/field.ts): Forecast.
             self.sync_weather_terrain_cache();
             self.refresh_forecast_formes();
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_active_ties(false, "shuffle");
+            }
         }
         // A lasting weather's onFieldResidual runs eachEvent('Weather') —
         // for sand and snow only while not suppressed (isWeather) — which
