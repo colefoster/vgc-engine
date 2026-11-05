@@ -20304,7 +20304,7 @@ self.trigger_emergency_exits();
                 // target will not move again this turn, `onStart`); fails if
                 // the target has no last move, used a `failencore` move
                 // (Encore, Struggle, Sketch, Transform, Mimic, Mirror Move,
-                // Assist, Copycat, Me First, Nature Power, Metronome), has no
+                // Assist, Copycat, Me First, Nature Power, Metronome, Sleep Talk), has no
                 // PP left for it, or is already encored. Accuracy 100: the
                 // roll is drawn like Taunt's.
                 let Some((ts, tslot)) = opp_target else { return };
@@ -20323,7 +20323,7 @@ self.trigger_emergency_exits();
                                 | data::move_id::MIMIC | data::move_id::MIRRORMOVE
                                 | data::move_id::ASSIST | data::move_id::COPYCAT
                                 | data::move_id::MEFIRST | data::move_id::NATUREPOWER
-                                | data::move_id::METRONOME
+                                | data::move_id::METRONOME | data::move_id::SLEEPTALK
                         );
                         let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
                         if exempt || no_pp {
