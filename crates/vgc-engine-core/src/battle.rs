@@ -370,9 +370,10 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
-    /// Struggle landed on a target for 0 damage (Sturdy on a 1 HP mon).
+    /// A hit of the current move reached its target for 0 damage (Endure or Sturdy at
+    /// 1 HP, Disguise): PS's damage is the number 0, which still counts as a hit.
     #[serde(skip)]
-    pub(crate) struggle_zero_hit: bool,
+    pub(crate) zero_hit_this_move: bool,
     /// Per active seat (side * 2 + slot): the seats that damaged it this turn
     /// (Pokemon.attackedBy, for Avalanche and Revenge).
     #[serde(default)]
@@ -961,7 +962,7 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
-            struggle_zero_hit: false,
+            zero_hit_this_move: false,
             ps_damaged_by: [0; 4],
             move_sub_absorbed: 0,
             ps_no_maybe_trap: false,
@@ -7939,6 +7940,7 @@ self.trigger_emergency_exits();
         }
 
         self.disguise_hit_this_move = false;
+        self.zero_hit_this_move = false;
         // PS `runMove` (sim/battle-actions.ts:217) counts the action before
         // any beforeMove check can stop it.
         if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -11119,7 +11121,7 @@ self.trigger_emergency_exits();
                 // when `!move.multihit` (sim/battle-actions.ts:1329), and
                 // runs inside each hit's moveHit, so the next hit sees the
                 // drop. The last hit's drop is the post-move one below.
-                if hit_idx + 1 < ctx.hits && ctx.any_damage_dealt > dealt_before {
+                if hit_idx + 1 < ctx.hits && (ctx.any_damage_dealt > dealt_before || self.zero_hit_this_move) {
                     if let Some(drops) = self_stat_drops(m.slug, self.champions) {
                         #[cfg(feature = "ps-rng")]
                         if self.rng.is_ps() {
@@ -11190,6 +11192,7 @@ self.trigger_emergency_exits();
                 | data::move_id::SUPERCELLSLAM
         ) && had_live_target
             && any_damage_dealt == 0
+            && !self.zero_hit_this_move
         {
             self.apply_crash_damage(actor_side, actor_slot);
         }
@@ -11695,7 +11698,7 @@ self.trigger_emergency_exits();
         // user (Sheer Force converts the `secondary: {}` into the damage boost
         // and suppresses the hazard). Samurott-Hisui's signature. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Ceaseless_Edge_(move)>.
-        if move_id == data::move_id::CEASELESSEDGE && any_damage_dealt > 0 {
+        if move_id == data::move_id::CEASELESSEDGE && (any_damage_dealt > 0 || self.zero_hit_this_move) {
             let sheer_force = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
@@ -11725,7 +11728,7 @@ self.trigger_emergency_exits();
         // Stealth Rock on the FOE's side (idempotent). Same `!move.hasSheerForce
         // && source.hp` gate. Kleavor's signature. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Stone_Axe_(move)>.
-        if move_id == data::move_id::STONEAXE && any_damage_dealt > 0 {
+        if move_id == data::move_id::STONEAXE && (any_damage_dealt > 0 || self.zero_hit_this_move) {
             let sheer_force = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
@@ -12700,6 +12703,7 @@ self.trigger_emergency_exits();
                 });
         if disguise_triggered {
             self.disguise_hit_this_move = true;
+            self.zero_hit_this_move = true;
         }
         disguise_triggered
     }
@@ -13123,8 +13127,8 @@ self.trigger_emergency_exits();
         }
         let sub_absorbed = dmg.min(self.side(ctx.tside).active_mon(ctx.tslot as usize).map_or(0, |d| d.substitute_hp()));
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
-        if ctx.move_id == data::move_id::STRUGGLE && !hit_sub && effective_dmg == 0 {
-            self.struggle_zero_hit = true;
+        if !hit_sub && effective_dmg == 0 {
+            self.zero_hit_this_move = true;
         }
         if hit_sub && self.plog() {
             // substitute onTryPrimaryHit (data/moves.ts substitute).
@@ -13169,6 +13173,10 @@ self.trigger_emergency_exits();
             self.p_damage(ctx.tside, ctx.tslot, "");
         }
 
+        if disguised && ctx.tside != ctx.actor_side {
+            ctx.drag_target = Some((ctx.tside, ctx.tslot));
+        }
+
         // Apply (only when the sub didn't intercept). HP write +
         // damaged_this_turn / last_attacker / last_phys/spec /
         // last_damage_taken trackers + faint check + Stellar
@@ -13193,7 +13201,7 @@ self.trigger_emergency_exits();
             // Record the real-hit foe slot for Dragon Tail / Circle
             // Throw phazing (a Substitute absorb never reaches this
             // branch, so a subbed mon stays None and is not phazed).
-            if res.is_real_hit {
+            if ctx.tside != ctx.actor_side {
                 ctx.drag_target = Some((ctx.tside, ctx.tslot));
             }
 
@@ -13292,7 +13300,7 @@ self.trigger_emergency_exits();
         // The move's volatile lands in runMoveEffects, before the secondaries
         // (sim/battle-actions.ts spreadMoveHit): a partial trap's duration draw
         // precedes them, the DamagingHit rolls and the hit's Update.
-        if !hit_sub && effective_dmg > 0 && alive_post {
+        if !hit_sub && alive_post {
             self.apply_partial_trap(ctx.actor_side, ctx.actor_slot, ctx.move_id, m, 1, Some((ctx.tside, ctx.tslot)));
         }
         // Outrage's `self: { volatileStatus: 'lockedmove' }`: selfDrops, on any
@@ -13632,7 +13640,7 @@ self.trigger_emergency_exits();
         actor_side: SideRef,
         actor_slot: u8,
         hit_sub: bool,
-        effective_dmg: u16,
+        _effective_dmg: u16,
         move_id: u16,
     ) {
         // Sheer Force skips the AfterMoveSecondary event, except in Champions
@@ -13645,7 +13653,7 @@ self.trigger_emergency_exits();
         {
             return;
         }
-        if !hit_sub && effective_dmg > 0 {
+        if !hit_sub {
             // Reactive-switch items — PS `onAfterDamage` slot.
             //   Red Card (forces ATTACKER out) runs BEFORE Eject
             //   Button (forces holder out) in PS handler order:
@@ -14007,7 +14015,7 @@ self.trigger_emergency_exits();
         // does NOT block self-boosts). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>
         // <https://bulbapedia.bulbagarden.net/wiki/Mortal_Spin_(move)>.
-        if matches!(move_id, data::move_id::RAPIDSPIN | data::move_id::MORTALSPIN) && any_damage_dealt > 0 {
+        if matches!(move_id, data::move_id::RAPIDSPIN | data::move_id::MORTALSPIN) && (any_damage_dealt > 0 || self.zero_hit_this_move) {
             let sheer_force = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
@@ -14083,7 +14091,7 @@ self.trigger_emergency_exits();
         // (sim/battle-actions.ts:1311 `move.selfSwitch && source.hp` after a
         // successful spreadMoveHit).
         if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN)
-            && (any_damage_dealt > 0 || self.disguise_hit_this_move)
+            && (any_damage_dealt > 0 || self.zero_hit_this_move)
         {
             let still_alive = self
                 .side(actor_side)
@@ -16079,7 +16087,10 @@ self.trigger_emergency_exits();
         self.p_tag_step(crate::protocol::step::SELF_DROP);
         // Uproar — PS data/moves.ts `self.volatileStatus`, duration 3, on hit;
         // `onLockMove` locks the user while it lasts.
-        if move_id == data::move_id::UPROAR && any_damage_dealt > 0 {
+        // Damage 0 is still a number: selfDrops and moveResult only skip a `false`
+        // (data/mods/champions/scripts.ts spreadMoveHit, sim/battle-actions.ts:584).
+        let move_hit = any_damage_dealt > 0 || self.zero_hit_this_move;
+        if move_id == data::move_id::UPROAR && move_hit {
             use crate::pokemon::VolatileKind as V;
             let mut started = false;
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -16112,14 +16123,14 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Final_Gambit_(move)>.
         // Burn Up — PS data/moves.ts:2092 `self.onHit`: once the move has
         // hit, the user's Fire type becomes '???'.
-        if move_id == data::move_id::BURNUP && any_damage_dealt > 0 {
+        if move_id == data::move_id::BURNUP && move_hit {
             self.p_lose_type_line(actor_side, actor_slot, 1, "Burn Up");
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.lose_fire_type();
             }
         }
         // Double Shock's self.onHit: Electric becomes '???'.
-        if move_id == data::move_id::DOUBLESHOCK && any_damage_dealt > 0 {
+        if move_id == data::move_id::DOUBLESHOCK && move_hit {
             // setType(types with Electric -> "???") (data/moves.ts doubleshock).
             let shown = self.plog().then(|| {
                 self.side(actor_side).active_mon(actor_slot as usize).map(|a| {
@@ -16177,7 +16188,7 @@ self.trigger_emergency_exits();
         // steelroller onHit / onAfterSubDamage `this.field.clearTerrain()`).
         // Ice Spinner (data/moves.ts icespinner onAfterHit / onAfterSubDamage)
         // does the same.
-        if matches!(move_id, data::move_id::STEELROLLER | data::move_id::ICESPINNER) && any_damage_dealt > 0 {
+        if matches!(move_id, data::move_id::STEELROLLER | data::move_id::ICESPINNER) && move_hit {
             // clearTerrain's `-fieldend`: Steel Roller's onHit runs with the
             // move's effects, before DamagingHit (Rocky Helmet ...); Ice
             // Spinner's onAfterHit after it (sim/battle-actions.ts:1119-1127).
@@ -16205,8 +16216,7 @@ self.trigger_emergency_exits();
             self.sync_weather_terrain_cache();
         }
         if let Some(drops) = self_stat_drops(m.slug, self.champions) {
-            // A Disguise's 0 is still a hit (sim/battle-actions.ts selfDrops).
-            if any_damage_dealt > 0 || self.disguise_hit_this_move {
+            if move_hit {
                 // PS `selfDrops` rolls `random(100)` for a `self.boosts`
                 // move even though the drop is unconditional
                 // (sim/battle-actions.ts selfDrops, a5df8274).
@@ -16248,7 +16258,7 @@ self.trigger_emergency_exits();
         // the once-after-hits stat change (spe+1, def-1). White Herb / Eject
         // Pack react to the def drop exactly as for `self_stat_drops`.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scale_Shot_(move)>.
-        if m.slug == "scaleshot" && any_damage_dealt > 0 {
+        if m.slug == "scaleshot" && move_hit {
             // After the whole hit step (sim/battle-actions.ts:520).
             self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
@@ -16267,7 +16277,7 @@ self.trigger_emergency_exits();
         // move; the user drops its own Def by 1 after hitting. White Herb /
         // Eject Pack react to the drop exactly as for Scale Shot.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Clanging_Scales_(move)>.
-        if m.slug == "clangingscales" && any_damage_dealt > 0 {
+        if m.slug == "clangingscales" && move_hit {
             // After the whole hit step (sim/battle-actions.ts:520).
             self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
@@ -16302,9 +16312,9 @@ self.trigger_emergency_exits();
         // turns including the current one.
         // A hit that takes no HP still runs selfDrops (sim/battle-actions.ts spreadMoveHit).
         #[cfg(feature = "ps-rng")]
-        let recharge_hit = any_damage_dealt > 0 || self.ps_loop_hits > 0;
+        let recharge_hit = move_hit || self.ps_loop_hits > 0;
         #[cfg(not(feature = "ps-rng"))]
-        let recharge_hit = any_damage_dealt > 0;
+        let recharge_hit = move_hit;
         if recharge_hit
             && matches!(
                 move_id,
@@ -16393,7 +16403,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
         // A hit that does 0 damage recoils too (sim/battle-actions.ts, PS 4148c1187).
         if move_id == data::move_id::STRUGGLE
-            && (any_damage_dealt > 0 || std::mem::take(&mut self.struggle_zero_hit))
+            && move_hit
         {
             self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
@@ -16425,7 +16435,7 @@ self.trigger_emergency_exits();
         // AfterMoveSecondarySelf reads the item held now: Pickpocket or Magician may
         // have moved it during the hit (data/items.ts lifeorb, shellbell).
         let attacker_item_id = self.side(actor_side).active_mon(actor_slot as usize).map_or(u16::MAX, |a| a.effective_item_id());
-        if attacker_item_id == data::item_id::LIFEORB && (any_damage_dealt > 0 || self.disguise_hit_this_move) {
+        if attacker_item_id == data::item_id::LIFEORB && move_hit {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
             // gates the whole `AfterMoveSecondarySelf` step on
             // `!(move.hasSheerForce && pokemon.hasAbility('sheerforce'))`,
