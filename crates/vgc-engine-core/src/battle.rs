@@ -10818,9 +10818,14 @@ self.trigger_emergency_exits();
                 if trappable {
                     let dur = 5 + self.rng.range(2) as u32; // timer 5 or 6
                     let src_team = self.side(actor_side).active[actor_slot as usize] as u32;
+                    // partiallytrapped onStart: boundDivisor is fixed here, from
+                    // the source's Binding Band (data/conditions.ts).
+                    let band = self.side(actor_side).active_mon(actor_slot as usize)
+                        .is_some_and(|a| a.effective_item_id() == data::item_id::BINDINGBAND);
                     let payload = dur
                         | ((actor_side as u8 as u32) << 8)
                         | ((actor_slot as u32) << 16)
+                        | ((band as u32) << 23)
                         | (src_team << 24);
                     if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                         let _ = t.volatiles.add(crate::pokemon::Volatile {
@@ -18939,7 +18944,7 @@ self.trigger_emergency_exits();
                         .get(crate::pokemon::VolatileKind::PartialTrap)
                     {
                         Some(v) => {
-                            let chip = (m.stats.hp / 8).max(1);
+                            let chip = (m.stats.hp / if v.payload & (1 << 23) != 0 { 6 } else { 8 }).max(1);
                             let remaining = (v.payload & 0xFF) as u8;
                             let expires = remaining <= 1;
                             (chip, crate::ability::has_magic_guard(m), expires, v.payload >> 8)
@@ -18963,7 +18968,7 @@ self.trigger_emergency_exits();
                 // PS data/conditions.ts:238: the trap ends silently, with no
                 // chip, once its source has left the field or fainted.
                 let src_side = if src & 0xFF == 0 { SideRef::P1 } else { SideRef::P2 };
-                let src_slot = ((src >> 8) & 0xFF) as usize;
+                let src_slot = ((src >> 8) & 0x7F) as usize;
                 let src_team = ((src >> 16) & 0xFF) as u8;
                 let src_present = src_slot < n as usize
                     && self.side(src_side).active[src_slot] == src_team
