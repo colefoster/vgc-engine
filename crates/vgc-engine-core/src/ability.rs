@@ -2720,13 +2720,17 @@ pub fn on_damaging_hit(
             .side(target_side)
             .active_mon(target_slot as usize)
             .is_some_and(has_ability_shield);
+        // wanderingspirit onDamagingHit: `source.getAbility().flags['failskillswap']`
+        // leaves it alone (data/abilities.ts).
         if attacker_alive
             && attacker_id != u16::MAX
             && target_id != u16::MAX
             && attacker_id != target_id
             && !attacker_shielded
             && !target_shielded
+            && !crate::battle::ability_fails_skill_swap(data::ABILITIES[attacker_id as usize].slug)
         {
+            battle.p_ability_end_lines(attacker_side, attacker_slot, false);
             if let Some(a) = battle
                 .side_mut(attacker_side)
                 .active_mon_mut(attacker_slot as usize)
