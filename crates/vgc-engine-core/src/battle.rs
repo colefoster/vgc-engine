@@ -10495,6 +10495,7 @@ self.trigger_emergency_exits();
                 }
             }
             let inputs = crate::damage::DamageInputs {
+                ssa_physical: move_id == data::move_id::SHELLSIDEARM && m.category == 0,
                 crit, is_spread, is_doubles,
                 weather: spread_field.0,
                 terrain: active_terrain,
@@ -11591,38 +11592,43 @@ self.trigger_emergency_exits();
     // to the prior inline bodies.
 
     /// Shell Side Arm — PS data/moves.ts:shellsidearm `onModifyMove`.
-    /// Cross-compares boosted Atk/Def vs SpA/SpD against the resolved
-    /// primary target; on a strict atk-side win, flips the move category
-    /// to Physical and tags it makes-contact. Status branch leaves the
-    /// default special category in place (PS ties default to special in
-    /// our model — see citation in the call site).
+    /// Compares PS's rough physical and special damage against the target;
+    /// the higher makes the category, and a tie draws `randomChance(1, 2)`.
     #[cold]
     #[inline(never)]
     fn shell_side_arm_modify_move(
-        &self,
+        &mut self,
         actor_side: SideRef,
         attacker: &Pokemon,
         target: Option<Target>,
         m_owned: &mut data::MoveDef,
     ) {
         let opp = actor_side.opposing();
-        let primary_target = match target {
-            Some(Target { side, slot }) if side == opp => Some(slot as usize),
-            _ => (0..self.format().active_count())
-                .find(|&s| self.side(opp).active_mon(s).map_or(false, |p| p.is_alive())),
+        let primary = match target {
+            Some(t) => Some(t),
+            None => (0..self.format().active_count() as u8)
+                .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|p| p.is_alive()))
+                .map(|slot| Target { side: opp, slot }),
         };
-        if let Some(tslot) = primary_target {
-            if let Some(def_mon) = self.side(opp).active_mon(tslot) {
-                let atk = crate::damage::apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
-                let spa = crate::damage::apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
-                let def = crate::damage::apply_boost(def_mon.stats.def as u32, def_mon.boosts[1]).max(1);
-                let spd = crate::damage::apply_boost(def_mon.stats.spd as u32, def_mon.boosts[3]).max(1);
-                // Cross-multiply to avoid floor division noise.
-                if atk * spd > spa * def {
-                    m_owned.category = 0; // Physical
-                    m_owned.makes_contact = true;
-                }
-            }
+        let Some(t) = primary else { return };
+        let Some(d) = self.side(t.side).active_mon(t.slot as usize) else { return };
+        // getStat(x, false, true): stages count, modifiers don't; Wonder Room
+        // swaps the defenses first (sim/pokemon.ts getStat).
+        let (def_stat, def_stage, spd_stat, spd_stage) = if self.wonder_room_turns > 0 {
+            (d.stats.spd, d.boosts[3], d.stats.def, d.boosts[1])
+        } else {
+            (d.stats.def, d.boosts[1], d.stats.spd, d.boosts[3])
+        };
+        let def = crate::damage::apply_boost(def_stat as u32, def_stage).max(1);
+        let spd = crate::damage::apply_boost(spd_stat as u32, spd_stage).max(1);
+        let atk = crate::damage::apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
+        let spa = crate::damage::apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
+        let base = 2 * attacker.level as u32 / 5 + 2;
+        let physical = base * 90 * atk / def / 50;
+        let special = base * 90 * spa / spd / 50;
+        if physical > special || (physical == special && self.rng.range(2) == 0) {
+            m_owned.category = 0; // Physical
+            m_owned.makes_contact = true;
         }
     }
 
@@ -18609,6 +18615,7 @@ self.trigger_emergency_exits();
                 defender,
                 entry.move_id,
                 DamageContext {
+                    ssa_physical: false,
                     crit: ps_crit,
                     roll,
                     is_spread: false,

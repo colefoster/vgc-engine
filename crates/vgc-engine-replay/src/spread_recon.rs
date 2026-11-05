@@ -159,7 +159,7 @@ fn candidate_passes(
 }
 
 fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
-    let ctx = |roll: u8| DamageContext {
+    let ctx = |roll: u8| DamageContext { ssa_physical: false,
         crit: false,
         roll,
         is_spread: false,
