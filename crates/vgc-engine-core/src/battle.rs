@@ -20107,6 +20107,17 @@ self.trigger_emergency_exits();
                 // directDamage's `-damage` (data/moves.ts substitute).
                 if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.substitute_hp() > 0) {
                     pmon!(self, "-start", actor_side, actor_slot, "|Substitute");
+                }
+                // substitute condition onStart ends a partial trap.
+                if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                    a.substitute_hp() > 0 && a.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
+                }) {
+                    self.p_trap_end(actor_side, actor_slot, "|[silent]");
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                    }
+                }
+                if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.substitute_hp() > 0) {
                     self.p_damage(actor_side, actor_slot, "");
                 }
             }
