@@ -2505,6 +2505,9 @@ impl Battle {
                 let before = self.side(side).active_mon(slot as usize).map_or([0; 7], |m| m.boosts);
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     for &(i, d) in &rises[..n] {
+                        // boost() sets statsRaisedThisTurn (sim/battle.ts:2084): Burning
+                        // Jealousy and Alluring Voice read it.
+                        m.stats_raised_this_turn |= m.boosts[i as usize] < 6;
                         m.boosts[i as usize] = (m.boosts[i as usize] + d).clamp(-6, 6);
                     }
                 }
