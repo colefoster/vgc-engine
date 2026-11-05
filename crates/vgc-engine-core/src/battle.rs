@@ -20478,6 +20478,19 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::COPYCAT => {
+                // data/moves.ts copycat onHit.
+                self.called_ran = false;
+                let prev = self.last_move_before;
+                if prev == u16::MAX {
+                    self.called_ran = true;
+                    return;
+                }
+                if copycat_fails(self.moves()[prev as usize].slug) {
+                    return;
+                }
+                self.run_called_move(actor_side, actor_slot, prev, move_id, pending_kind);
+            }
             data::move_id::SPICYEXTRACT => {
                 // data/moves.ts spicyextract: `boosts: {atk: 2, def: -2}`.
                 let Some((ts, tslot)) = opp_target else { return };
