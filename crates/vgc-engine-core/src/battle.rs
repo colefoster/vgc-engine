@@ -8290,6 +8290,14 @@ self.trigger_emergency_exits();
             move_id,
             data::move_id::COUNTER | data::move_id::MIRRORCOAT | data::move_id::METALBURST | data::move_id::COMEUPPANCE
         ) {
+            // getMoveTargets finds nobody with every foe down: `[notarget]`, ahead
+            // of onTry (sim/battle-actions.ts useMoveInner, sim/pokemon.ts).
+            let foe = actor_side.opposing();
+            if !(0..self.format().active_count()).any(|s| self.side(foe).active_mon(s).is_some_and(|d| d.is_alive())) {
+                self.p_attr("[notarget]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                return;
+            }
             let ((src_side_byte, src_slot), dmg) = match move_id {
                 data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
                 data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
