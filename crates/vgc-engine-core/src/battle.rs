@@ -4522,12 +4522,9 @@ self.trigger_emergency_exits();
                         let _ = self.rng.ps_random_range("random_target", 0, n as u32);
                     }
                     let pick = self.rng.ps_random_range("random_target", 0, n as u32) as usize;
-                    let tracks = self.moves()[move_id as usize].target != 2
-                        && matches!(
-                            self.side(side).active_mon(actor_slot as usize).map(|u| u.effective_ability_id()),
-                            Some(data::ability_id::STALWART | data::ability_id::PROPELLERTAIL)
-                        );
-                    if scripted || tracks {
+                    // Kept for every move: Mega Evolution can bring Stalwart
+                    // before runMove's getTarget reads it (sim/battle.ts getTarget).
+                    if self.moves()[move_id as usize].target != 2 {
                         let foe = side.opposing();
                         let alive = (0..n_active.min(2)).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive()));
                         if let Some(slot) = alive.clone().nth(pick).or(alive.last()) {
