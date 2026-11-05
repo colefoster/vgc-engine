@@ -8095,6 +8095,17 @@ self.trigger_emergency_exits();
             pmon!(self, "-fail", actor_side, actor_slot);
             return;
         }
+        // A spread move whose target isn't among its targets names the last of
+        // them: Earthquake with no foes left hits the ally
+        // (getMoveTargets' retargetLastMove, sim/pokemon.ts:830-838).
+        if matches!(m.target, 5 | 6) {
+            let named = self.protocol.log().and_then(|l| l.move_target);
+            if !targets.iter().any(|&(s, sl)| named == Some((s as u8, sl))) {
+                if let Some(&(s, sl)) = targets.last() {
+                    self.p_retarget(s, sl);
+                }
+            }
+        }
         // Explosion / Self-Destruct / Misty Explosion (`selfdestruct:
         // 'always'`): the user faints before the hit, whatever the hit does
         // (sim/battle-actions.ts:500). The damage calc reads the snapshot.
