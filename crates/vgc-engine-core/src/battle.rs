@@ -16712,6 +16712,9 @@ self.trigger_emergency_exits();
                 // through the active move).
                 if flags[si][slot] && self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
                     self.force_switch_random(side, slot as u8);
+                    // runAction's faintMessages: hazards can KO the dragged mon.
+                    self.p_queue_faint_if_down(side, slot as u8);
+                    self.p_faint_messages();
                 }
             }
         }
