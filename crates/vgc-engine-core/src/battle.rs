@@ -333,6 +333,14 @@ pub struct Battle {
     /// Struggle landed on a target for 0 damage (Sturdy on a 1 HP mon).
     #[serde(skip)]
     pub(crate) struggle_zero_hit: bool,
+    /// Per active seat (side * 2 + slot): the seats that damaged it this turn
+    /// (Pokemon.attackedBy, for Avalanche and Revenge).
+    #[serde(skip)]
+    pub(crate) ps_damaged_by: [u8; 4],
+    /// Damage a Substitute absorbed during the current move, which Shell Bell's
+    /// move.totalDamage doesn't count.
+    #[serde(skip)]
+    pub(crate) move_sub_absorbed: u16,
     /// The format doesn't enforce legal abilities, so requests don't hint at a
     /// foe's possible trapping abilities (sim/battle.ts getRequests).
     #[serde(skip)]
@@ -850,6 +858,8 @@ impl Battle {
             decision_phases: false,
             champions: false,
             struggle_zero_hit: false,
+            ps_damaged_by: [0; 4],
+            move_sub_absorbed: 0,
             ps_no_maybe_trap: false,
             ally_targets: false,
             defer_white_herb: false,
@@ -4673,6 +4683,7 @@ self.trigger_emergency_exits();
         }
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
+            self.ps_damaged_by = [0; 4];
             for m in self.side_mut(s).team.iter_mut() {
                 m.set_protected(false);
                 m.clear_used_stall_this_turn();
@@ -6024,6 +6035,12 @@ self.trigger_emergency_exits();
     /// Returns true if the swap actually fired. Shared by the pre-turn
     /// switch path and the post-move self-switch sweep.
     fn do_switch(&mut self, side: SideRef, actor_slot: u8, team_index: u8) -> bool {
+        // attackedBy belongs to the mon, and a source that left no longer counts.
+        let seat = side as usize * 2 + (actor_slot as usize).min(1);
+        self.ps_damaged_by[seat] = 0;
+        for m in self.ps_damaged_by.iter_mut() {
+            *m &= !(1u8 << seat);
+        }
         let champions = self.champions;
         // PS fires the leaving mon's `onSwitchOut` BEFORE the active
         // slot is swapped — the hook reads the outgoing mon's current
@@ -8357,6 +8374,7 @@ self.trigger_emergency_exits();
         // applies it (sim/battle-actions.ts spreadMoveHit), so a holder this
         // move knocks out still boosts the later targets.
         let aura_at_start = scan_aura_field(self);
+        self.move_sub_absorbed = 0;
         // PS runs a damaging move's hit steps across all targets, step by
         // step (sim/battle-actions.ts:550-620, data/mods/champions/scripts.ts
         // spreadMoveHit); the engine resolves target by target. Buffer the
@@ -8386,6 +8404,12 @@ self.trigger_emergency_exits();
             };
             had_live_target = true;
             n_live += 1;
+            // avalanche / revenge basePowerCallback: attackedBy this turn, by this
+            // target only (data/moves.ts).
+            if matches!(move_id, data::move_id::AVALANCHE | data::move_id::REVENGE) {
+                let seat = |sd: SideRef, sl: u8| sd as usize * 2 + (sl as usize).min(1);
+                attacker.set_damaged_this_turn(self.ps_damaged_by[seat(actor_side, actor_slot)] & (1 << seat(tside, tslot)) != 0);
+            }
             self.p_set_hit(0);
             self.p_tag(crate::protocol::step::INVULN, tside, tslot);
             // Conformance keyed-oracle context: attribute every randomized
@@ -11655,6 +11679,13 @@ self.trigger_emergency_exits();
         let m = &ctx.move_def;
 
         let disguised = self.check_disguise_negate(ctx, hit_sub, effective_dmg, m.category);
+        if !hit_sub && effective_dmg > 0 && !disguised {
+            let seat = |sd: SideRef, sl: u8| sd as usize * 2 + (sl as usize).min(1);
+            self.ps_damaged_by[seat(ctx.tside, ctx.tslot)] |= 1 << seat(ctx.actor_side, ctx.actor_slot);
+        }
+        if hit_sub {
+            self.move_sub_absorbed = self.move_sub_absorbed.saturating_add(sub_absorbed);
+        }
         if disguised && self.plog() {
             // disguise onDamage returns 0: the `-damage` still prints.
             pmon!(self, "-activate", ctx.tside, ctx.tslot, "|ability: Disguise");
@@ -14851,14 +14882,15 @@ self.trigger_emergency_exits();
         // anyway). Magic Guard does NOT block heals; PS routes through
         // onTryHeal, not onDamage.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Bell>.
-        if attacker_item_id == data::item_id::SHELLBELL && any_damage_dealt > 0 && damaging
+        let real_damage = any_damage_dealt.saturating_sub(self.move_sub_absorbed);
+        if attacker_item_id == data::item_id::SHELLBELL && real_damage > 0 && damaging
             && !self.force_switch_flags[actor_side as usize][(actor_slot as usize).min(1)]
         {
             let hp_before = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.current_hp);
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 // Heal Block vetoes the Shell Bell recovery (PS `onTryHeal`).
                 if a.is_alive() && !a.is_heal_blocked() {
-                    let heal = (any_damage_dealt as u32 / 8).max(1) as u16;
+                    let heal = (real_damage as u32 / 8).max(1) as u16;
                     let max = a.stats.hp;
                     a.current_hp = ((a.current_hp as u32) + heal as u32).min(max as u32) as u16;
                 }
