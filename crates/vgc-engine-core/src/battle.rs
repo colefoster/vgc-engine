@@ -20310,6 +20310,27 @@ self.trigger_emergency_exits();
                 let name = self.moves()[mid as usize].name;
                 pmon!(self, "-activate", ts, tslot, "|move: Spite|{name}|{took}");
             }
+            data::move_id::TORMENT => {
+                // data/moves.ts torment: `volatileStatus`, blocked by Aroma Veil
+                // (data/abilities.ts aromaveil onAllyTryAddVolatile).
+                if !self.rolled_accuracy_passed(m) { return; }
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::Torment)) {
+                    return;
+                }
+                let breaks = self.side(actor_side).active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(a.effective_ability_slug(), "moldbreaker" | "teravolt" | "turboblaze"));
+                if self.side_has_aroma_veil(ts, breaks) {
+                    self.p_aroma_veil_block(ts, tslot);
+                    return;
+                }
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::Torment, turns_remaining: 0, payload: 0,
+                    });
+                }
+                pmon!(self, "-start", ts, tslot, "|Torment");
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
