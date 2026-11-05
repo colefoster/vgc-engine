@@ -1619,6 +1619,8 @@ impl Battle {
             format!("|[from] move: {}", move_name(self.called_from))
         } else if locked {
             "|[from] lockedmove".to_string()
+        } else if move_id == data::move_id::ROUND && self.round_chain[side as usize][(slot as usize).min(1)] {
+            "|[from] move: Round".to_string()
         } else {
             String::new()
         };

@@ -474,6 +474,13 @@ pub struct Battle {
     /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
     /// (`action.order = 201`).
     pub(crate) pending_queue_reorder: Option<(SideRef, u8, bool)>,
+    /// A Round reached its onTry this action (data/moves.ts round).
+    #[serde(skip)]
+    pub(crate) round_on_try: bool,
+    /// `[side][slot]`: this slot's queued Round was moved up by another Round
+    /// (`move.sourceEffect === 'round'`): `[from] move: Round`, double power.
+    #[serde(default)]
+    pub(crate) round_chain: [[bool; 2]; 2],
     /// Transient Champions Encore re-queue (data/mods/champions/moves.ts:
     /// 307-339 `queue.changeAction`), set when Encore lands on a mon that
     /// still has a different move queued and applied to the unprocessed
@@ -917,6 +924,8 @@ impl Battle {
             wonder_room_turns: 0,
             fairy_lock_turns: 0,
             pending_queue_reorder: None,
+            round_on_try: false,
+            round_chain: [[false; 2]; 2],
             encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
@@ -4994,6 +5003,7 @@ self.trigger_emergency_exits();
         let mut queue = ActionQueue::default();
         self.queued_move_slot = [[255; 2]; 2];
         self.encore_requeue = None;
+        self.round_chain = [[false; 2]; 2];
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
@@ -7647,11 +7657,11 @@ self.trigger_emergency_exits();
         // flag list (PR-51). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Round_(move)>.
         if move_id == data::move_id::ROUND {
-            if self.side(actor_side).conditions.round_used_this_turn {
+            let (si, sl) = (actor_side as usize, (actor_slot as usize).min(1));
+            if std::mem::take(&mut self.round_chain[si][sl]) {
                 m_owned.base_power = m_owned.base_power.saturating_mul(2);
             }
-            // Mark for subsequent same-turn Rounds on this side.
-            self.side_mut(actor_side).conditions.round_used_this_turn = true;
+            self.round_on_try = true;
         }
         if move_id == data::move_id::SHELLSIDEARM {
             self.shell_side_arm_modify_move(actor_side, &attacker, target, &mut m_owned);
@@ -15355,6 +15365,27 @@ self.trigger_emergency_exits();
             // PS gives the action order 3 (After You) or 201 (Quash), which
             // the gen-8+ re-sort keeps (sim/battle-queue.ts:290).
             self.turn_keys.bias[rside as usize][(rslot as usize).min(1)] = if to_front { -1 } else { 1 };
+        }
+        // round onTry (data/moves.ts): the first Round left in the queue, of
+        // either side, moves up with this Round as its source effect.
+        if std::mem::take(&mut self.round_on_try) {
+            let next = order.as_mut_slice()[idx + 1..].iter().find_map(|a| {
+                let (si, sl) = (a.side as usize, (a.actor_slot as usize).min(1));
+                let slot = match a.choice {
+                    Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => move_slot,
+                    _ => return None,
+                };
+                if self.replaced_mid_turn[si][sl] || self.pursuit_consumed[si][sl] {
+                    return None;
+                }
+                let mid = self.side(a.side).active_mon(a.actor_slot as usize).and_then(|m| m.moves.get(slot as usize).copied());
+                (mid == Some(data::move_id::ROUND)).then_some((a.side, a.actor_slot))
+            });
+            if let Some((rside, rslot)) = next {
+                order.reorder_remaining(idx, rside, rslot, true);
+                self.turn_keys.bias[rside as usize][(rslot as usize).min(1)] = -1;
+                self.round_chain[rside as usize][(rslot as usize).min(1)] = true;
+            }
         }
         // Champions Encore re-queued the target's action
         // (`champions_encore_requeue`): it now uses the Encored move at the
