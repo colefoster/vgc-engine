@@ -8401,6 +8401,15 @@ self.trigger_emergency_exits();
         if move_id == data::move_id::FLING {
             // data/moves.ts fling onPrepareHit: ignoringItem(true) (Embargo, Magic
             // Room), the item's TakeItem (own Mega Stone), then `item.fling`.
+            // No target left: useMoveInner fails before onPrepareHit.
+            let foe = actor_side.opposing();
+            if !(0..self.format().active_count()).any(|s| self.side(foe).active_mon(s).is_some_and(|d| d.is_alive()))
+                && target.is_none_or(|t| t.side == foe)
+            {
+                self.p_attr("[notarget]");
+                pmon!(self, "-fail", actor_side, actor_slot);
+                return;
+            }
             let flingable = attacker.item_id != u16::MAX
                 && attacker.effective_ability_id() != data::ability_id::KLUTZ
                 && data::ITEMS[attacker.item_id as usize].fling_bp != 255
