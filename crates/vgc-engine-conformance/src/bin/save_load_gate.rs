@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use vgc_engine_conformance::save_load::{check_game, parse_inputs};
+use vgc_engine_conformance::save_load::{check_game, check_splitmix_game, parse_inputs};
 
 fn main() -> ExitCode {
     let mut threads = 2usize;
@@ -35,7 +35,16 @@ fn main() -> ExitCode {
                 let k = next.fetch_add(1, Ordering::Relaxed);
                 let Some(g) = games.get(k) else { break };
                 let r = check_game(g, fields);
+                let m = check_splitmix_game(g, k as u64 + 1);
                 let mut t = total.lock().unwrap();
+                t.0 += m.decisions;
+                for (f, n) in m.lost_fields {
+                    *t.1.entry(f).or_default() += n;
+                }
+                if let Some(d) = m.divergence {
+                    t.3 += 1;
+                    *t.2.entry(d).or_default() += 1;
+                }
                 t.0 += r.decisions;
                 for (f, n) in r.lost_fields {
                     *t.1.entry(f).or_default() += n;

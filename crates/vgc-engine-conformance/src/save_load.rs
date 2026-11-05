@@ -161,6 +161,70 @@ pub fn check_game(input_log: &[String], field_diffs: bool) -> GameReport {
     r
 }
 
+/// The same check off the protocol log and on SplitMix, the path training and
+/// search run: the input log's teams play random legal choices from `seed`,
+/// reloaded after every step.
+pub fn check_splitmix_game(input_log: &[String], seed: u64) -> GameReport {
+    use vgc_engine_core::{BattleConfig, Choice, Format, SideRef, StepResult};
+    let mut r = GameReport::default();
+    let mut s = stream();
+    let mut teams = None;
+    for line in input_log {
+        let _ = s.write(line);
+        if let Some(b) = s.session().filter(|x| x.battle().turn() > 0 || line.starts_with(">p2")).map(|x| x.battle()) {
+            teams = Some((b.side(SideRef::P1).team.clone(), b.side(SideRef::P2).team.clone()));
+            break;
+        }
+    }
+    let Some((t1, t2)) = teams else { return r };
+    let cfg = BattleConfig { format: Format::Doubles, seed };
+    let mut base = Battle::new(cfg, t1, t2);
+    base.champions = true;
+    let mut saved = [(Save::Json, base.clone()), (Save::Bincode, base.clone())];
+    let mut lcg = seed | 1;
+    let mut buf = Vec::with_capacity(16);
+    for turn in 0..300 {
+        let mut p = [Vec::<Choice>::new(), Vec::new()];
+        for (side, out) in [SideRef::P1, SideRef::P2].into_iter().zip(p.iter_mut()) {
+            for slot in 0..2u8 {
+                base.legal_choices_into(side, slot, &mut buf);
+                // Each slot's list is its own: don't send one mon in twice.
+                if let Some(&Choice::Switch { team_index, .. }) = out.first() {
+                    if buf.len() > 1 {
+                        buf.retain(|c| !matches!(c, Choice::Switch { team_index: t, .. } if *t == team_index));
+                    }
+                }
+                lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                out.push(buf[((lcg >> 33) as usize) % buf.len().max(1)]);
+            }
+        }
+        let res = base.step(&p[0], &p[1]);
+        r.decisions += 1;
+        for (save, b) in saved.iter_mut() {
+            b.step(&p[0], &p[1]);
+            if serde_json::to_string(&*b).ok() != serde_json::to_string(&base).ok() {
+                r.divergence.get_or_insert(format!("{save:?}: splitmix state differs after turn {turn}"));
+            }
+            match reload(*save, b) {
+                Ok(mut back) => {
+                    back.rehydrate_caches();
+                    if format!("{:?}", *b) != format!("{back:?}") {
+                        diff_fields(b, &back, &mut r.lost_fields);
+                    }
+                    *b = back;
+                }
+                Err(e) => {
+                    r.divergence.get_or_insert(format!("{save:?}: reload failed: {e}"));
+                }
+            }
+        }
+        if matches!(res, StepResult::Ended { .. }) {
+            break;
+        }
+    }
+    r
+}
+
 /// Read `{"input_log": [...]}` lines.
 pub fn parse_inputs(text: &str) -> Vec<Vec<String>> {
     text.lines()
