@@ -4,7 +4,6 @@
 {"game":"Berserk should not activate prior to healing from Sitrus Berry after a multi-hit move","format":"gen9customgame"}
 {"game":"Cheek Pouch should restore 1/3 HP to the user after eating a Berry","format":"gen9customgame"}
 {"game":"Cheek Pouch should not activate if the user was at full HP","format":"gen9customgame"}
-{"game":"Clear Body should not negate absolute stat changes","format":"gen9customgame"}
 {"game":"Clear Body should be suppressed by Mold Breaker if it is forced out by a move","format":"gen9customgame"}
 {"game":"Cloud Nine should not negate Desolate Land's ability to prevent other weathers from activating","format":"gen9customgame"}
 {"game":"Cloud Nine should not negate Primordial Sea's ability to prevent other weathers from activating","format":"gen9customgame"}
@@ -17,7 +16,6 @@
 {"game":"Commander should allow one Tatsugiri to occupy multiple Dondozo","format":"gen9doublescustomgame"}
 {"game":"Commander should prevent Dondozo and Tatsugiri from combining if Commander is suppressed","format":"gen9doublescustomgame"}
 {"game":"Commander should not split apart Dondozo and Tatsugiri if Neutralizing Gas switches in","format":"gen9doublescustomgame"}
-{"game":"Contrary should not invert absolute stat changes","format":"gen9customgame"}
 {"game":"Contrary should invert Belly Drum's maximizing Attack","format":"gen9customgame"}
 {"game":"Costar should always activate later than Intimidate during simultaneous switch-ins","format":"gen9doublescustomgame"}
 {"game":"Cud Chew should re-activate a berry, eaten in the previous turn","format":"gen9customgame"}
@@ -55,7 +53,6 @@
 {"game":"Immunity should have its immunity to poison temporarily suppressed by Mold Breaker, but should cure the status immediately afterwards","format":"gen9customgame"}
 {"game":"Imposter should be blocked by substitutes","format":"gen9customgame"}
 {"game":"Imposter should not activate if Skill Swapped","format":"gen9customgame"}
-{"game":"Intimidate should wait until all simultaneous switch ins after double-KOs have completed before activating","format":"gen9customgame"}
 {"game":"Intrepid Sword should only increase the user's Attack stat once per game","format":"gen9customgame"}
 {"game":"Intrepid Sword should not use up its once-per-game boost if it switches in while its Ability is suppressed","format":"gen9customgame"}
 {"game":"Klutz should negate residual healing events","format":"gen9customgame"}
@@ -71,7 +68,6 @@
 {"game":"Mummy should not change abilities that can't be suppressed","format":"gen9customgame"}
 {"game":"Mycelium Might should cause attacks called by empowered status moves to ignore abilities","format":"gen9customgame"}
 {"game":"Neutralizing Gas should negate abilities that suppress item effects","format":"gen9customgame"}
-{"game":"Neutralizing Gas should negate abilities that modify boosts","format":"gen9customgame"}
 {"game":"Neutralizing Gas should prevent Unburden's activation when it is active on the field","format":"gen9customgame"}
 {"game":"Neutralizing Gas should negate Unburden when Neutralizing Gas enters the field","format":"gen9customgame"}
 {"game":"Neutralizing Gas should cause Illusion to instantly wear off when Neutralizing Gas enters the field","format":"gen9customgame"}
@@ -104,7 +100,6 @@
 {"game":"Ripen should double healing from Berries","format":"gen9customgame"}
 {"game":"Rock Head should not block recoil if the ability is disabled/removed mid-attack","format":"gen9customgame"}
 {"game":"Screen Cleaner should remove screens from both sides when sent out","format":"gen9customgame"}
-{"game":"Sheer Force should not eliminate Life Orb recoil if the ability is disabled/removed mid-attack","format":"gen9customgame"}
 {"game":"Shield Dust should only prevent Sparkling Aria from curing burn if there is only one target","format":"gen9doublescustomgame"}
 {"game":"Soul-Heart should activate on each individual KO","format":"gen9doublescustomgame"}
 {"game":"Steely Spirit should stack with itself","format":"gen9doublescustomgame"}
@@ -119,7 +114,6 @@
 {"game":"Trace should not activate twice","format":"gen9customgame"}
 {"game":"Truant should allow the user to act after a recharge turn","format":"gen9customgame"}
 {"game":"Truant should prevent a newly-Mega Evolved Pokemon from acting if given the ability","format":"gen9customgame"}
-{"game":"Unburden should trigger when an item is flung","format":"gen9customgame"}
 {"game":"Wandering Spirit should not swap with Wonder Guard","format":"gen9customgame"}
 {"game":"Champions abilities Emergency Exit should activate alongside Volt Switch","format":"gen9championscustomgame"}
 {"game":"Champions items Eject Button should only activate one Eject Button when multiple holders are hit","format":"gen9championsdoublescustomgame"}
@@ -128,8 +122,6 @@
 {"game":"Champions moves Curse should be able to hit a semi-invulnerable target if a non-Ghost user has Protean","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse shouldn't fail if the target is already afflicted with Curse, but only became a Ghost-type mid-turn","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse [forced by Encore] should fail if the target is already afflicted with Curse even if becomes a Ghost-type with Trick-or-Treat","format":"gen9championsdoublescustomgame"}
-{"game":"Champions moves Curse should boost its stats if a Ghost user has Protean and was hit by Electrify","format":"gen9championscustomgame"}
-{"game":"Champions moves Curse should not be affected by Pressure if a Ghost user has Protean and was hit by Electrify","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse should not be affected by Pressure if the user stops being a Ghost-type mid-turn","format":"gen9championscustomgame"}
 {"game":"Champions moves Knock Off should remove the target's item when the user faints mid-move","format":"gen9championscustomgame"}
 {"game":"Champions moves Rapid Spin should remove hazards when the user faints from Rocky Helmet","format":"gen9championscustomgame"}
@@ -141,13 +133,11 @@
 {"game":"Lum Berry should cure Poison and confusion after Poison Puppeteer activation","format":"gen9customgame"}
 {"game":"Metronome (item) should use called moves to determine the Metronome multiplier","format":"gen9customgame"}
 {"game":"Red Card should not trigger if the target should be KOed from Destiny Bond and also not crash the client","format":"gen9doublescustomgame"}
-{"game":"Shed Shell should allow Pokemon to escape from most moves that would trap them","format":"gen9customgame"}
 {"game":"Shell Bell should heal from the damage against all targets of the move","format":"gen9doublescustomgame"}
 {"game":"Sitrus Berry should be eaten immediately if (re)gained on low hp","format":"gen9customgame"}
 {"game":"White Herb should activate after Abilities that boost stats on KOs","format":"gen9customgame"}
 {"game":"White Herb should activate after two Intimidate switch in at the same time","format":"gen9doublescustomgame"}
 {"game":"White Herb should activate before Opportunist during switch-ins","format":"gen9doublescustomgame"}
-{"game":"Confusion should not be affected by modifiers like Huge Power or Life Orb","format":"gen9customgame"}
 {"game":"Fainted forme regression [Hackmons] should be able to revert between different mega evolutions","format":"gen9customgame"}
 {"game":"Fainted forme regression should revert Mega Evolutions","format":"gen9customgame"}
 {"game":"Fainted forme regression should revert Terastallized Morpeko-Hangry to base Morpeko","format":"gen9customgame"}
@@ -163,55 +153,31 @@
 {"game":"Freeze should cause an afflicted Shaymin-Sky to revert to its base forme","format":"gen9customgame"}
 {"game":"Terapagos [Hackmons] should not cause Terapagos-Terastal to become Terapagos-Stellar if the user is Transformed","format":"gen9customgame"}
 {"game":"Terastallization should not give the Adaptability boost on the user's old types","format":"gen9customgame"}
-{"game":"Trapping Moves should not prevent Pokemon immune to trapping from switching out","format":"gen9customgame"}
-{"game":"Partial Trapping Moves should deal 1/8 HP per turn","format":"gen9customgame"}
-{"game":"Partial Trapping Moves should prevent Pokemon from switching out normally","format":"gen9customgame"}
 {"game":"Partial Trapping Moves should not prevent Pokemon from switching out using moves","format":"gen9customgame"}
 {"game":"Partial Trapping Moves should stop trapping the Pokemon if the target uses Rapid Spin","format":"gen9customgame"}
 {"game":"Mega Evolution should cause mega ability to affect the order of the turn in which it happens","format":"gen9customgame"}
 {"game":"Mega Evolution should cause an ability copied with Trace by a mega to affect the order of the turn in which it happens","format":"gen9customgame"}
 {"game":"Mega Evolution should cause base ability to not affect the order of the turn in which it happens","format":"gen9customgame"}
 {"game":"Mega Evolution should cause mega forme speed to decide turn order","format":"gen9customgame"}
-{"game":"Type addition Trick-or-Treat should not add Ghost type to Ghost targets","format":"gen9customgame"}
-{"game":"Type addition Trick-or-Treat should fail on repeated use","format":"gen9customgame"}
-{"game":"Type addition Forest's Curse should not add Grass type to Grass targets","format":"gen9customgame"}
-{"game":"Type addition Forest's Curse should fail on repeated use","format":"gen9customgame"}
 {"game":"Heavy Metal should double the weight of a Pokemon","format":"gen9customgame"}
 {"game":"Light Metal should halve the weight of a Pokemon","format":"gen9customgame"}
 {"game":"After You should cause the targeted Pokemon to immediately move next","format":"gen9doublescustomgame"}
 {"game":"Belch should still count berries as consumed after switch out","format":"gen9customgame"}
 {"game":"Burning Jealousy should burn a target whose stats were boosted at the start of the match","format":"gen9customgame"}
 {"game":"Burning Jealousy should not burn a target whose stats were boosted at a switch after a KO","format":"gen9customgame"}
-{"game":"Charge should double the base power of the next Electric attack","format":"gen9customgame"}
-{"game":"Charge should wear off after an Electric-type status move that is not Charge is used","format":"gen9customgame"}
 {"game":"Clear Smog should remove all stat boosts from the target","format":"gen9customgame"}
-{"game":"Clear Smog should not remove stat boosts from a target behind a substitute","format":"gen9customgame"}
 {"game":"Clear Smog should not remove stat boosts from the user","format":"gen9customgame"}
 {"game":"Clear Smog should trigger before Anger Point activates during critical hits","format":"gen9customgame"}
-{"game":"Copycat should be able to copy called moves","format":"gen9customgame"}
-{"game":"Counter should not have its target changed by Stalwart","format":"gen9doublescustomgame"}
-{"game":"Mirror Coat should not have its target changed by Stalwart","format":"gen9doublescustomgame"}
 {"game":"Court Change should swap certain side conditions to the opponent's side and vice versa","format":"gen9customgame"}
-{"game":"Curse should not request a target if the user is an unknown non-Ghost","format":"gen9customgame"}
 {"game":"Curse should curse a non-Ghost user with Protean","format":"gen9customgame"}
-{"game":"Curse should boost its stats if a Ghost user has Protean and was hit by Electrify","format":"gen9customgame"}
 {"game":"Disable should interrupt consecutively executed moves like Outrage","format":"gen9customgame"}
 {"game":"Dragon Darts should hit one target twice if the other is protected by an ability","format":"gen9doublescustomgame"}
-{"game":"Electric Terrain should not remove active non-volatile statuses from grounded Pokemon","format":"gen9customgame"}
 {"game":"Electric Terrain should prevent Yawn from putting grounded Pokemon to sleep, and cause Yawn to fail","format":"gen9customgame"}
-{"game":"Electric Terrain should cause Rest to fail on grounded Pokemon","format":"gen9customgame"}
-{"game":"Fake Out should not flinch if the target had prepared to Focus Punch","format":"gen9customgame"}
-{"game":"Fling should consume the user's item after being flung","format":"gen9customgame"}
-{"game":"Fling should not be usable in Magic Room","format":"gen9customgame"}
 {"game":"Fling should use its item to be flung in damage calculations","format":"gen9customgame"}
 {"game":"Follow Me should redirect charging moves if used on the resolution turn","format":"gen9doublescustomgame"}
-{"game":"Future Sight should fail when already active for the target's position","format":"gen9customgame"}
-{"game":"Future Sight should not trigger Eject Button","format":"gen9customgame"}
 {"game":"Future Sight should only cause the user to take Life Orb recoil on its damaging turn","format":"gen9customgame"}
 {"game":"Future Sight should not be affected by Life Orb if not the original user","format":"gen9customgame"}
-{"game":"Future Sight should not cause the user to change typing on either its starting or damaging turn","format":"gen9customgame"}
 {"game":"Future Sight should be boosted by Terrain even if the user is not on the field, as long as the user is not Flying-type","format":"gen9customgame"}
-{"game":"Future Sight should use the user's most recent Special Attack stat if the user is on the field","format":"gen9customgame"}
 {"game":"Future Sight should only use Sp. Atk stat boosts/drops if the user is on the field","format":"gen9customgame"}
 {"game":"Future Sight should target particular slots in Doubles","format":"gen9doublescustomgame"}
 {"game":"Future Sight should do nothing if no Pokemon is present to take damage from the Future attack","format":"gen9customgame"}
@@ -220,29 +186,20 @@
 {"game":"Gravity should interrupt and disable the use of airborne moves","format":"gen9customgame"}
 {"game":"Heal Bell should not heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Heal Bell with Mold Breaker should heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
-{"game":"Healing Wish should heal a switch-in for full before hazards at end of turn","format":"gen9customgame"}
-{"game":"Healing Wish should not be consumed if a switch-in is fully healed already","format":"gen9customgame"}
 {"game":"Healing Wish should heal an ally fully after Ally Switch","format":"gen9doublescustomgame"}
 {"game":"Ice Spinner should not remove Terrains if the user faints from Rocky Helmet","format":"gen9customgame"}
-{"game":"Ingrain should heal the user by 1/16 of its max HP at the end of each turn","format":"gen9customgame"}
 {"game":"Ingrain should prevent the user from being forced out or switching out","format":"gen9customgame"}
 {"game":"Ingrain should remove the users' Ground immunities","format":"gen9customgame"}
-{"game":"Instruct should not trigger AfterMove effects of the instructed move for the Instruct user","format":"gen9customgame"}
 {"game":"Knock Off should not remove correctly held mega stones","format":"gen9customgame"}
 {"game":"Memento should cause the user to faint even if the target has Clear Body","format":"gen9customgame"}
 {"game":"Misty Terrain should prevent Yawn from putting grounded Pokemon to sleep, but not cause Yawn to fail","format":"gen9customgame"}
-{"game":"Misty Terrain should cause Rest to fail on grounded Pokemon","format":"gen9customgame"}
 {"game":"Pollen Puff should not heal a Pokemon if they have natural type immunity to Pollen Puff","format":"gen9doublescustomgame"}
-{"game":"Rage Fist should use user's own number of times hit when called by another move","format":"gen9customgame"}
 {"game":"Rapid Spin should remove entry hazards","format":"gen9customgame"}
 {"game":"Rapid Spin should remove entry hazards past a Substitute","format":"gen9customgame"}
 {"game":"Rapid Spin should not remove hazards if the user faints","format":"gen9customgame"}
 {"game":"Revival Blessing should send the Pokemon back in immediately if in an active slot in Doubles","format":"gen9doublescustomgame"}
 {"game":"Sleep Talk should run conditions for submove","format":"gen9customgame"}
 {"game":"Sparkling Aria should cure the target's burn","format":"gen9customgame"}
-{"game":"Stomping Tantrum should double its Base Power if the last move used on the previous turn failed","format":"gen9customgame"}
-{"game":"Stomping Tantrum should not double its Base Power if the user dropped mid-Fly due to Smack Down","format":"gen9customgame"}
-{"game":"Stomping Tantrum should double its Base Power on some failure conditions of Rest","format":"gen9customgame"}
 {"game":"Syrup Bomb should lower the opponent's Speed for 3 turns, but not remove its volatile until after 4 turns","format":"gen9customgame"}
 {"game":"Syrup Bomb should end if the source leaves the field","format":"gen9customgame"}
 {"game":"Syrup Bomb the stat changes should be reflected by Mirror Armor","format":"gen9customgame"}
@@ -254,7 +211,6 @@
 {"game":"Teatime should not cause Recycle to fail to restore the Berry","format":"gen9customgame"}
 {"game":"Thief should take Life Orb damage from a stolen Life Orb","format":"gen9customgame"}
 {"game":"Transform should copy the target's focus energy status","format":"gen9customgame"}
-{"game":"Transform should fail against Pokemon with a Substitute","format":"gen9customgame"}
 {"game":"Transform should fail if either the user or target have Illusion active","format":"gen9customgame"}
 {"game":"Transform [Gen 9] should copy the target's old types, not the Tera Type","format":"gen9customgame"}
 {"game":"Transform [Gen 9] should fail against Ogerpon when the user is Terastallized","format":"gen9customgame"}
@@ -263,7 +219,6 @@
 {"game":"Transform [Gen 9] should not allow Pokemon transformed into Ogerpon to Terastallize later if they couldn't before transforming","format":"gen9customgame"}
 {"game":"Transform [Gen 9] should not work if the user is Tera Stellar","format":"gen9customgame"}
 {"game":"Trick should not remove correctly held mega stones","format":"gen9customgame"}
-{"game":"Uproar should end if the user is under the effect of Throat Chop","format":"gen9customgame"}
 {"game":"Wonder Room should cause Body Press to use Sp. Def stat stage changes","format":"gen9customgame"}
 {"game":"Wonder Room should be ignored by Download when determining raw stats, but not stat stage changes","format":"gen9customgame"}
 {"game":"Inverse Battle should not affect move-based immunities","format":"gen9customgame"}
