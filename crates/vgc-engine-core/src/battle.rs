@@ -11499,9 +11499,11 @@ self.trigger_emergency_exits();
                 == crate::pokemon::MoveResult::Succeeded
                 // Effects the snapshot cannot see: a stat swap, a called
                 // move, a pending drag, a heal that fails with NOT_FAIL
-                // (data/moves.js healpulse / floralhealing), and Parting Shot,
-                // whose onHit returns nothing even if no stage moved.
-                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "partingshot" | "psychup")
+                // (data/moves.js healpulse / floralhealing, and the weather
+                // heals at full HP), and the moves whose onHit returns nothing
+                // even if it changed nothing.
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing" | "morningsun" | "moonlight" | "synthesis" | "swallow"
+                    | "partingshot" | "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit")
                 || (matches!(m.slug, "roar" | "whirlwind")
                     && self.force_switch_flags.iter().flatten().any(|&f| f)))
         {
@@ -15892,7 +15894,7 @@ self.trigger_emergency_exits();
             #[cfg(feature = "ps-rng")]
             "partingshot" if !self.ps_status_missed => true,
             // onHit copies the stages, even all zero, and returns nothing.
-            "psychup" => true,
+            "psychup" | "powerswap" | "guardswap" | "powersplit" | "guardsplit" | "painsplit" => true,
             _ => self.status_effect_snapshot() != *before,
         };
         if ok { MoveResult::Succeeded } else { MoveResult::Failed }
