@@ -20399,6 +20399,18 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::INGRAIN => {
+                // data/moves.ts ingrain: fails if present; heal in eot_ingrain,
+                // trap in is_trapped, grounding in is_grounded_internal.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if !a.volatiles.has(crate::pokemon::VolatileKind::Ingrain) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::Ingrain, turns_remaining: 0, payload: 0,
+                        });
+                        pmon!(self, "-start", actor_side, actor_slot, "|move: Ingrain");
+                    }
+                }
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
