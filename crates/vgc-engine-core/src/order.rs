@@ -360,6 +360,7 @@ pub(crate) fn fractional_key(battle: &Battle, side: SideRef, actor_slot: u8, mid
     } else if m.item_id == data::item_id::LAGGINGTAIL
         || m.item_id == data::item_id::FULLINCENSE
         || m.effective_ability_id() == data::ability_id::STALL
+        || battle.mega_keeps_stall[side as usize][(actor_slot as usize).min(1)]
     {
         1
     } else {
@@ -585,6 +586,13 @@ pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, mov
 /// `action.fractionalPriority`. `base`/`category` come from the caller's
 /// move record.
 pub(crate) fn effective_move_priority(battle: &Battle, m: &Pokemon, mid: u16, base: i32, category: u8) -> i32 {
+    // A called move takes the active move's priority (sim/battle-actions.ts:478).
+    let (mid, base, category) = if battle.called_from != u16::MAX {
+        let caller = &battle.moves()[battle.called_from as usize];
+        (battle.called_from, caller.priority as i32, caller.category)
+    } else {
+        (mid, base, category)
+    };
     let mut pri = base;
     if category == 2 && m.effective_ability_id() == data::ability_id::PRANKSTER {
         pri += 1;

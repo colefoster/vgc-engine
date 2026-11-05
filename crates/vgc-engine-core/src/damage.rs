@@ -387,7 +387,7 @@ impl DamagePipeline {
             d = (((d as u32) * 5324 + 2047) / 4096).min(u16::MAX as u32) as u16;
         }
         if inp.attacker_item_id == crate::data::item_id::EXPERTBELT && d > 0 {
-            if matches!(inp.effectiveness, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+            if matches!(inp.effectiveness, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
                 // PS `chainModify([4915, 4096])` routes through `modify`,
                 // which is pokeRound: `floor((value * modifier + 2047) / 4096)`
                 // (sim/battle.ts:2334-2345, data/items.ts:expertbelt). Missing
@@ -416,11 +416,15 @@ impl DamagePipeline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeEff {
     Immune,
+    /// Only with an added type (Forest's Curse, Trick-or-Treat): getDamage's typeMod
+    /// is clamped to ±6, so three steps are real (scripts.ts:266-283).
+    EighthX,
     QuarterX,
     HalfX,
     Neutral,
     DoubleX,
     QuadrupleX,
+    OctupleX,
 }
 
 impl TypeEff {
@@ -428,11 +432,13 @@ impl TypeEff {
     pub fn apply(self, dmg: u32) -> u32 {
         match self {
             TypeEff::Immune => 0,
+            TypeEff::EighthX => dmg / 8,
             TypeEff::QuarterX => dmg / 4,
             TypeEff::HalfX => dmg / 2,
             TypeEff::Neutral => dmg,
             TypeEff::DoubleX => dmg * 2,
             TypeEff::QuadrupleX => dmg * 4,
+            TypeEff::OctupleX => dmg * 8,
         }
     }
 
@@ -601,11 +607,13 @@ fn effectiveness_inner(
     }
     let mut net = match base {
         TypeEff::Immune => 0,
+        TypeEff::EighthX => -3,
         TypeEff::QuarterX => -2,
         TypeEff::HalfX => -1,
         TypeEff::Neutral => 0,
         TypeEff::DoubleX => 1,
         TypeEff::QuadrupleX => 2,
+        TypeEff::OctupleX => 3,
     };
     match data::TYPE_CHART[defender.added_type as usize][move_type as usize] {
         1 => net += 1,
@@ -613,12 +621,14 @@ fn effectiveness_inner(
         3 if !defender.negates_type_immunity() && !ignore_ghost => return TypeEff::Immune,
         _ => {}
     }
-    match net.clamp(-2, 2) {
+    match net {
+        n if n <= -3 => TypeEff::EighthX,
         -2 => TypeEff::QuarterX,
         -1 => TypeEff::HalfX,
         0 => TypeEff::Neutral,
         1 => TypeEff::DoubleX,
-        _ => TypeEff::QuadrupleX,
+        2 => TypeEff::QuadrupleX,
+        _ => TypeEff::OctupleX,
     }
 }
 
@@ -785,11 +795,20 @@ pub fn ignores_defensive_boosts(move_id: u16) -> bool {
 /// Tera Star Storm (user's Tera type), Weather Ball, Terrain Pulse. All
 /// other moves keep their data type. Used by the Wonder Guard immunity
 /// gate, which must know the post-context type to judge effectiveness.
+/// PS's `'???'` move type: matches no type, item or chart entry.
+pub const TYPELESS: u8 = 255;
+
 pub fn move_type_in_ctx(
     attacker: &Pokemon,
     move_id: u16,
     ctx: &DamageContext,
 ) -> u8 {
+    // Struggle's own ModifyMove sets `move.type = '???'` before the ModifyType
+    // event, so no -ate, Normalize or Electrify sees it (data/moves.ts struggle;
+    // sim/battle-actions.ts useMoveInner).
+    if move_id == data::move_id::STRUGGLE {
+        return TYPELESS;
+    }
     let t = base_move_type_in_ctx(attacker, move_id, ctx);
     // data/moves.ts electrify condition onModifyType (priority -2, after -ate).
     if attacker.volatiles.has(crate::pokemon::VolatileKind::Electrify) && move_id != data::move_id::STRUGGLE {
@@ -1391,6 +1410,10 @@ pub(crate) fn calculate_damage_with_bp(
     // Mega / many VGC pivots. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Aerilate_(Ability)> et al.
     let mut ate_boost = false;
+    // Struggle is `'???'` by now (data/moves.ts struggle onModifyMove).
+    if move_id == data::move_id::STRUGGLE {
+        move_type = TYPELESS;
+    }
     if move_type == 0 // Normal
         && attacker.effective_ability_id() != u16::MAX
         && !matches!(
@@ -2162,6 +2185,11 @@ pub(crate) fn calculate_damage_with_bp(
     // Mold Breaker bypasses. Companion burn-DOT half lives in battle.rs.
     // Bronzong / Numel-Camerupt signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
+    // ModifyDef and ModifySpD follow the stat read, not the category: Psyshock runs
+    // ModifyDef (sim/battle-actions.ts getDamage, overrideDefensiveStat).
+    let reads_def_stat = physical
+        || matches!(move_id, data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD);
+
     let attacker_breaks_mold_for_offense = matches!(
         attacker.effective_ability_id(),
         data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
@@ -2381,7 +2409,7 @@ pub(crate) fn calculate_damage_with_bp(
     // read). Flagged `breakable: 1` → Mold Breaker bypasses. Milotic
     // signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Marvel_Scale_(Ability)>.
-    if physical
+    if reads_def_stat
         && defender.effective_ability_id() == data::ability_id::MARVELSCALE
         && !matches!(defender.status, crate::pokemon::Status::None)
         && !attacker_breaks_mold_for_offense
@@ -2396,7 +2424,7 @@ pub(crate) fn calculate_damage_with_bp(
     // moves only (PS hook is `onModifyDef`, the physical defensive read).
     // Flagged `breakable: 1` → Mold Breaker bypasses. Furfrou signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fur_Coat_(Ability)>.
-    if physical
+    if reads_def_stat
         && defender.effective_ability_id() == data::ability_id::FURCOAT
         && !attacker_breaks_mold_for_offense
     {
@@ -2405,7 +2433,7 @@ pub(crate) fn calculate_damage_with_bp(
 
     // Grass Pelt — PS data/abilities.ts grasspelt onModifyDef: chainModify(1.5) in
     // Grassy Terrain, whoever is grounded. Flagged `breakable: 1`.
-    if physical
+    if reads_def_stat
         && defender.effective_ability_id() == data::ability_id::GRASSPELT
         && matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
         && !attacker_breaks_mold_for_offense
@@ -2624,7 +2652,7 @@ pub(crate) fn calculate_damage_with_bp(
     if defender.species_id == data::species_id::TERAPAGOSTERASTAL
         && defender.effective_ability_id() == data::ability_id::TERASHELL
         && defender.current_hp >= def_stats.hp
-        && !matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
+        && !matches!(eff, TypeEff::EighthX | TypeEff::HalfX | TypeEff::QuarterX)
     {
         eff = TypeEff::HalfX;
     }
@@ -2699,7 +2727,7 @@ pub(crate) fn calculate_damage_with_bp(
     // `data/abilities.ts:tintedlens` onModifyDamage (attacker side). Venomoth /
     // Sigilyph.
     if attacker.effective_ability_id() == data::ability_id::TINTEDLENS
-        && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
+        && matches!(eff, TypeEff::EighthX | TypeEff::HalfX | TypeEff::QuarterX)
     {
         dmg_mod = chain_modify(dmg_mod, 2, 1);
     }
@@ -2719,7 +2747,7 @@ pub(crate) fn calculate_damage_with_bp(
         data::ability_id::PRISMARMOR => true,
         _ => false,
     };
-    if se_reducer && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+    if se_reducer && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
         dmg_mod = chain_modify(dmg_mod, 3, 4); // 3072/4096
     }
 
@@ -2788,7 +2816,7 @@ pub(crate) fn calculate_damage_with_bp(
         const MOD: [u64; 6] = [4096, 4915, 5734, 6553, 7372, 8192];
         dmg_mod = chain_modify(dmg_mod, MOD[(attacker.metronome_count as usize).min(5)], 4096);
     }
-    if atk_item == data::item_id::EXPERTBELT && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+    if atk_item == data::item_id::EXPERTBELT && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX) {
         dmg_mod = chain_modify(dmg_mod, 4915, 4096);
     }
     if ctx.defender_friend_guarded {

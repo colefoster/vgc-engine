@@ -374,13 +374,12 @@ impl Battle {
         }
     }
 
-    /// `-damage` from directDamage (Substitute, Belly Drum, confusion ...), which
-    /// doesn't set hurtThisTurn (sim/battle.ts directDamage, spreadDamage).
+    /// `-damage` from directDamage (Substitute, Belly Drum, Struggle's recoil ...),
+    /// which runs no Damage event (no Focus Band roll) and doesn't set hurtThisTurn
+    /// (sim/battle.ts:2224 directDamage).
     pub(crate) fn p_direct_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
-        let hurt = self.side(side).active_mon(slot as usize).is_some_and(|m| m.hurt_this_turn);
-        self.p_damage(side, slot, suffix);
-        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-            m.hurt_this_turn = hurt;
+        if self.plog() {
+            self.p_damage_cold(side, slot, suffix);
         }
     }
 
@@ -756,17 +755,17 @@ impl Battle {
         }
         let champ = self.protocol.log().is_some_and(|l| l.champions_hp);
         match eff {
-            TypeEff::DoubleX | TypeEff::QuadrupleX => {
+            TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX => {
                 if champ {
-                    let n = if eff == TypeEff::QuadrupleX { 2 } else { 1 };
+                    let n = if matches!(eff, TypeEff::QuadrupleX | TypeEff::OctupleX) { 2 } else { 1 };
                     pmon!(self, "-supereffective", t_side, t_slot, "|{n}");
                 } else {
                     pmon!(self, "-supereffective", t_side, t_slot);
                 }
             }
-            TypeEff::HalfX | TypeEff::QuarterX => {
+            TypeEff::HalfX | TypeEff::QuarterX | TypeEff::EighthX => {
                 if champ {
-                    let n = if eff == TypeEff::QuarterX { 2 } else { 1 };
+                    let n = if matches!(eff, TypeEff::QuarterX | TypeEff::EighthX) { 2 } else { 1 };
                     pmon!(self, "-resisted", t_side, t_slot, "|{n}");
                 } else {
                     pmon!(self, "-resisted", t_side, t_slot);
@@ -1174,6 +1173,21 @@ impl Battle {
                 return;
             }
         }
+        // flowerveil onAllySetStatus: a move's own status prints it, a secondary's doesn't
+        // (data/abilities.ts flowerveil).
+        if user.is_some_and(|(us, usl)| !self.move_breaks_mold(us, usl)) {
+            let (t, n) = m.effective_types();
+            if t[..n as usize].contains(&4) {
+                let holder = (0..self.format().active_count() as u8).find(|&sl| {
+                    self.side(side).active_mon(sl as usize).is_some_and(|h| h.is_alive() && h.effective_ability_id() == data::ability_id::FLOWERVEIL)
+                });
+                if let Some(h) = holder {
+                    let of = self.p_ident(side, h);
+                    pmon!(self, "-block", side, slot, "|ability: Flower Veil|[of] {of}");
+                    return;
+                }
+            }
+        }
         let ab = m.effective_ability_id();
         use data::ability_id as a;
         let blocks = match status {
@@ -1193,7 +1207,13 @@ impl Battle {
         }
         // The holder's handlers sort by its speed, ahead of the side's and field's,
         // which have none (sim/battle.ts resolvePriority).
-        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
+        // Infiltrator gets through (data/moves.ts safeguard onSetStatus: !effect.infiltrates).
+        if self.side(side).conditions.safeguard_turns > 0
+            && user.is_some_and(|(us, usl)| {
+                us != side
+                    && !self.side(us).active_mon(usl as usize).is_some_and(|u| u.effective_ability_id() == data::ability_id::INFILTRATOR)
+            })
+        {
             pmon!(self, "-activate", side, slot, "|move: Safeguard");
             return;
         }
