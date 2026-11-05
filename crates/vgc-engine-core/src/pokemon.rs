@@ -458,6 +458,10 @@ fn no_added_type() -> u8 {
     255
 }
 
+fn no_borrowed_slot() -> (u16, u8) {
+    (u16::MAX, 0)
+}
+
 /// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
 pub fn hits_minimized(move_id: u16) -> bool {
     use crate::data::move_id as M;
@@ -1007,6 +1011,12 @@ pub struct Pokemon {
     /// and switching out clear it.
     #[serde(skip, default = "no_added_type")]
     pub added_type: u8,
+    /// Types changed but not yet shown (Reflect Type off a foe; sim/battle.ts nextTurn).
+    #[serde(skip)]
+    pub type_unseen: bool,
+    /// Slot 3's real move and PP while a called move holds it, `u16::MAX` = none.
+    #[serde(skip, default = "no_borrowed_slot")]
+    pub borrowed_slot: (u16, u8),
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
     /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
@@ -1144,6 +1154,8 @@ impl Pokemon {
             used_item_this_turn: false,
             ate_berry: false,
             added_type: 255,
+            type_unseen: false,
+            borrowed_slot: (u16::MAX, 0),
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
             moves_used: 0,
@@ -1405,6 +1417,18 @@ impl Pokemon {
     /// Bestow, Magician, Symbiosis, Sticky Barb), which must keep clearing
     /// `item_id` directly WITHOUT touching `consumed_item`.
     #[inline]
+    /// Slot 3 goes back to its real move once a called move's lock has ended.
+    pub fn release_borrowed_slot(&mut self) {
+        if self.borrowed_slot.0 != u16::MAX
+            && !(self.lockin_turns > 0 && self.lockin_move_slot == 3)
+            && !(self.charging_turns > 0 && self.charging_move_slot == 3)
+        {
+            self.moves[3] = self.borrowed_slot.0;
+            self.pp[3] = self.borrowed_slot.1;
+            self.borrowed_slot = (u16::MAX, 0);
+        }
+    }
+
     pub fn consume_item(&mut self) {
         self.consumed_item = self.item_id;
         if self.item_id != u16::MAX && data::ITEMS[self.item_id as usize].is_berry {

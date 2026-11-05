@@ -2859,7 +2859,8 @@ impl Battle {
                     });
                     // endTurn after the replacements (sim/battle.ts:1785).
                     if self.ended.is_none() && !self.needs_replacements() {
-                        plog!(self, "|turn|{}", self.turn + 1);
+                        self.p_type_unseen_lines();
+                    plog!(self, "|turn|{}", self.turn + 1);
                     }
                 } else {
                     let (order, pending_kind) = self.turn_prologue(p1, p2);
@@ -2962,6 +2963,7 @@ self.trigger_emergency_exits();
                 // endTurn's `|turn|` (sim/battle.ts:1785), unless faint
                 // replacements are requested first.
                 if matches!(r, StepResult::Continue) && !(self.decision_phases && self.needs_replacements()) {
+                    self.p_type_unseen_lines();
                     plog!(self, "|turn|{}", self.turn + 1);
                 }
                 cursor.phase = StepPhase::Done(r);
@@ -6125,6 +6127,8 @@ self.trigger_emergency_exits();
             incoming.turns_active = 0;
             incoming.move_actions = 0;
             incoming.added_type = 255;
+            incoming.type_unseen = false;
+            incoming.release_borrowed_slot();
             incoming.set_flinched(false);
             incoming.set_helping_handed(false);
             incoming.set_redirecting(false, false);
@@ -7392,6 +7396,9 @@ self.trigger_emergency_exits();
             // Every early return below is a failed move (BeforeMove false,
             // onTry false, no target ...) unless it records otherwise.
             a.move_this_turn_result = crate::pokemon::MoveResult::Failed;
+        }
+        if let Some(mon) = self.side_mut(action.side).active_mon_mut(actor_slot as usize) {
+            mon.release_borrowed_slot();
         }
         let called = self.called_from != u16::MAX;
         let (move_slot, target) = if called { (move_slot, target) } else { self.encore_override(actor_side, actor_slot, move_slot, target) };
@@ -8664,7 +8671,20 @@ self.trigger_emergency_exits();
                 let def_ntypes = defender.species().num_types as usize;
                 let is_ice = (0..def_ntypes).any(|i| def_types[i] == 5); // Ice = 5
                 if move_id == data::move_id::SHEERCOLD && is_ice {
+                    // sim/battle-actions.ts hitStepAccuracy: `-immune|[ohko]`.
+                    self.p_tag(crate::protocol::step::ACCURACY, tside, tslot);
+                    pmon!(self, "-immune", tside, tslot, "|[ohko]");
                     continue;
+                }
+                // Normal-type Horn Drill and Guillotine into a Ghost:
+                // hitStepTypeImmunity, before accuracy (sim/battle-actions.ts).
+                if matches!(move_id, data::move_id::HORNDRILL | data::move_id::GUILLOTINE) {
+                    let (t, n) = defender.effective_types();
+                    if t[..n as usize].contains(&13) && !defender.negates_type_immunity() {
+                        self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
+                        pmon!(self, "-immune", tside, tslot);
+                        continue;
+                    }
                 }
                 if move_id == data::move_id::FISSURE {
                     let g = if attacker_breaks_mold {
@@ -8673,6 +8693,9 @@ self.trigger_emergency_exits();
                         defender.is_grounded()
                     };
                     if !g {
+                        // Ground into an airborne target: runImmunity's `-immune`.
+                        self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
+                        pmon!(self, "-immune", tside, tslot);
                         continue;
                     }
                 }
@@ -10533,14 +10556,18 @@ self.trigger_emergency_exits();
         self.called_from = outer;
         self.called_ran = true;
         if let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) {
-            mon.moves[3] = saved.0;
-            mon.pp[3] = saved.1;
             mon.last_used_move_slot = saved.2;
             mon.last_used_move_target = saved.3;
             mon.moves_used = saved.4;
-            if mon.lockin_move_slot == 3 && saved.0 != called {
-                mon.lockin_turns = 0;
-                mon.lockin_move_slot = 255;
+            // A called move that locks the user (Outrage, Dig) keeps the slot until the
+            // lock ends (`release_borrowed_slot`): the request shows it alone.
+            let locked = (mon.lockin_turns > 0 && mon.lockin_move_slot == 3)
+                || (mon.charging_turns > 0 && mon.charging_move_slot == 3);
+            if locked {
+                mon.borrowed_slot = (saved.0, saved.1);
+            } else {
+                mon.moves[3] = saved.0;
+                mon.pp[3] = saved.1;
             }
         }
     }
@@ -10549,6 +10576,22 @@ self.trigger_emergency_exits();
     pub(crate) fn flush_fling_item(&mut self) {
         if let Some((side, slot, item)) = self.fling_pending.take() {
             self.p_item_line("-enditem", side, slot, item, "|[from] move: Fling");
+        }
+    }
+
+    /// sim/battle.ts nextTurn: types that changed unseen show now, `[silent]`.
+    fn p_type_unseen_lines(&mut self) {
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                if self.side(side).active_mon(slot as usize).is_some_and(|m| m.type_unseen) {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.type_unseen = false;
+                    }
+                    if self.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive() && !m.terastallized) {
+                        self.p_typechange(side, slot, "|[silent]");
+                    }
+                }
+            }
         }
     }
 
@@ -14480,7 +14523,8 @@ self.trigger_emergency_exits();
         // 1. Flinch check — flinched mons cannot move at all this turn.
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
-        if attacker.flinched_this_turn() {
+        // data/moves.ts focuspunch condition onTryAddVolatile: no flinch while focusing.
+        if attacker.flinched_this_turn() && move_id != data::move_id::FOCUSPUNCH {
             pmon!(self, "cant", actor_side, actor_slot, "|flinch");
             // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
             //   onFlinch(pokemon) { this.boost({spe: 1}); }
@@ -17539,7 +17583,8 @@ self.trigger_emergency_exits();
                                 .is_some()
                     })
                     .unwrap_or(true);
-                if blocked {
+                // sim/battle.ts heal: a target at full HP gets no line.
+                if blocked || self.side(wside).active_mon(wslot).is_some_and(|m| m.current_hp >= m.stats.hp) {
                     continue;
                 }
                 if let Some(m) = self.side_mut(wside).active_mon_mut(wslot) {
@@ -17688,10 +17733,21 @@ self.trigger_emergency_exits();
                         }
                     }
                 }
+                // data/moves.ts magnetrise condition: residual order 18, `-end`.
+                let mut rise_over = false;
+                if let Some(v) = m.volatiles.get(V::MagnetRise).copied() {
+                    m.volatiles.remove(V::MagnetRise);
+                    if v.turns_remaining > 1 {
+                        let _ = m.volatiles.add(crate::pokemon::Volatile { turns_remaining: v.turns_remaining - 1, ..v });
+                    } else {
+                        rise_over = m.is_alive();
+                    }
+                }
+                if rise_over {
+                    self.p_res(18, 0, Some((side, slot)));
+                    pmon!(self, "-end", side, slot, "|Magnet Rise");
+                }
             }
-        }
-        if !self.eot_any_active_has_volatile(n, V::Uproar) {
-            return;
         }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
@@ -19392,6 +19448,15 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let partner_slot = (actor_slot ^ 1) as usize;
+                // A fainted partner: `[notarget]`, naming it (sim/battle-actions.ts).
+                if !self.side(actor_side).active_mon(partner_slot).is_some_and(|p| p.is_alive()) {
+                    if self.plog() {
+                        self.p_retarget(actor_side, partner_slot as u8);
+                        self.p_attr("[notarget]");
+                        pmon!(self, "-fail", actor_side, actor_slot);
+                    }
+                    return;
+                }
                 if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot) {
                     if !p.is_alive()
                         || p.volatiles.has(crate::pokemon::VolatileKind::DragonCheer)
@@ -19779,6 +19844,17 @@ self.trigger_emergency_exits();
             data::move_id::HEALBELL | data::move_id::AROMATHERAPY => {
                 pmon!(self, "-activate", actor_side, actor_slot, "|move: {}", m.name);
                 self.p_cure_team_lines(actor_side, actor_slot, move_id == data::move_id::HEALBELL);
+                // onHit returns `success`: nobody cured means `-fail` and `[still]`.
+                let heal_bell = move_id == data::move_id::HEALBELL;
+                let team = &self.side(actor_side).team;
+                let user_idx = self.side(actor_side).active.get(actor_slot as usize).copied().unwrap_or(255) as usize;
+                let any = team.iter().enumerate().any(|(i, t)| {
+                    !matches!(t.status, Status::None)
+                        && (i == user_idx || !heal_bell || t.effective_ability_id() != data::ability_id::SOUNDPROOF)
+                });
+                if !any {
+                    self.p_try_fail(actor_side, actor_slot);
+                }
                 // PS data/moves.ts:8242 `healbell` / :556 `aromatherapy`
                 // onHit: cure the non-volatile status (brn/par/psn/tox/slp/
                 // frz) of EVERY member of the user's party — active AND
@@ -20777,6 +20853,9 @@ self.trigger_emergency_exits();
                 }
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.set_type_override(first, second);
+                    // `source.knownType` stays false off a foe: sim/battle.ts nextTurn
+                    // shows the new types at the next turn.
+                    a.type_unseen = ts != actor_side;
                 }
             }
             data::move_id::LOCKON => {
