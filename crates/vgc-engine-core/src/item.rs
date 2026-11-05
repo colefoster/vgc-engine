@@ -941,6 +941,7 @@ pub fn on_attacker_contact_hit(
                     a.fainted = true;
                 }
             }
+            battle.ps_note_hit_ko(attacker_side, attacker_slot);
             if battle.plog() {
                 let of = battle.p_ident(target_side, target_slot);
                 // onDamagingHitOrder: 2 (data/items.ts rockyhelmet).
@@ -1195,6 +1196,7 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                battle.ps_note_hit_ko(attacker_side, attacker_slot);
             }
         }
     }
@@ -1229,6 +1231,7 @@ pub fn on_damaging_hit(
                 a.fainted = true;
             }
         }
+        battle.ps_note_hit_ko(attacker_side, attacker_slot);
     }
 }
 

@@ -3296,6 +3296,19 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
     }
 
+    /// A contact punisher (onDamagingHit) took the user to 0 HP inside the hit,
+    /// before the hit loop's faintMessages (data/mods/champions/scripts.ts:550).
+    /// A windowed move draws its hit Update only after Life Orb, so it can't
+    /// tell this KO from Life Orb's by the HP then.
+    pub(crate) fn ps_note_hit_ko(&mut self, side: SideRef, slot: u8) {
+        #[cfg(feature = "ps-rng")]
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp == 0) {
+            self.ps_hit_dead |= 1 << (side as usize * 2 + slot as usize);
+        }
+        #[cfg(not(feature = "ps-rng"))]
+        let _ = (side, slot);
+    }
+
     /// `ps-rng` only: the hit loop's closing `eachEvent('Update')`
     /// (data/mods/champions/scripts.ts:575). The loop's faintMessages
     /// (:550) has already marked the KO'd targets `fainted`, but the user's
@@ -5164,9 +5177,12 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() && self.ps_loop_hits > 0 {
             if windowed {
+                // Drawn after the whole move resolved, Life Orb included, so
+                // only a user KO'd inside the hit stays marked: it is `fainted`
+                // by the closing Update (ps_note_hit_ko).
+                let dead = self.ps_hit_dead;
                 self.ps_hit_update();
-                // Drawn after the whole move resolved, Life Orb included.
-                self.ps_hit_dead = 0;
+                self.ps_hit_dead = dead;
             }
             self.ps_hit_loop_faint_ends();
             self.ps_loop_end_update(action.side, action.actor_slot);
@@ -12229,6 +12245,7 @@ self.trigger_emergency_exits();
                         }
                     }
                 }
+                self.ps_note_hit_ko(ctx.actor_side, ctx.actor_slot);
                 if self.plog() {
                     let of = self.p_ident(ctx.tside, ctx.tslot);
                     self.p_sub(1);
