@@ -9576,6 +9576,11 @@ self.trigger_emergency_exits();
                     {
                         c = def_cur - 1;
                     }
+                    // Endure's onDamage (data/moves.ts endure) takes an OHKO like any hit.
+                    if defender.volatiles.has(crate::pokemon::VolatileKind::Endure) && c >= def_cur && def_cur > 0 {
+                        c = def_cur - 1;
+                        pmon!(self, "-activate", tside, tslot, "|move: Endure");
+                    }
                     let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                     let out = crate::item::on_before_damage(self, tside, tslot, c, &mut rng).unwrap_or(c);
                     self.rng = rng;
