@@ -22409,17 +22409,37 @@ self.trigger_emergency_exits();
                 // out of scope. Fails (no-op) if the target is gone.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Psych_Up_(move)>
                 if let Some((opp, slot)) = opp_target {
+                    use crate::pokemon::VolatileKind as V;
                     let copied = self
                         .side(opp)
                         .active_mon(slot as usize)
                         .filter(|t| t.is_alive())
-                        .map(|t| (t.boosts, t.crit_stage_volatile));
-                    if let Some((boosts, crit)) = copied {
+                        .map(|t| (t.boosts, t.crit_stage_volatile, [V::DragonCheer, V::FocusEnergy, V::LaserFocus].map(|k| t.volatiles.get(k).copied())));
+                    if let Some((boosts, crit, crit_vols)) = copied {
+                        let mut had_laser = false;
                         if let Some(a) =
                             self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
                         {
                             a.boosts = boosts;
                             a.crit_stage_volatile = crit;
+                            // onHit removes the user's crit volatiles, then adds the
+                            // target's in this order, each `[silent]`
+                            // (data/moves.ts psychup, dragoncheer, focusenergy, laserfocus).
+                            had_laser = a.volatiles.has(V::LaserFocus);
+                            a.volatiles.remove(V::DragonCheer);
+                            a.volatiles.remove(V::FocusEnergy);
+                            a.volatiles.remove(V::LaserFocus);
+                            for v in crit_vols.into_iter().flatten() {
+                                let _ = a.volatiles.add(v);
+                            }
+                        }
+                        if had_laser {
+                            pmon!(self, "-end", actor_side, actor_slot, "|move: Laser Focus|[silent]");
+                        }
+                        for (v, name) in crit_vols.iter().zip(["Dragon Cheer", "Focus Energy", "Laser Focus"]) {
+                            if v.is_some() {
+                                pmon!(self, "-start", actor_side, actor_slot, "|move: {name}|[silent]");
+                            }
                         }
                         if self.plog() {
                             let t = self.p_ident(opp, slot);
