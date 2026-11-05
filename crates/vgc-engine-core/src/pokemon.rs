@@ -847,6 +847,9 @@ pub struct Pokemon {
     /// (255 = none). The runner must dispatch this slot regardless
     /// of the player's Choice while the lock is active.
     pub lockin_move_slot: u8,
+    /// lockedmove's `trueDuration` (data/conditions.ts); `lockin_turns` is its `duration`.
+    #[serde(default)]
+    pub lockin_true: u8,
     /// Tera type. PS `pokemon.teraType` — encoded as a type code
     /// 0..=17 (same indexing as `species().types`). 255 = none assigned
     /// (legacy / set without teratype). Set at team load from the JSON
@@ -1142,6 +1145,7 @@ impl Pokemon {
             must_recharge: false,
             lockin_turns: 0,
             lockin_move_slot: 255,
+            lockin_true: 0,
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
