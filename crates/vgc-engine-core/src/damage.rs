@@ -2324,6 +2324,12 @@ pub(crate) fn calculate_damage_with_bp(
         a = (a * 2).max(1);
     }
 
+    // Stakeout — data/abilities.ts stakeout onModifyAtk / onModifySpA: a defender
+    // whose activeTurns is still 0, one that switched in this turn.
+    if attacker.effective_ability_id() == data::ability_id::STAKEOUT && defender.switched_in_this_turn() {
+        a = (a * 2).max(1);
+    }
+
     // Light Ball — PS `data/items.ts:lightball` onModifyAtk / onModifySpA
     // chainModify(2) when the holder's base species is Pikachu (any forme).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Light_Ball>.
