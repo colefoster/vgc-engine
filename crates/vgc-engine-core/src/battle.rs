@@ -20057,6 +20057,12 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let ally_slot = actor_slot ^ 1;
+                // hitStepInvulnerabilityEvent: an ally in Dig or Fly isn't hit.
+                if self.side(actor_side).active_mon(ally_slot as usize).is_some_and(|a| a.is_alive() && a.semi_invuln != 0) {
+                    self.p_miss(actor_side, actor_slot, actor_side, ally_slot);
+                    self.ps_status_failed();
+                    return;
+                }
                 let ally_alive = self
                     .side(actor_side)
                     .active_mon(ally_slot as usize)
