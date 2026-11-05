@@ -2768,15 +2768,8 @@ pub fn on_damaging_hit(
                     pmon!(battle, "-activate", attacker_side, attacker_slot, "|Skill Swap|{}|{}|[of] {of}", crate::battle_protocol::ability_name(target_id), crate::battle_protocol::ability_name(attacker_id));
                 }
             }
-            // skillSwap's End for the lost abilities: Flash Fire's boost goes.
-            if attacker_id == data::ability_id::FLASHFIRE
-                && battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::FlashFire))
-            {
-                if let Some(a) = battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize) {
-                    a.volatiles.remove(crate::pokemon::VolatileKind::FlashFire);
-                }
-                pmon!(battle, "-end", attacker_side, attacker_slot, "|ability: Flash Fire|[silent]");
-            }
+            // skillSwap's End for the lost abilities (sim/battle.ts skillSwap).
+            battle.p_swap_end_lines(attacker_side, attacker_slot, attacker_id);
             // battle.skillSwap ends with singleEvent('Start') for each new ability.
             on_start(battle, target_side, target_slot);
             on_start(battle, attacker_side, attacker_slot);

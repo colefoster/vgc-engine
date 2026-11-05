@@ -18503,6 +18503,16 @@ self.trigger_emergency_exits();
                 }
             }
             self.p_damage(tside, tslot, "");
+            // The hit runs DamagingHit like any other: Innards Out, Cursed Body and
+            // Electromorphosis react, when the source is on the field to be named
+            // (sim/battle-actions.ts spreadMoveHit).
+            if let Some(src_slot) = self.side(src_side).active.iter().take(self.format().active_count()).position(|&x| x as usize == src_idx) {
+                if self.side(src_side).active_mon(src_slot).is_some_and(|a| a.is_alive()) {
+                    let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                    crate::ability::on_damaging_hit(self, tside, tslot, entry.move_id, src_side, src_slot as u8, &mut rng, false);
+                    self.rng = rng;
+                }
+            }
         }
     }
 
