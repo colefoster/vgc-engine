@@ -658,17 +658,41 @@ pub fn cud_chew_reeat(
     berry_id: u16,
     rng: &mut crate::rng::Rng,
 ) {
+    eat_effect(battle, side, slot, berry_id, rng, None);
+}
+
+/// A berry's heal: sim/battle.ts heal prints nothing when no HP moved, and
+/// `[of]` a source other than the eater (Fling's user).
+fn eat_heal(battle: &mut Battle, side: SideRef, slot: u8, amount: u16, name: &str, of: Option<(SideRef, u8)>) {
+    let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) else { return };
+    if m.is_heal_blocked() || m.current_hp == 0 || m.current_hp >= m.stats.hp {
+        return;
+    }
+    m.current_hp = m.current_hp.saturating_add(amount).min(m.stats.hp);
+    if battle.plog() {
+        let suffix = match of {
+            Some((s, sl)) => format!("|[from] item: {name}|[of] {}", battle.p_ident(s, sl)),
+            None => format!("|[from] item: {name}"),
+        };
+        battle.p_heal(side, slot, &suffix);
+    }
+}
+
+/// A berry's onEat on `side`/`slot`. `of`: the source when someone else fed it.
+pub(crate) fn eat_effect(
+    battle: &mut Battle,
+    side: SideRef,
+    slot: u8,
+    berry_id: u16,
+    rng: &mut crate::rng::Rng,
+    of: Option<(SideRef, u8)>,
+) {
     // Heal berries — fixed-fraction heal regardless of current HP (capped
     // at max). Heal Block vetoes recovery (PS `onTryHeal`). Sitrus 1/4,
     // Oran flat 10, Figy-family 1/3.
     if berry_id == data::item_id::SITRUSBERRY {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 4).max(1);
-                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
-            }
-        }
-        battle.p_heal(side, slot, "|[from] item: Sitrus Berry");
+        let heal = battle.side(side).active_mon(slot as usize).map_or(1, |m| (m.stats.hp / 4).max(1));
+        eat_heal(battle, side, slot, heal, "Sitrus Berry", of);
         return;
     }
     // Status berries (data/items.ts lumberry et al. onEat), reached by
@@ -716,12 +740,7 @@ pub fn cud_chew_reeat(
         return;
     }
     if berry_id == data::item_id::ORANBERRY {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if !m.is_heal_blocked() {
-                m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
-            }
-        }
-        battle.p_heal(side, slot, "|[from] item: Oran Berry");
+        eat_heal(battle, side, slot, 10, "Oran Berry", of);
         return;
     }
     if matches!(
@@ -1466,6 +1485,11 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
         m.consume_item();
     }
     battle.p_item_line("-enditem", side, slot, item_id, "");
+    mental_herb_end(battle, side, slot, kinds);
+    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+fn mental_herb_end(battle: &mut Battle, side: SideRef, slot: u8, kinds: [(crate::pokemon::VolatileKind, &str); 6]) {
     for (k, line) in kinds {
         let had = battle.side(side).active_mon(slot as usize).is_some_and(|m| m.volatiles.has(k));
         if had {
@@ -1477,7 +1501,19 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
             pmon!(battle, "-end", side, slot, "{line}");
         }
     }
-    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+/// A thrown Mental Herb's `fling.effect` (data/items.ts mentalherb).
+pub(crate) fn mental_herb_cure(battle: &mut Battle, side: SideRef, slot: u8) {
+    use crate::pokemon::VolatileKind as VK;
+    mental_herb_end(battle, side, slot, [
+        (VK::Attract, "|move: Attract|[from] item: Mental Herb"),
+        (VK::Taunt, "|move: Taunt"),
+        (VK::Encore, "|Encore"),
+        (VK::Torment, "|Torment"),
+        (VK::Disable, "|Disable"),
+        (VK::HealBlock, "|move: Heal Block"),
+    ]);
 }
 
 /// Reactive switch trigger — Eject Button.
