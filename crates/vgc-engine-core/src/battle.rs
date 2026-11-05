@@ -13028,6 +13028,10 @@ self.trigger_emergency_exits();
             // damage is the only case; self-targeted damaging
             // moves never go through this branch (status path).
             t.lost_focus |= app.effective_dmg > 0;
+            // Berserk reads an ally's spread hit too (sim/pokemon.ts getLastAttackedBy).
+            if app.effective_dmg > 0 && !cross_side {
+                t.last_damage_taken = app.effective_dmg;
+            }
             if app.effective_dmg > 0 && cross_side {
                 t.set_damaged_this_turn(true);
                 // Record attacker for Counter / Mirror Coat /
