@@ -2736,7 +2736,8 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
         .side(side)
         .active_mon(slot as usize)
         .is_some_and(|m| m.is_alive() && m.item_id == u16::MAX);
-    if !needs_item {
+    // symbiosis `if (pokemon.switchFlag) return` (data/abilities.ts).
+    if !needs_item || battle.force_switch_flags[side as usize][(slot as usize).min(1)] {
         return;
     }
     let n = battle.format().active_count() as u8;
@@ -2768,6 +2769,10 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(r) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 r.item_id = partner_item;
                 r.sync_can_mega_evolve();
+            }
+            if battle.plog() {
+                let of = battle.p_ident(side, slot);
+                pmon!(battle, "-activate", side, partner_slot, "|ability: Symbiosis|{}|[of] {of}", data::ITEMS[partner_item as usize].name);
             }
             break;
         }
