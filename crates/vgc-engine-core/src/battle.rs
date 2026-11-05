@@ -14968,6 +14968,9 @@ self.trigger_emergency_exits();
                 m.boosts[1],
             )
         };
+        // No move runs, so nothing fires EmergencyExit for this action
+        // (data/conditions.ts confusion onBeforeMove).
+        self.hp_before_action = None;
         self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
         self.pending_yield = Some(crate::step_machine::PendingYield::ConfusionSelfHit {
             actor_side,
