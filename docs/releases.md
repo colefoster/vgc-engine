@@ -16,7 +16,7 @@ CARGO_BUILD_JOBS=4 maturin build --release --features ps-rng -i PYTHON -o ../../
 | 0.4.1 | 6b8461d (default prior `smogon:2026-09/gen9championsvgc2026regmc-1500`, pinnable prior ids) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site), mimikyu analytics venv |
 | 0.4.2 | 426ac13 (explicit recharge/lock `legal_choices`, `prior_sample_seed`) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site), mimikyu analytics venv |
 | 0.5.0 | a2d60bf niche doubles pass: opt-in `ally_targets` (default off; on = larger doubles action space), Mean Look/Block/Jaw Lock/Fairy Lock traps, Parting Shot ally/no-change fixes, Pollen Puff ally Telepathy/Heal Block, Quick Guard adjusted priority + Triage/Gale Wings, Utility Umbrella holder orientation, Weakness Policy real type, bincode round-trip fix. Battle JSON now always carries `fairy_lock_turns`. | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | **not installed** (dist only; install per the rule below) |
-| 0.6.0 | set at release: the merge of this PR | Showdown parity rounds 2-5, `save_load` gate; same-seed results change, older snapshots don't load | `protocol` (default), `ps-rng` | not built yet | not installed yet |
+| 0.6.0 | 27ea4dc61 Showdown parity rounds 2-5, `save_load` gate; same-seed results change, older snapshots don't load | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | system Python (user site) |
 
 ## Release workflow (CI wheels)
 
@@ -41,3 +41,4 @@ Built natively on Linux (Ubuntu 24.04) from a `git archive` of the commit, with 
 | Version | Commit | Wheel | Installed into |
 |---|---|---|---|
 | 0.4.2 | 66c150b | cp311 manylinux_2_34 x86_64 | rollout env (Py 3.11) |
+| 0.6.0 | 27ea4dc61 | cp311 manylinux_2_34 x86_64 | colepc `arena-env` and `mimikyu-train-env`; unraid wheel dir |
