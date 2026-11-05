@@ -1192,7 +1192,13 @@ impl Battle {
         }
         // The holder's handlers sort by its speed, ahead of the side's and field's,
         // which have none (sim/battle.ts resolvePriority).
-        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
+        // Infiltrator gets through (data/moves.ts safeguard onSetStatus: !effect.infiltrates).
+        if self.side(side).conditions.safeguard_turns > 0
+            && user.is_some_and(|(us, usl)| {
+                us != side
+                    && !self.side(us).active_mon(usl as usize).is_some_and(|u| u.effective_ability_id() == data::ability_id::INFILTRATOR)
+            })
+        {
             pmon!(self, "-activate", side, slot, "|move: Safeguard");
             return;
         }
