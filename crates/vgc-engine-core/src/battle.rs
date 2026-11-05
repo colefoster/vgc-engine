@@ -9021,7 +9021,7 @@ self.trigger_emergency_exits();
                                 // (sim/battle.js runEvent breaks on a falsy
                                 // return), so a protected holder doesn't make
                                 // the move sure-hit.
-                                && !(m.blocked_by_protect && d.is_protected_this_turn())
+                                && !(m.blocked_by_protect && d.protect_stops(m))
                         })
             });
 
@@ -9242,7 +9242,7 @@ self.trigger_emergency_exits();
                 // Protect's onTryHit (hitStepTryHitEvent) stops it before
                 // hitStepAccuracy's level check and roll
                 // (sim/battle-actions.ts:504-629).
-                if m.blocked_by_protect && defender.is_protected_this_turn() && is_targeting_move(m.target) {
+                if m.blocked_by_protect && defender.protect_stops(m) && is_targeting_move(m.target) {
                     let variant = defender.protect_variant();
                     self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
                     pmon!(self, "-activate", tside, tslot, "|move: Protect");
@@ -9395,7 +9395,7 @@ self.trigger_emergency_exits();
             // A protected target: Protect's TryHit comes first (step 1 of
             // trySpreadMoveHit, sim/battle-actions.ts:553-576); the Protect
             // block below handles it.
-            let protect_first = m.blocked_by_protect && defender.is_protected_this_turn() && is_targeting_move(m.target);
+            let protect_first = m.blocked_by_protect && defender.protect_stops(m) && is_targeting_move(m.target);
             if is_fixed_damage && !protect_first {
                 // Type immunity (checked before the accuracy roll → no
                 // draw if immune). Seismic Toss=Fighting fails on Ghost,
@@ -11834,7 +11834,7 @@ self.trigger_emergency_exits();
                             && self.side(opp2).active_mon(ts as usize).is_some_and(|d| d.is_grounded() && d.semi_invuln == 0);
                         if terrain_block {
                             pmon!(self, "-activate", opp2, ts, "|move: Psychic Terrain");
-                        } else if m.blocked_by_protect && self.side(opp2).active_mon(ts as usize).is_some_and(|d| d.is_protected_this_turn()) {
+                        } else if m.blocked_by_protect && self.side(opp2).active_mon(ts as usize).is_some_and(|d| d.protect_stops(m)) {
                             pmon!(self, "-activate", opp2, ts, "|move: Protect");
                         } else {
                             self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
@@ -11967,7 +11967,7 @@ self.trigger_emergency_exits();
                         .unwrap_or(false);
                     if !is_self && target_good_as_gold {
                         // Protect's TryHit (priority 3) precedes Good as Gold's.
-                        if m.blocked_by_protect && self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.is_protected_this_turn()) {
+                        if m.blocked_by_protect && self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.protect_stops(m)) {
                             pmon!(self, "-activate", tside, tslot, "|move: Protect");
                         } else {
                             pmon!(self, "-immune", tside, tslot, "|[from] ability: Good as Gold");
@@ -11987,7 +11987,7 @@ self.trigger_emergency_exits();
                     // abilities' (default priority): a protected target blocks
                     // first (sim/battle.ts runEvent priority order).
                     let protected = m.blocked_by_protect
-                        && self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.is_protected_this_turn());
+                        && self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.protect_stops(m));
                     if !is_self && !protected {
                         match t_ability {
                             Some(data::ability_id::SAPSIPPER) if m.type_ == 4 => {
@@ -14171,7 +14171,7 @@ self.trigger_emergency_exits();
         pending_kind: &[[u8; 2]; 2],
     ) -> AccuracyOutcome {
         #[cfg(feature = "ps-rng")]
-        if !(m.blocked_by_protect && defender.is_protected_this_turn()) {
+        if !(m.blocked_by_protect && defender.protect_stops(m)) {
             self.ps_accuracy_ties(actor_side, actor_slot, tside, tslot);
         }
         let acc_comp = crate::accuracy::effective_accuracy(
@@ -16711,7 +16711,7 @@ self.trigger_emergency_exits();
             return false;
         }
         let protected = |t: Target| {
-            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
+            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.protect_stops(m))
         };
         let foe = side.opposing();
         match m.target {
@@ -17000,7 +17000,7 @@ self.trigger_emergency_exits();
             if m.blocked_by_protect && self.side(ts).conditions.wide_guard_this_turn {
                 hit[i] = false;
                 pmon!(self, "-activate", ts, tsl, "|move: Wide Guard");
-            } else if m.blocked_by_protect && t.is_protected_this_turn() {
+            } else if m.blocked_by_protect && t.protect_stops(m) {
                 hit[i] = false;
                 pmon!(self, "-activate", ts, tsl, "|move: Protect");
             } else if breaks {
@@ -17208,7 +17208,7 @@ self.trigger_emergency_exits();
             self.side(opp).active_mon(slot as usize).is_some_and(|t| {
                 t.is_alive()
                     && t.semi_invuln == 0
-                    && !(m.blocked_by_protect && t.is_protected_this_turn())
+                    && !(m.blocked_by_protect && t.protect_stops(m))
                     && t.effective_ability_id() == data::ability_id::MAGICBOUNCE
             })
         };
@@ -20607,7 +20607,7 @@ self.trigger_emergency_exits();
                 if self
                     .side(ts)
                     .active_mon(tslot as usize)
-                    .is_some_and(|t| t.is_protected_this_turn())
+                    .is_some_and(|t| t.protect_stops(m))
                 {
                     pmon!(self, "-activate", ts, tslot, "|move: Protect");
                     return;
@@ -22897,7 +22897,7 @@ self.trigger_emergency_exits();
                     // Swaps a Protecting Delphox — PS leaves Delphox's Magician
                     // intact; the engine had swapped Intimidate onto it).
                     let target_protected = self.side(ts).active_mon(tslot as usize)
-                        .is_some_and(|t| t.is_protected_this_turn());
+                        .is_some_and(|t| t.protect_stops(m));
                     let source_ability = self.side(actor_side)
                         .active_mon(actor_slot as usize)
                         .map(|s| s.effective_ability_slug())
