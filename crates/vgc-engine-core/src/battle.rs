@@ -21540,24 +21540,56 @@ self.trigger_emergency_exits();
                         ),
                         _ => return,
                     };
-                if already_slp || full_hp {
-                    if full_hp && !already_slp {
-                        pmon!(self, "-fail", actor_side, actor_slot, "|heal");
+                // onTry: `false` is the generic fail; the others print and stop.
+                if already_slp || ability == "comatose" {
+                    return;
+                }
+                if full_hp {
+                    pmon!(self, "-fail", actor_side, actor_slot, "|heal");
+                    return;
+                }
+                if matches!(ability, "insomnia" | "vitalspirit") {
+                    if self.plog() {
+                        let name = if ability == "insomnia" { "Insomnia" } else { "Vital Spirit" };
+                        let of = self.p_ident(actor_side, actor_slot);
+                        pmon!(self, "-fail", actor_side, actor_slot, "|[from] ability: {name}|[of] {of}");
                     }
                     return;
                 }
-                // onHit's setStatus('slp') fails on an untransformed
-                // Minior-Meteor (Shields Down onSetStatus,
-                // data/abilities.ts:4266-4272), and Rest returns before its
-                // heal (data/moves.ts:14984-14985).
+                // onHit's setStatus('slp'): SetStatus vetoes fail the move, except
+                // Sweet Veil's `null` (data/abilities.ts, data/moves.ts terrains).
                 if shielded {
                     return;
                 }
-                if matches!(ability, "insomnia" | "vitalspirit" | "comatose") {
+                if grounded && matches!(self.terrain, crate::terrain::Terrain::Electric) {
+                    pmon!(self, "-activate", actor_side, actor_slot, "|move: Electric Terrain");
+                    self.p_try_fail(actor_side, actor_slot);
                     return;
                 }
-                if grounded && matches!(self.terrain, crate::terrain::Terrain::Electric) {
+                if grounded && matches!(self.terrain, crate::terrain::Terrain::Misty) {
                     return;
+                }
+                if ability == "purifyingsalt"
+                    || (ability == "leafguard" && matches!(self.effective_weather(), crate::weather::Weather::Sun))
+                {
+                    return;
+                }
+                let veil = (0..self.format().active_count() as u8).find(|&s| {
+                    self.side(actor_side).active_mon(s as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::SWEETVEIL)
+                });
+                if let Some(s) = veil {
+                    if self.plog() {
+                        let of = self.p_ident(actor_side, s);
+                        pmon!(self, "-block", actor_side, actor_slot, "|ability: Sweet Veil|[of] {of}");
+                    }
+                    return;
+                }
+                // slp onStart rolls its duration before Rest overwrites it
+                // (data/conditions.ts slp, data/mods/champions/conditions.ts).
+                if self.champions {
+                    let _ = self.rng.condition_sample(self.turn + 1, 3);
+                } else {
+                    let _ = self.rng.range(3);
                 }
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.current_hp = a.stats.hp;
