@@ -3141,7 +3141,16 @@ self.trigger_emergency_exits();
                 let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
                     level, atk_base, atk_boost, def_base, def_boost, bucket,
                 );
-                if let Some(m) = self
+                // disguise onDamage takes the self-hit too: its effect is a Move
+                // (data/abilities.ts disguise, data/conditions.ts confusion).
+                let disguised = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|m| {
+                    m.effective_ability_id() == data::ability_id::DISGUISE
+                        && !m.disguise_busted
+                        && matches!(m.species_id, data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM)
+                });
+                if disguised {
+                    pmon!(self, "-activate", actor_side, actor_slot, "|ability: Disguise");
+                } else if let Some(m) = self
                     .side_mut(actor_side)
                     .active_mon_mut(actor_slot as usize)
                 {
@@ -3152,6 +3161,9 @@ self.trigger_emergency_exits();
                 }
                 // battle.damage's 'confused' case (sim/battle.ts:2150).
                 self.p_damage(actor_side, actor_slot, "|[from] confusion");
+                if disguised {
+                    self.disguise_bust_at(actor_side, actor_slot);
+                }
             }
         }
     }
@@ -12335,9 +12347,13 @@ self.trigger_emergency_exits();
     /// Disguise's `onUpdate`: forme-change to Busted and take the
     /// `baseMaxhp / 8` chip (data/abilities.ts:1002-1007).
     fn disguise_bust(&mut self, ctx: &PerTargetContext) {
+        self.disguise_bust_at(ctx.tside, ctx.tslot);
+    }
+
+    fn disguise_bust_at(&mut self, tside: SideRef, tslot: u8) {
         // Busted-forme slug: totem -> busted-totem, else busted.
         let (chip, busted_id) = {
-            let Some(d) = self.side(ctx.tside).active_mon(ctx.tslot as usize) else { return };
+            let Some(d) = self.side(tside).active_mon(tslot as usize) else { return };
             let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
                 Some(data::species_id::MIMIKYUBUSTEDTOTEM)
             } else {
@@ -13075,20 +13091,30 @@ self.trigger_emergency_exits();
         // draws RNG for its random-stat pick, so swap self.rng out across
         // the borrow (mem::replace idiom).
         self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
-        self.flush_fling_item();
+        let mut busted = false;
         if !hit_sub {
-            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             // eachEvent('Update') over the actives in speed order: the
             // target, and the attacker when this hit cost it HP (Rocky
             // Helmet / Rough Skin), eat their berries here, before recoil
-            // and Life Orb.
+            // and Life Orb. Fling's volatile drops the item in the user's turn
+            // (data/moves.ts fling condition onUpdate), Disguise busts in the
+            // holder's (data/abilities.ts disguise onUpdate).
             let (order, k) = self.actives_by_speed();
             for &(s, sl) in &order[..k] {
+                if (s, sl) == (ctx.actor_side, ctx.actor_slot) {
+                    self.flush_fling_item();
+                }
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::item::on_after_damage(self, s, sl, &mut rng);
+                self.rng = rng;
+                if disguised && !busted && (s, sl) == (ctx.tside, ctx.tslot) {
+                    self.disguise_bust(ctx);
+                    busted = true;
+                }
             }
-            self.rng = rng;
         }
-        if disguised {
+        self.flush_fling_item();
+        if disguised && !busted {
             self.disguise_bust(ctx);
         }
         self.p_set_hit_after_loop();
