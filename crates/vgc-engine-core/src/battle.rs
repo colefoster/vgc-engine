@@ -6708,6 +6708,7 @@ self.trigger_emergency_exits();
             incoming.added_type = 255;
             incoming.type_unseen = false;
             incoming.release_borrowed_slot();
+            incoming.foe_hit_slot = 0;
             incoming.set_flinched(false);
             incoming.set_helping_handed(false);
             incoming.set_redirecting(false, false);
@@ -8616,6 +8617,17 @@ self.trigger_emergency_exits();
                 _ => (attacker.last_attacker, attacker.last_foe_damage),
             };
             if dmg == 0 {
+                // onModifyTarget reads getLastDamagedBy(true) from any turn: a fainted
+                // occupant of that slot makes getMoveTargets draw a new foe, before onTry
+                // fails (data/moves.ts metalburst, sim/pokemon.ts getMoveTargets).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() && matches!(move_id, data::move_id::METALBURST | data::move_id::COMEUPPANCE) && attacker.foe_hit_slot != 0 {
+                    let stale = attacker.foe_hit_slot - 1;
+                    if !self.side(foe).active_mon(stale as usize).is_some_and(|d| d.is_alive()) {
+                        let n = (0..self.format().active_count()).filter(|&s| self.side(foe).active_mon(s).is_some_and(|d| d.is_alive())).count();
+                        let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+                    }
+                }
                 self.p_try_fail(actor_side, actor_slot);
                 return; // no qualifying damage taken this turn
             }
@@ -14101,6 +14113,7 @@ self.trigger_emergency_exits();
                 t.last_attacker_category = app.move_category;
                 t.last_damage_taken = app.effective_dmg;
                 t.last_foe_damage = app.effective_dmg;
+                t.foe_hit_slot = app.attacker_slot + 1;
                 // Per-category attribution for Counter / Mirror Coat.
                 if app.move_category == 0 {
                     t.last_phys_attacker = (aside_byte, app.attacker_slot);
