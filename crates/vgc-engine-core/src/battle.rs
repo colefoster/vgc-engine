@@ -26678,6 +26678,16 @@ fn apply_move_secondary(
         // sees one branch instead of 100.
         let _ = rng.percent_1_100_t(100);
         let mut started = false;
+        // Aroma Veil's onAllyTryAddVolatile returns null (data/abilities.ts aromaveil).
+        let breaks_mold = battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| {
+            matches!(a.effective_ability_slug(), "moldbreaker" | "teravolt" | "turboblaze")
+        });
+        if battle.side(target_side).active_mon(target_slot as usize).is_some_and(|t| t.is_alive() && t.heal_block_turns() == 0)
+            && battle.side_has_aroma_veil(target_side, breaks_mold)
+        {
+            battle.p_aroma_veil_block(target_side, target_slot);
+            return;
+        }
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() && t.heal_block_turns() == 0 {
                 t.set_heal_block(2);
