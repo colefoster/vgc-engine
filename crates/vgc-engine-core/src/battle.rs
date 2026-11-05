@@ -20763,6 +20763,7 @@ self.trigger_emergency_exits();
                     && !no_guard(self, actor_side, actor_slot)
                 {
                     self.p_miss(actor_side, actor_slot, ts, tslot);
+                    self.ps_status_failed();
                     return;
                 }
             }
