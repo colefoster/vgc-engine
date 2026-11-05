@@ -24,3 +24,19 @@ fn battle_round_trips_through_bincode() {
     b.fairy_lock_turns = 2;
     roundtrip(&b);
 }
+
+/// A tie is `ended == Some(None)`: JSON must not load it as a running game.
+#[test]
+fn a_tied_game_stays_over_through_json_and_bincode() {
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 7 },
+        TeamBuilder::from_json(TEAM).unwrap(),
+        TeamBuilder::from_json(TEAM).unwrap(),
+    );
+    assert!(serde_json::to_value(&b).unwrap()["ended"].is_null());
+    b.set_ended(None);
+    let json = serde_json::to_string(&b).unwrap();
+    assert_eq!(serde_json::from_str::<Battle>(&json).unwrap().winner(), Some(None));
+    let bytes = bincode::serialize(&b).unwrap();
+    assert_eq!(bincode::deserialize::<Battle>(&bytes).unwrap().winner(), Some(None));
+}
