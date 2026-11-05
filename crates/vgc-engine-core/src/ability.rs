@@ -2679,6 +2679,11 @@ pub fn on_damaging_hit(
                     am.item_id = item;
                     am.sync_can_mega_evolve();
                 }
+                // magician onAfterMoveSecondarySelf's line (data/abilities.ts).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    battle.p_item_line("-item", attacker_side, attacker_slot, item, &format!("|[from] ability: Magician|[of] {of}"));
+                }
             }
         }
     }
