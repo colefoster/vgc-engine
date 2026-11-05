@@ -755,17 +755,17 @@ impl Battle {
         }
         let champ = self.protocol.log().is_some_and(|l| l.champions_hp);
         match eff {
-            TypeEff::DoubleX | TypeEff::QuadrupleX => {
+            TypeEff::DoubleX | TypeEff::QuadrupleX | TypeEff::OctupleX => {
                 if champ {
-                    let n = if eff == TypeEff::QuadrupleX { 2 } else { 1 };
+                    let n = if matches!(eff, TypeEff::QuadrupleX | TypeEff::OctupleX) { 2 } else { 1 };
                     pmon!(self, "-supereffective", t_side, t_slot, "|{n}");
                 } else {
                     pmon!(self, "-supereffective", t_side, t_slot);
                 }
             }
-            TypeEff::HalfX | TypeEff::QuarterX => {
+            TypeEff::HalfX | TypeEff::QuarterX | TypeEff::EighthX => {
                 if champ {
-                    let n = if eff == TypeEff::QuarterX { 2 } else { 1 };
+                    let n = if matches!(eff, TypeEff::QuarterX | TypeEff::EighthX) { 2 } else { 1 };
                     pmon!(self, "-resisted", t_side, t_slot, "|{n}");
                 } else {
                     pmon!(self, "-resisted", t_side, t_slot);
