@@ -16197,6 +16197,11 @@ self.trigger_emergency_exits();
         if self.status_move_protected(side, slot, m, target) {
             return MoveResult::Skipped;
         }
+        // Substitute's null keeps the target in the hit loop as damage 0, so
+        // the move succeeded (sim/battle-actions.ts hitStepMoveHitLoop).
+        if self.ps_status_sub_null {
+            return MoveResult::Succeeded;
+        }
         let Some(user) = self.side(side).active_mon(slot as usize) else { return MoveResult::Failed };
         // Under ps-rng Instruct queues the repeat as its own action
         // (`ps_instruct_pending`), so nothing has changed yet.
@@ -20000,7 +20005,12 @@ self.trigger_emergency_exits();
                     && !(m.is_powder && self.target_is_powder_immune(ts, tslot))
                     && !self.status_gate_has_own_immunity(move_id, ts, tslot)
                 {
+                    // onTryPrimaryHit: getDamage is undefined for a status move, so
+                    // `-fail`, `[still]` and null (data/moves.ts substitute).
                     self.ps_status_sub_null = self.rolled_accuracy_passed(m);
+                    if self.ps_status_sub_null {
+                        self.p_try_fail(actor_side, actor_slot);
+                    }
                     return;
                 }
             }
