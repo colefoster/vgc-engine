@@ -894,13 +894,6 @@ impl Battle {
         }
     }
 
-    /// Print `line` right before `|faint|` for the mon (side, team index).
-    pub(crate) fn p_faint_prefix(&mut self, side: SideRef, idx: u8, line: String) {
-        if let Some(l) = self.protocol.log_mut() {
-            l.faint_prefix.push((side as u8, idx, line));
-        }
-    }
-
     /// A permanent forme change (`formeChange(..., isPermanent)`): the new
     /// `details` and its `detailschange` line.
     #[inline(always)]
@@ -1039,7 +1032,12 @@ impl Battle {
     /// for the move already.
     #[inline]
     pub(crate) fn p_status_fail_fallback(&mut self, side: SideRef, slot: u8) {
-        if !self.plog() || self.protocol.log().is_some_and(|l| l.since_move > 0) {
+        // Protean's type change from onPrepareHit doesn't explain anything.
+        let explained = self.protocol.log().is_some_and(|l| {
+            l.since_move > 1
+                || (l.since_move == 1 && !l.lines.last().is_some_and(|x| x.contains("|typechange|") && x.contains("[from] ability: ")))
+        });
+        if !self.plog() || explained {
             return;
         }
         self.p_try_fail(side, slot);
@@ -1145,20 +1143,6 @@ impl Battle {
             pmon!(self, "-immune", side, slot);
             return;
         }
-        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
-            pmon!(self, "-activate", side, slot, "|move: Safeguard");
-            return;
-        }
-        if m.is_grounded() && m.semi_invuln == 0 {
-            if matches!(self.terrain, crate::terrain::Terrain::Misty) {
-                pmon!(self, "-activate", side, slot, "|move: Misty Terrain");
-                return;
-            }
-            if matches!(self.terrain, crate::terrain::Terrain::Electric) && status == Status::Sleep {
-                pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
-                return;
-            }
-        }
         // sweetveil / pastelveil onAllySetStatus: `-block`, naming the holder
         // (data/abilities.ts).
         let veil = match status {
@@ -1191,6 +1175,23 @@ impl Battle {
             || Self::shields_down_shielded(m);
         if blocks || weather_block {
             pmon!(self, "-immune", side, slot, "|[from] ability: {}", ability_name(ab));
+            return;
+        }
+        // The holder's handlers sort by its speed, ahead of the side's and field's,
+        // which have none (sim/battle.ts resolvePriority).
+        if self.side(side).conditions.safeguard_turns > 0 && user.is_some_and(|(us, _)| us != side) {
+            pmon!(self, "-activate", side, slot, "|move: Safeguard");
+            return;
+        }
+        if m.is_grounded() && m.semi_invuln == 0 {
+            if matches!(self.terrain, crate::terrain::Terrain::Misty) {
+                pmon!(self, "-activate", side, slot, "|move: Misty Terrain");
+                return;
+            }
+            if matches!(self.terrain, crate::terrain::Terrain::Electric) && status == Status::Sleep {
+                pmon!(self, "-activate", side, slot, "|move: Electric Terrain");
+                return;
+            }
         }
     }
 
@@ -1957,6 +1958,20 @@ impl Battle {
         }
         let t = self.p_ident(tside, tslot);
         pmon!(self, "-miss", side, slot, "|{t}");
+    }
+
+    /// The End lines of `old`, an ability just swapped away.
+    pub(crate) fn p_swap_end_lines(&mut self, side: SideRef, slot: u8, old: u16) {
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if old == data::ability_id::FLASHFIRE && m.volatiles.has(crate::pokemon::VolatileKind::FlashFire) {
+            if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                m.volatiles.remove(crate::pokemon::VolatileKind::FlashFire);
+            }
+            pmon!(self, "-end", side, slot, "|ability: Flash Fire|[silent]");
+        } else if old == data::ability_id::SUPREMEOVERLORD && m.supreme_overlord_fallen != 0 && m.supreme_overlord_fallen != u8::MAX {
+            let n = m.supreme_overlord_fallen;
+            pmon!(self, "-end", side, slot, "|fallen{n}|[silent]");
+        }
     }
 
     /// A future move's miss: its source may be off the field.

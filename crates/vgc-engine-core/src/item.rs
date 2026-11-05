@@ -1072,6 +1072,9 @@ pub fn on_damaging_hit(
             .active_mon_mut(target_slot as usize)
         {
             t.consume_item();
+            // The pop clears the item without setting lastItem: Recycle can't bring
+            // it back (data/items.ts airballoon).
+            t.consumed_item = u16::MAX;
         }
         battle.p_item_line("-enditem", target_side, target_slot, raw_item_id, "");
         crate::ability::on_item_consumed(battle, target_side, target_slot);
@@ -1563,6 +1566,10 @@ fn mental_herb_end(battle: &mut Battle, side: SideRef, slot: u8, kinds: [(crate:
                 // Keep the `move_locks` bitset in sync (PR-LC3).
                 m.sync_move_locks();
             }
+            // attract onEnd prints its own silent line first (data/conditions.ts attract).
+            if k == crate::pokemon::VolatileKind::Attract {
+                pmon!(battle, "-end", side, slot, "|Attract|[silent]");
+            }
             pmon!(battle, "-end", side, slot, "{line}");
         }
     }
@@ -1624,6 +1631,11 @@ pub(crate) fn try_consume_eject_button(
         return false;
     }
     if battle.first_bench_index(target_side).is_none() {
+        return false;
+    }
+    // ejectbutton onAfterMoveSecondary: not when already being forced out
+    // (`target.forceSwitchFlag`, data/items.ts).
+    if battle.force_switch_flags[target_side as usize][(target_slot as usize).min(1)] {
         return false;
     }
     // Consume the item, then force-switch.
