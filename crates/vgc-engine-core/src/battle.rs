@@ -17715,11 +17715,13 @@ self.trigger_emergency_exits();
                 if blocked {
                     continue;
                 }
+                let wish_hp_before = self.side(wside).active_mon(wslot).map_or(0, |m| m.current_hp);
                 if let Some(m) = self.side_mut(wside).active_mon_mut(wslot) {
                     m.current_hp = m.current_hp.saturating_add(entry.heal).min(m.stats.hp);
                 }
                 self.p_res(4, 0, Some((wside, wslot as u8)));
-                if self.plog() {
+                // wish onEnd prints only if heal() healed something (data/moves.ts wish).
+                if self.plog() && self.side(wside).active_mon(wslot).is_some_and(|m| m.current_hp != wish_hp_before) {
                     // wish onEnd: `[from] move: Wish|[wisher] <name>`; the wisher is
                     // the slot's mon when it was used (approximated by the
                     // current one).
