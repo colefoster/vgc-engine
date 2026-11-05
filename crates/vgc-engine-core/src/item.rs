@@ -1557,7 +1557,8 @@ pub(crate) fn try_consume_eject_button(
     target_slot: u8,
 ) -> bool {
     let (alive, item_id) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.is_alive(), m.item_id),
+        // Klutz / Embargo / Magic Room leave it unused (sim/pokemon.ts ignoringItem).
+        Some(m) => (m.is_alive(), m.effective_item_id()),
         None => return false,
     };
     if !alive || item_id != data::item_id::EJECTBUTTON {
