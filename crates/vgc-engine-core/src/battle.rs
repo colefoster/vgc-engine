@@ -20285,6 +20285,15 @@ self.trigger_emergency_exits();
                 }
                 self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot);
             }
+            data::move_id::TOPSYTURVY => {
+                // data/moves.ts topsyturvy onHit.
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
+                let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) else { return };
+                if t.boosts.iter().all(|&b| b == 0) { return; }
+                for b in t.boosts.iter_mut() { *b = -*b; }
+                pmon!(self, "-invertboost", ts, tslot, "|[from] move: Topsy-Turvy");
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
