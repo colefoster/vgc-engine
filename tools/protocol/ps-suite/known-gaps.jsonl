@@ -40,7 +40,6 @@
 {"game":"Download should trigger even if the foe is behind a Substitute","format":"gen9customgame"}
 {"game":"Emergency Exit should prevent Volt Switch after switches","format":"gen9customgame"}
 {"game":"Emergency Exit should be suppressed by Sheer Force","format":"gen9customgame"}
-{"game":"Flower Veil should not stop an ally from falling asleep when Yawn was already affecting it","format":"gen9doublescustomgame"}
 {"game":"Gulp Missile should retrieve a catch on the first turn of Dive","format":"gen9customgame"}
 {"game":"Gulp Missile should not spit out its catch if the Cramorant is semi-invulnerable","format":"gen9customgame"}
 {"game":"Gulp Missile should change forms before damage calculation","format":"gen9customgame"}
