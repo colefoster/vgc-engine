@@ -16661,8 +16661,9 @@ self.trigger_emergency_exits();
         }
 
         for i in 0..self.after_secondary_pending.len() {
-            if let Some((ts, tsl, hit_sub, dmg, hit)) = self.after_secondary_pending[i].take() {
-                self.p_set_hit(hit);
+            if let Some((ts, tsl, hit_sub, dmg, _)) = self.after_secondary_pending[i].take() {
+                // After the loop's faints and `-hitcount`, so no hit index of its own.
+                self.p_set_hit(255);
                 self.p_tag(crate::protocol::step::AFTER_SECONDARY, ts, tsl);
                 self.apply_reactive_switch_items(ts, tsl, actor_side, actor_slot, hit_sub, dmg, move_id);
             }
