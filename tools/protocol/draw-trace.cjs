@@ -60,32 +60,34 @@ prngModule.PRNG.prototype.random = function (a, b) {
 			raw: lastRaw,
 			value,
 			turn: battle ? battle.turn : 0,
-			logLen: battle ? battle.log.length : 0,
+			line: battle ? battle.log.length : 0,
 			move: battle && battle.activeMove ? battle.activeMove.id : null,
 			stack: callers(new Error().stack),
+			sort: sorting,
 		});
 	}
 	return value;
 };
 
-/** PS `Utils.extractChannel` for the omniscient view, as raw `battle.log` index -> update line. */
-function omniscientIndex(rawLog) {
-	const map = [];
-	let n = 0;
-	for (let i = 0; i < rawLog.length; i++) {
-		map[i] = n;
-		if (rawLog[i].startsWith('|split|')) {
-			map[i + 1] = n;
-			map[i + 2] = n + 1;
-			n += 1;
-			i += 2;
-		} else {
-			n += 1;
-		}
-	}
-	map[rawLog.length] = n;
-	return map;
+// A speedSort draw is about ties in the sorted list, so keep what was tied. The shuffle's draws
+// come out of Battle.speedSort, one frame below this wrapper's caller.
+const { Battle } = require(path.join(PS_DIST, 'battle.js'));
+const origSpeedSort = Battle.prototype.speedSort;
+let sorting = null;
+function sortLabel(x) {
+	const holder = x.effectHolder ? ` @${x.effectHolder.name || x.effectHolder.id || '?'}` : '';
+	const what = x.effect ? x.effect.id : x.pokemon ? `${x.choice}:${x.pokemon.name}` : x.name || '?';
+	return `${what}${holder}[o${x.order} p${x.priority} s${x.speed} sub${x.subOrder}]`;
 }
+Battle.prototype.speedSort = function (list, comparator) {
+	const saved = sorting;
+	sorting = recording ? list.map(sortLabel) : null;
+	try {
+		return origSpeedSort.call(this, list, comparator);
+	} finally {
+		sorting = saved;
+	}
+};
 
 const norm = (text) => text.replace(/\|t:\|\d+/g, '|t:|');
 const MESSAGE_BREAK = /\n\n(?=(?:update|sideupdate|end|requesteddata)\n)/;
@@ -104,17 +106,11 @@ function runShowdown(inputLog) {
 	stream.push = (m) => { messages.push(m); };
 	const rec = { stream, draws: [] };
 	recording = rec;
-	let battle = null;
 	try {
-		for (const line of inputLog) {
-			stream.write(line);
-			battle = battle || stream.battle;
-		}
+		for (const line of inputLog) stream.write(line);
 	} finally {
 		recording = null;
 	}
-	const map = battle ? omniscientIndex(battle.log) : [];
-	for (const d of rec.draws) d.line = map[d.logLen] ?? 0;
 	return { draws: rec.draws, log: logLines(messages) };
 }
 
@@ -227,6 +223,7 @@ async function single(file, game, around, outFile) {
 		console.log(`first draw difference: #${c.at}, turn ${p ? p.turn : '(past last PS draw)'}`);
 		console.log(`  ps : ${fmtPs(p)}`);
 		if (p) for (const f of p.stack) console.log(`       ${f}`);
+		if (p && p.sort) console.log(`       sorting: ${p.sort.join('  ')}`);
 		console.log(`  vgc: ${fmtVgc(vgc.draws[c.at])}`);
 	} else console.log('draws identical');
 	const center = c.drawDiffers ? c.at : Math.min(c.before, ps.draws.length);
