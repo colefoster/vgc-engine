@@ -2174,8 +2174,10 @@ impl Battle {
             .side(target_side)
             .active_mon(target_slot as usize)
             .map(|m| m.effective_ability_id());
-        let target_contrary = target_ability == Some(data::ability_id::CONTRARY);
-        let target_simple = target_ability == Some(data::ability_id::SIMPLE);
+        // Both are breakable (data/abilities.ts contrary, simple; sim/battle.ts suppressingAbility).
+        let boost_breaks_mold = (source_side, source_slot) != (target_side, target_slot) && self.move_breaks_mold(source_side, source_slot);
+        let target_contrary = !boost_breaks_mold && target_ability == Some(data::ability_id::CONTRARY);
+        let target_simple = !boost_breaks_mold && target_ability == Some(data::ability_id::SIMPLE);
         let mut contrary_buf = [(0u8, 0i8); 7];
         let deltas: &[(u8, i8)] = if target_contrary || target_simple {
             let n = deltas.len().min(7);
