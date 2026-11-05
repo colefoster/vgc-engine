@@ -12922,7 +12922,12 @@ self.trigger_emergency_exits();
         if let Some(busted_id) = busted_id.filter(|_| self.plog()) {
             self.p_permanent_forme(tside, tslot, busted_id);
             let name = data::SPECIES[busted_id as usize].name;
-            self.p_damage(tside, tslot, &format!("|[from] pokemon: {name}"));
+            // No Focus Band roll for this one: measured against the oracle in two games with
+            // a Focus Band Mimikyu (data/abilities.ts disguise onUpdate's this.damage).
+            self.p_direct_damage(tside, tslot, &format!("|[from] pokemon: {name}"));
+            if let Some(m) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                m.hurt_this_turn = m.current_hp > 0;
+            }
         }
         let _ = self.check_target_fainted(tside, tslot);
     }
