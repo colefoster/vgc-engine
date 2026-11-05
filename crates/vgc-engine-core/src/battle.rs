@@ -11944,7 +11944,9 @@ self.trigger_emergency_exits();
                         } else if m.blocked_by_protect && self.side(opp2).active_mon(ts as usize).is_some_and(|d| d.protect_stops(m)) {
                             pmon!(self, "-activate", opp2, ts, "|move: Protect");
                         } else {
-                            self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                            if !prankster_immunity_is_known(m.slug, self.side(opp2).active_mon(ts as usize)) {
+                                self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                            }
                             pmon!(self, "-immune", opp2, ts);
                         }
                     }
@@ -17198,7 +17200,9 @@ self.trigger_emergency_exits();
                 types[..n as usize].contains(&15)
             }) {
                 hit[i] = false;
-                self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                if !prankster_immunity_is_known(m.slug, self.side(ts).active_mon(tsl as usize)) {
+                    self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                }
                 pmon!(self, "-immune", ts, tsl);
             }
         }
@@ -27001,6 +27005,18 @@ fn apply_flinch_item_secondary(
 ///   Poison/Steel immune to Poison/Toxic
 /// Grass immunity to powder moves (Spore, Sleep Powder) is per-move,
 /// not per-status — handled at move resolution when sleep lands.
+/// sim/battle-actions.ts hitStepTryImmunity: no Prankster hint when the target's
+/// type already rules out the move's status, so nothing about the ability leaks.
+fn prankster_immunity_is_known(slug: &str, target: Option<&crate::pokemon::Pokemon>) -> bool {
+    let status = match slug {
+        "willowisp" => Status::Burn,
+        "thunderwave" | "stunspore" | "glare" => Status::Paralysis,
+        "toxic" | "poisonpowder" | "poisongas" => Status::Poison,
+        _ => return false,
+    };
+    target.is_some_and(|t| is_type_immune_to_status(t.effective_types(), status))
+}
+
 fn is_type_immune_to_status((types, n): ([u8; 2], u8), status: Status) -> bool {
     let has = |code: u8| types[..n as usize].contains(&code);
     // Type codes per data::TYPE_NAMES:
