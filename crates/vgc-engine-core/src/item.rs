@@ -521,7 +521,7 @@ fn after_berry_eaten(battle: &mut Battle, side: SideRef, slot: u8, item_id: u16)
     if item_id != u16::MAX && data::ITEMS[item_id as usize].is_berry {
         let in_residual = battle.in_residual;
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if m.item_id == u16::MAX && m.ability_id == data::ability_id::CUDCHEW {
+            if m.item_id == u16::MAX && m.effective_ability_id() == data::ability_id::CUDCHEW {
                 m.cud_chew_berry = item_id;
                 // PS abilities.ts:748: eaten during residuals (empty queue)
                 // starts at 1, so the same turn's order-28 tick re-eats it.
