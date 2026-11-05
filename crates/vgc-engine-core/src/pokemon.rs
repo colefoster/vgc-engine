@@ -847,6 +847,10 @@ pub struct Pokemon {
     /// (255 = none). The runner must dispatch this slot regardless
     /// of the player's Choice while the lock is active.
     pub lockin_move_slot: u8,
+    /// A damaging hit landed this turn, from either side: Focus Punch's
+    /// `lostFocus` (data/moves.ts focuspunch condition onHit).
+    #[serde(default)]
+    pub lost_focus: bool,
     /// lockedmove's `trueDuration` (data/conditions.ts); `lockin_turns` is its `duration`.
     #[serde(default)]
     pub lockin_true: u8,
@@ -1146,6 +1150,7 @@ impl Pokemon {
             lockin_turns: 0,
             lockin_move_slot: 255,
             lockin_true: 0,
+            lost_focus: false,
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
