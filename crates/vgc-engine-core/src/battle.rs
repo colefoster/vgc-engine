@@ -1687,7 +1687,7 @@ impl Battle {
             Some(p) => p,
             None => {
                 let p = [SideRef::P1, SideRef::P2].iter().any(|&s| {
-                    self.side(s).team.iter().any(|m| matches!(m.ability_id, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY))
+                    self.side(s).team.iter().any(|m| matches!(m.ability_id, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY | data::ability_id::SOULHEART))
                 });
                 self.receiver_possible = Some(p);
                 p
@@ -1706,6 +1706,15 @@ impl Battle {
                     continue;
                 }
                 self.side_mut(side).conditions.faint_handled |= bit;
+                // soulheart onAnyFaint (data/abilities.ts): every holder on the field.
+                for hs in [SideRef::P1, SideRef::P2] {
+                    for hsl in 0..n as u8 {
+                        if self.side(hs).active_mon(hsl as usize).is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::SOULHEART) {
+                            self.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::SOULHEART));
+                            self.apply_boosts(hs, hsl, &[(2, 1)], hs, hsl);
+                        }
+                    }
+                }
                 if n == 2 {
                     self.receiver_on_ally_faint(side, 1 - slot as u8, slot as u8);
                 }
