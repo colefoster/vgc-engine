@@ -2045,6 +2045,9 @@ pub fn on_damaging_hit(
                 pmon!(battle, "-ability", target_side, target_slot, "|{}", crate::battle_protocol::ability_name(ab));
                 battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ab));
             }
+            // Clear Body and co print their block: the effect is an ability, with
+            // no `secondaries` (data/abilities.ts clearbody onTryBoost).
+            battle.p_drop_blocked(attacker_side, attacker_slot, &[4]);
             battle.apply_foe_stat_drop(attacker_side, attacker_slot, &[4], -1, target_side, target_slot);
         }
     }
@@ -2117,7 +2120,7 @@ pub fn on_damaging_hit(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
     if ability_id == data::ability_id::RATTLED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
-        if matches!(move_type, 6 | 13 | 15) {
+        if matches!(move_type, 11 | 13 | 15) {
             battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Rattled self-boost (+1 Spe) on incoming Bug/Ghost/Dark.
             battle.apply_boosts(target_side, target_slot, &[(4, 1)], target_side, target_slot);
