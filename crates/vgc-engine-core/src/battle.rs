@@ -10762,7 +10762,20 @@ self.trigger_emergency_exits();
             actor_slot: slot,
             choice: Choice::Move { actor_slot: slot, move_slot: 3, target: None },
         };
-        self.resolve_move_with_pending(action, pending_kind, true);
+        // The called move runs the same hit steps: a spread or self-drop move's
+        // draws come in PS's step order.
+        #[cfg(feature = "ps-rng")]
+        let windowed = {
+            let inline = std::mem::replace(&mut self.ps_inline_hit_updates, false);
+            let w = self.ps_spread_window(action, pending_kind, true);
+            self.ps_inline_hit_updates = if w { false } else { inline };
+            w
+        };
+        #[cfg(not(feature = "ps-rng"))]
+        let windowed = false;
+        if !windowed {
+            self.resolve_move_with_pending(action, pending_kind, true);
+        }
         // The called move's useMove runs its own hit loop, closing Update
         // included (data/mods/champions/scripts.ts:575), inside the caller's hit.
         #[cfg(feature = "ps-rng")]
@@ -10770,6 +10783,11 @@ self.trigger_emergency_exits();
             self.ps_hit_loop_faint_ends();
             self.ps_loop_end_update(side, slot);
             self.ps_loop_hits = 0;
+        }
+        // Back in the caller's own hit.
+        #[cfg(feature = "ps-rng")]
+        if windowed {
+            self.ps_inline_hit_updates = true;
         }
         self.called_from = outer;
         self.called_ran = true;
