@@ -15030,6 +15030,16 @@ self.trigger_emergency_exits();
         if !t.is_alive() || ps_cantsuppress(ability) || ps_cantsuppress(old) || crate::ability::has_ability_shield(t) {
             return false;
         }
+        // setAbility runs the old ability's End: Flash Fire's boost goes silently
+        // (data/abilities.ts flashfire onEnd, its condition's onEnd).
+        if old == data::ability_id::FLASHFIRE
+            && self.side(side).active_mon(slot as usize).is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::FlashFire))
+        {
+            if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
+                t.volatiles.remove(crate::pokemon::VolatileKind::FlashFire);
+            }
+            pmon!(self, "-end", side, slot, "|ability: Flash Fire|[silent]");
+        }
         if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
             t.ability_override = ability;
         }
