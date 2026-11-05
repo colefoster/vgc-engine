@@ -1509,6 +1509,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                     m.item_id = last;
                     m.consumed_item = u16::MAX;
                     m.sync_can_mega_evolve();
+                    battle.p_item_line("-item", side, slot, last, "|[from] ability: Harvest");
                 }
             }
         }
