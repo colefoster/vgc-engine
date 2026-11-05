@@ -19023,6 +19023,30 @@ self.trigger_emergency_exits();
     /// hit; future moves are vanishingly rare in the corpus and the coupling
     /// isn't worth it. PS `data/conditions.ts:394-422`.
     fn resolve_future_hit(&mut self, tside: SideRef, tslot: u8, entry: FutureEffect) {
+        let target_up = self.side(tside).active_mon(tslot as usize).is_some_and(|m| m.is_alive());
+        self.resolve_future_hit_inner(tside, tslot, entry);
+        // futuremove onEnd runs the source's Life Orb after the hit, whatever came of it
+        // (data/conditions.ts futuremove, data/items.ts lifeorb).
+        let src_side = if entry.source_side == 0 { SideRef::P1 } else { SideRef::P2 };
+        let src_slot = self.side(src_side).active.iter().take(self.format().active_count()).position(|&x| x == entry.source_team_idx);
+        if let Some(sl) = src_slot.filter(|_| target_up) {
+            let burns = self.side(src_side).active_mon(sl).is_some_and(|a| {
+                a.is_alive() && a.effective_item_id() == data::item_id::LIFEORB && !crate::ability::has_magic_guard(a)
+            }) && (src_side, sl as u8) != (tside, tslot);
+            if burns {
+                if let Some(a) = self.side_mut(src_side).active_mon_mut(sl) {
+                    let recoil = (a.stats.hp / 10).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(recoil);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+                self.p_damage(src_side, sl as u8, "|[from] item: Life Orb");
+            }
+        }
+    }
+
+    fn resolve_future_hit_inner(&mut self, tside: SideRef, tslot: u8, entry: FutureEffect) {
         // futuremove onEnd (data/conditions.ts:394-403).
         if self.plog() && self.side(tside).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
             pmon!(self, "-end", tside, tslot, "|move: {}", crate::battle_protocol::move_name(entry.move_id));
