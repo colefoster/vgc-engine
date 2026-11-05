@@ -554,7 +554,9 @@ impl Battle {
         let mut trapped: Option<bool> = None; // Some(true) = 'hidden'
         let mut maybe = false;
         if !ghost {
-            if m.volatiles.has(VolatileKind::PartialTrap) || m.volatiles.has(VolatileKind::NoRetreat) {
+            if m.volatiles.get(VolatileKind::PartialTrap).is_some_and(|v| self.partial_trap_source_active(v.payload))
+                || m.volatiles.has(VolatileKind::NoRetreat)
+            {
                 trapped = Some(false);
             }
             if let Some(v) = m.volatiles.get(VolatileKind::Octolock) {
