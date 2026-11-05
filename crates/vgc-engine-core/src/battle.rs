@@ -20372,6 +20372,24 @@ self.trigger_emergency_exits();
                     pmon!(self, "-start", actor_side, actor_slot, "|Power Trick");
                 }
             }
+            data::move_id::REFLECTTYPE => {
+                // data/moves.ts reflecttype onHit.
+                let Some((ts, tslot)) = opp_target else { return };
+                let Some(u) = self.side(actor_side).active_mon(actor_slot as usize) else { return };
+                let num = data::SPECIES[u.species_id as usize].num;
+                if num == 493 || num == 773 || u.terastallized { return; }
+                let Some(t) = self.side(ts).active_mon(tslot as usize) else { return };
+                let (types, n) = t.effective_types();
+                if n == 0 { return; }
+                let (first, second) = (types[0], (n > 1).then_some(types[1]));
+                if self.plog() {
+                    let of = self.p_ident(ts, tslot);
+                    pmon!(self, "-start", actor_side, actor_slot, "|typechange|[from] move: Reflect Type|[of] {of}");
+                }
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_type_override(first, second);
+                }
+            }
             data::move_id::CONFUSERAY | data::move_id::SWEETKISS => {
                 // `volatileStatus: 'confusion'` (data/moves.ts confuseray, sweetkiss).
                 if !self.rolled_accuracy_passed(m) { return; }
