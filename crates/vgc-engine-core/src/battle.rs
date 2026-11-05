@@ -17580,8 +17580,13 @@ self.trigger_emergency_exits();
             if endured {
                 pmon!(self, "-activate", tside, tslot, "|move: Endure");
             }
+            let capped = if endured { self.side(tside).active_mon(tslot as usize).map_or(0, |d| d.current_hp - 1) } else { dmg };
+            // spreadDamage's onDamage: Focus Band, Focus Sash (data/items.ts).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            let capped = crate::item::on_before_damage(self, tside, tslot, capped, &mut rng).unwrap_or(capped);
+            self.rng = rng;
             if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                let dealt = if endured { d.current_hp - 1 } else { dmg };
+                let dealt = capped;
                 d.current_hp = d.current_hp.saturating_sub(dealt);
                 if d.current_hp == 0 {
                     d.fainted = true;
