@@ -764,6 +764,38 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // Curious Medicine — PS data/abilities.ts:772 onStart: every adjacent
     // ally's stat stages are cleared.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Curious_Medicine_(Ability)>.
+    // Screen Cleaner — data/abilities.ts screencleaner onStart: both sides lose
+    // Reflect, Light Screen and Aurora Veil, each screen in turn, own side first.
+    if ability_id == data::ability_id::SCREENCLEANER {
+        let conds = [battle.side(side).conditions, battle.side(side.opposing()).conditions];
+        let sides = [side, side.opposing()];
+        let mut activated = false;
+        for screen in 0..3 {
+            for (c, sd) in conds.iter().zip(sides) {
+                let (on, label) = match screen {
+                    0 => (c.reflect_turns > 0, "Reflect"),
+                    1 => (c.light_screen_turns > 0, "move: Light Screen"),
+                    _ => (c.aurora_veil_turns > 0, "move: Aurora Veil"),
+                };
+                if on {
+                    if !activated {
+                        activated = true;
+                        pmon!(battle, "-activate", side, slot, "|ability: Screen Cleaner");
+                    }
+                    if battle.plog() {
+                        let id = battle.p_side_ident(sd);
+                        battle.p_push(format!("|-sideend|{id}|{label}"));
+                    }
+                }
+            }
+        }
+        for sd in sides {
+            let c = &mut battle.side_mut(sd).conditions;
+            c.reflect_turns = 0;
+            c.light_screen_turns = 0;
+            c.aurora_veil_turns = 0;
+        }
+    }
     if ability_id == data::ability_id::CURIOUSMEDICINE && battle.format().active_count() > 1 {
         let mut cleared = false;
         if let Some(ally) = battle.side_mut(side).active_mon_mut((slot ^ 1) as usize) {
