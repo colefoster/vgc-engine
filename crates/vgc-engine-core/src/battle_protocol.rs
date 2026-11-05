@@ -900,9 +900,12 @@ impl Battle {
                 pmon!(self, "-end", side, slot, "|ability: Flash Fire|[silent]");
             }
             data::ability_id::SUPREMEOVERLORD => {
+                // No line without fallen allies (data/abilities.ts supremeoverlord
+                // onEnd, PS d39cea805).
                 let n = m.supreme_overlord_fallen;
-                let fallen = if n == 0 || n == u8::MAX { "undefined".to_string() } else { n.to_string() };
-                pmon!(self, "-end", side, slot, "|fallen{fallen}|[silent]");
+                if n != 0 && n != u8::MAX {
+                    pmon!(self, "-end", side, slot, "|fallen{n}|[silent]");
+                }
             }
             _ => {}
         }
@@ -1997,6 +2000,7 @@ impl Battle {
     /// Build the log and print PS's preamble up to `|teampreview|` (or, with
     /// no preview, nothing past `|tier|` / `|rule|`). Teams are complete.
     pub(crate) fn p_init(&mut self, opts: &ProtocolOptions, format_id: &str) {
+        self.ps_no_maybe_trap = crate::format_rules::lacks_obtainable_abilities(format_id);
         let mut log = ProtocolLog::new(opts);
         log.champions_hp = crate::format_rules::is_champions_format(format_id) || self.champions;
         for side in [SideRef::P1, SideRef::P2] {
