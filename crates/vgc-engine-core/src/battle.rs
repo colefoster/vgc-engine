@@ -19178,6 +19178,26 @@ self.trigger_emergency_exits();
             self.ps_modify_damage_ties(src_side, src_slot, tside, tslot);
         }
 
+        // The defender's resist berry and its ModifySpD, and the source's Choice Specs, as for
+        // any hit (scripts.ts getDamage, modifyDamage; data/items.ts occaberry et al.,
+        // assaultvest, eviolite, choicespecs).
+        let future_type = crate::damage::move_type_in_ctx(&src_mon, entry.move_id, &DamageContext {
+            weather,
+            terrain: active_terrain,
+            champions: self.champions,
+            ..DamageContext::default()
+        });
+        let (future_berry, def_mod) = match self.side(tside).active_mon(tslot as usize).cloned() {
+            Some(d) => {
+                let hits_sub = d.substitute_hp() > 0 && src_mon.effective_ability_id() != data::ability_id::INFILTRATOR;
+                let berry = !hits_sub && crate::item::type_resist_berry_fires(self, tside, tslot, entry.move_id, future_type, &d);
+                let boosted = d.effective_item_id() == data::item_id::ASSAULTVEST
+                    || (d.effective_item_id() == data::item_id::EVIOLITE && d.species().is_nfe);
+                (berry, if boosted { 6144u32 } else { 0 })
+            }
+            None => (false, 0),
+        };
+        let atk_mod = if src_mon.effective_item_id() == data::item_id::CHOICESPECS { 6144u32 } else { 0 };
         let wonder_room = self.wonder_room_turns > 0;
         let dmg = {
             let attacker = &src_mon;
@@ -19234,8 +19254,8 @@ self.trigger_emergency_exits();
                     // Analytic does not apply.
                     attacker_moves_last: false,
                     champions: self.champions,
-                    defender_resist_berry: false,
-                    parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0,
+                    defender_resist_berry: future_berry,
+                    parental_bond_hit: false, attacker_stat_mod: atk_mod, defender_stat_mod: def_mod,
                 },
             )
         };
@@ -19244,6 +19264,11 @@ self.trigger_emergency_exits();
                 let attacker = self.side(src_side).team[src_idx].clone();
                 if let Some(defender) = self.side(tside).active_mon(tslot as usize).cloned() {
                     self.p_hit_messages(src_side, 0, tside, tslot, entry.move_id, &attacker, &defender, ps_crit);
+                }
+            }
+            if future_berry {
+                if let Some(d) = self.side(tside).active_mon(tslot as usize).cloned() {
+                    let _ = crate::item::try_consume_type_resist_berry(self, tside, tslot, entry.move_id, future_type, &d);
                 }
             }
             // trySpreadMoveHit's TryPrimaryHit: a Substitute takes it, unless the
