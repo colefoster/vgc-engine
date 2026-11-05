@@ -684,6 +684,39 @@ fn eat_heal(battle: &mut Battle, side: SideRef, slot: u8, amount: u16, name: &st
     }
 }
 
+/// runEvent('EatItem') for a berry fed from outside (Fling): Cud Chew schedules
+/// the re-eat, Cheek Pouch heals (data/abilities.ts cudchew, cheekpouch).
+pub(crate) fn on_eat_item_event(battle: &mut Battle, side: SideRef, slot: u8, berry_id: u16, of: Option<(SideRef, u8)>) {
+    let in_residual = battle.in_residual;
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        if m.effective_ability_id() == data::ability_id::CUDCHEW {
+            m.cud_chew_berry = berry_id;
+            m.cud_chew_counter = if in_residual { 1 } else { 2 };
+        }
+    }
+    on_cheek_pouch(battle, side, slot, berry_id, of);
+}
+
+/// data/abilities.ts cheekpouch onEatItem: heals a third; `[of]` an outside source.
+pub(crate) fn on_cheek_pouch(battle: &mut Battle, side: SideRef, slot: u8, berry_id: u16, of: Option<(SideRef, u8)>) {
+    if !data::ITEMS[berry_id as usize].is_berry {
+        return;
+    }
+    let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) else { return };
+    if !m.is_alive() || m.effective_ability_id() != data::ability_id::CHEEKPOUCH || m.is_heal_blocked() {
+        return;
+    }
+    let before = m.current_hp;
+    m.current_hp = m.current_hp.saturating_add((m.stats.hp / 3).max(1)).min(m.stats.hp);
+    if m.current_hp != before && battle.plog() {
+        let suffix = match of {
+            Some((s, sl)) => format!("|[from] ability: Cheek Pouch|[of] {}", battle.p_ident(s, sl)),
+            None => "|[from] ability: Cheek Pouch".to_string(),
+        };
+        battle.p_heal(side, slot, &suffix);
+    }
+}
+
 /// A berry's onEat on `side`/`slot`. `of`: the source when someone else fed it.
 pub(crate) fn eat_effect(
     battle: &mut Battle,
@@ -742,6 +775,22 @@ pub(crate) fn eat_effect(
                 m.volatiles.remove(crate::pokemon::VolatileKind::Confusion);
                 pmon!(battle, "-end", side, slot, "|confusion");
             }
+        }
+        return;
+    }
+    // data/items.ts leppaberry onEat: the first move at 0 PP, else the first
+    // that has spent any; `-activate` names it.
+    if berry_id == data::item_id::LEPPABERRY {
+        let ripen = battle.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN);
+        let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) else { return };
+        let known = |m: &crate::pokemon::Pokemon, i: usize| m.moves[i] != u16::MAX;
+        let found = (0..m.pp.len()).find(|&i| known(m, i) && m.pp[i] == 0)
+            .or_else(|| (0..m.pp.len()).find(|&i| known(m, i) && m.pp[i] < m.max_pp(i)));
+        if let Some(i) = found {
+            let max = m.max_pp(i);
+            m.pp[i] = m.pp[i].saturating_add(if ripen { 20 } else { 10 }).min(max);
+            let mv = m.moves[i];
+            pmon!(battle, "-activate", side, slot, "|item: Leppa Berry|{}|[consumed]", crate::battle_protocol::move_name(mv));
         }
         return;
     }
