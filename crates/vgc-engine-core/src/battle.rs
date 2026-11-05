@@ -7999,8 +7999,11 @@ self.trigger_emergency_exits();
         self.zero_hit_this_move = false;
         // PS `runMove` (sim/battle-actions.ts:217) counts the action before
         // any beforeMove check can stop it.
+        // useMove from a calling move doesn't pass through runMove (First Impression
+        // called by Copycat on the first turn out, data/mods/champions/moves.ts:384).
+        let counts_action = self.called_from == u16::MAX;
         if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-            if a.is_alive() {
+            if a.is_alive() && counts_action {
                 a.move_actions = a.move_actions.saturating_add(1);
             }
             // Every early return below is a failed move (BeforeMove false,
