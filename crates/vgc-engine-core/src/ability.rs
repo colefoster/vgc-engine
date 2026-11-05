@@ -2094,7 +2094,11 @@ pub fn on_damaging_hit(
     // PS `last_damage_taken` is the damage just applied, so pre-HP =
     // current + last_damage_taken. Drampa / Kommo-o signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Berserk_(Ability)>.
-    if ability_id == data::ability_id::BERSERK && target_alive {
+    // onAfterMoveSecondary: skipped for a move Sheer Force boosted
+    // (sim/battle-actions.ts afterMoveSecondaryEvent).
+    let sheer_force = crate::damage::move_is_sheer_force_boosted(&data::MOVES[move_id as usize])
+        && battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force);
+    if ability_id == data::ability_id::BERSERK && target_alive && !sheer_force {
         if let Some(t) = battle.side(target_side).active_mon(target_slot as usize) {
             let max = t.stats.hp as u32;
             let post = t.current_hp as u32;
@@ -2242,7 +2246,7 @@ pub fn on_damaging_hit(
     // fire (sheerforce sets `move.hasSheerForce` which the damage event
     // suppresses). Tatsugiri signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Shell_(Ability)>.
-    if ability_id == data::ability_id::ANGERSHELL && target_alive {
+    if ability_id == data::ability_id::ANGERSHELL && target_alive && !sheer_force {
         let sheer_force_strip = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
