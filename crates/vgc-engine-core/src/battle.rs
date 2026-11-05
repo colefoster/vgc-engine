@@ -17446,6 +17446,11 @@ self.trigger_emergency_exits();
             .active_mon(tslot as usize)
             .is_some_and(|m| m.is_alive());
         if !target_alive {
+            // futuremove onEnd's hint (data/conditions.ts).
+            if self.plog() {
+                let name = crate::battle_protocol::move_name(entry.move_id);
+                self.p_push(format!("|-hint|{name} did not hit because the target is fainted."));
+            }
             return;
         }
         let src_side = if entry.source_side == 0 { SideRef::P1 } else { SideRef::P2 };
