@@ -19287,11 +19287,23 @@ self.trigger_emergency_exits();
         self.eot_ability_residual();
         // 29. Shields Down (data/abilities.ts:4253-4265) and Hunger Switch
         // (:1896-1902), both onResidualOrder 29.
+        // Magic Room's own residual (order 27) has already ended it for the items below.
+        if self.magic_room_turns == 1 {
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                        m.item_suppressed = false;
+                    }
+                }
+            }
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 self.p_res(29, 0, Some((side, slot)));
                 self.shields_down_update(side, slot);
                 self.hunger_switch_update(side, slot);
+                // whiteherb onResidual, order 29 (data/items.ts whiteherb).
+                crate::item::try_consume_white_herb(self, side, slot);
             }
         }
         self.flush_foe_boost_copies();
