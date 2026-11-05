@@ -8235,21 +8235,6 @@ self.trigger_emergency_exits();
             self.p_try_fail(actor_side, actor_slot);
             return;
         }
-        // Uproar — PS data/moves.ts uproar onTryHit: every sleeper wakes.
-        if move_id == data::move_id::UPROAR {
-            let n = self.format().active_count() as u8;
-            let foe = actor_side.opposing();
-            for slot in 0..n {
-                for sd in [foe, actor_side] {
-                    if self.side(sd).active_mon(slot as usize).is_some_and(|t| t.is_alive() && matches!(t.status, Status::Sleep)) {
-                        if let Some(t) = self.side_mut(sd).active_mon_mut(slot as usize) {
-                            t.status = Status::None;
-                        }
-                        pmon!(self, "-curestatus", sd, slot, "|slp|[msg]");
-                    }
-                }
-            }
-        }
         // Spit Up — PS data/moves.ts spitup onTry: needs Stockpile.
         if move_id == data::move_id::SPITUP
             && !self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|u| u.volatiles.has(crate::pokemon::VolatileKind::Stockpile))
@@ -9602,7 +9587,12 @@ self.trigger_emergency_exits();
                 continue;
             }
             // Poltergeist (data/moves.ts:13607-13609).
+            if move_id == data::move_id::UPROAR {
+                self.p_tag(crate::protocol::step::BREAK_PROTECT, tside, tslot);
+                self.uproar_wake(actor_side);
+            }
             if move_id == data::move_id::POLTERGEIST && self.plog() {
+                self.p_tag(crate::protocol::step::BREAK_PROTECT, tside, tslot);
                 let item = self.side(tside).active_mon(tslot as usize).map_or(u16::MAX, |d| d.item_id);
                 let item = crate::battle_protocol::item_name(item);
                 pmon!(self, "-activate", tside, tslot, "|move: Poltergeist|{item}");
@@ -10712,6 +10702,23 @@ self.trigger_emergency_exits();
             } else {
                 mon.moves[3] = saved.0;
                 mon.pp[3] = saved.1;
+            }
+        }
+    }
+
+    /// uproar onTryHit (data/moves.ts): every sleeper wakes, once the hit gets
+    /// past accuracy (data/mods/champions/scripts.ts spreadMoveHit's TryHit).
+    fn uproar_wake(&mut self, actor_side: SideRef) {
+        let n = self.format().active_count() as u8;
+        let foe = actor_side.opposing();
+        for slot in 0..n {
+            for sd in [foe, actor_side] {
+                if self.side(sd).active_mon(slot as usize).is_some_and(|t| t.is_alive() && matches!(t.status, Status::Sleep)) {
+                    if let Some(t) = self.side_mut(sd).active_mon_mut(slot as usize) {
+                        t.status = Status::None;
+                    }
+                    pmon!(self, "-curestatus", sd, slot, "|slp|[msg]");
+                }
             }
         }
     }
