@@ -1353,6 +1353,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     try_consume_room_service(battle, side, slot);
     // After the priority -1 seeds and Room Service.
     try_consume_white_herb(battle, side, slot);
+    // onAnySwitchInPriority -3 (data/abilities.ts opportunist, data/items.ts mirrorherb).
+    battle.flush_foe_boost_copies();
     // HP-threshold berries (Sitrus et al. onUpdate) in runSwitch's Update.
     let mut rng = std::mem::replace(battle.rng_mut(), crate::rng::Rng::Splitmix(0));
     on_after_damage(battle, side, slot, &mut rng);
@@ -1739,59 +1741,14 @@ pub(crate) fn try_consume_eject_pack(
     battle.force_switch_auto(side, slot)
 }
 
-/// Mirror Herb — PS data/items.ts:mirrorherb (line 4145).
-/// `onFoeAfterBoost`: accumulate positive deltas in `effectState.boosts`;
-/// on the holder's next chance to act (move / switch / mega / residual),
-/// `useItem()` and `boost(effectState.boosts, holder)`. The Herb consumes
-/// once it copies, regardless of how many boosts were stacked.
-///
-/// V1 simplification: immediate dispatch. When a positive boost lands on
-/// any mon, scan opposing actives — any Mirror Herb holder copies the
-/// same stage delta to the same stat and consumes. PS's accumulator
-/// (which lets multiple boosts in a row stack on the next action) is
-/// deferred — the common case is a single stat-up move (Dragon Dance,
-/// Swords Dance, Quiver Dance per-stat) where immediate-vs-accumulator
-/// behaviour matches.
-///
-/// `boosted_side` / `boosted_slot` identify the mon whose stat went up;
-/// `stat_idx` is 0..=6 (Atk/Def/SpA/SpD/Spe/Acc/Eva); `delta` is the
-/// positive stage delta actually applied (post-clamp).
-///
-/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mirror_Herb>.
-pub fn try_consume_mirror_herb_on_foe_boost(
-    battle: &mut Battle,
-    boosted_side: SideRef,
-    _boosted_slot: u8,
-    boosts: &[(u8, i8)],
-) {
-    if boosts.is_empty() {
-        return;
-    }
-    let opp = boosted_side.opposing();
-    let n = battle.format().active_count() as u8;
-    for s in 0..n {
-        let holder = battle.side(opp).active_mon(s as usize)
-            .map(|m| m.is_alive() && m.item_id == data::item_id::MIRRORHERB)
-            .unwrap_or(false);
-        if !holder {
-            continue;
-        }
-        if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-            let mut any_positive = false;
-            for &(idx, delta) in boosts {
-                if delta > 0 && (idx as usize) < 7 {
-                    t.boosts[idx as usize] = (t.boosts[idx as usize] + delta).clamp(-6, 6);
-                    any_positive = true;
-                }
-            }
-            if any_positive {
-                t.consume_item();
-            }
-        }
+#[inline]
+/// data/items.ts whiteherb onStart from setItem: at once, not after the move.
+pub(crate) fn white_herb_on_start(battle: &mut Battle, side: SideRef, slot: u8) {
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
+        try_consume_white_herb_now(battle, side, slot);
     }
 }
 
-#[inline]
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     // Raw-item prefilter: only a White Herb holder can consume one.
     if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {

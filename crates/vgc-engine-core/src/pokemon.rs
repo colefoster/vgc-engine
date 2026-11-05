@@ -1003,6 +1003,10 @@ pub struct Pokemon {
     /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
     /// mirroring PS `effectState.counter`.
     pub cud_chew_counter: u8,
+    /// The foe's stat rises Opportunist or Mirror Herb has collected and not yet
+    /// spent (their effectState.boosts).
+    #[serde(default)]
+    pub foe_boosts_pending: [i8; 7],
     /// Metronome item: the consecutive-use count and the last move counted
     /// (data/items.ts metronome condition's effectState).
     #[serde(default)]
@@ -1169,6 +1173,7 @@ impl Pokemon {
             commanded: false,
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
+            foe_boosts_pending: [0; 7],
             metronome_count: 0,
             metronome_move: u16::MAX,
             supreme_overlord_fallen: u8::MAX,
