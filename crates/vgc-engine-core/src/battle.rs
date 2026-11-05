@@ -13330,6 +13330,12 @@ self.trigger_emergency_exits();
         // the borrow (mem::replace idiom).
         self.p_tag(crate::protocol::step::UPDATE, ctx.tside, ctx.tslot);
         let mut busted = false;
+        // The fling volatile's onUpdate ties with Attract's in the holder's
+        // runEvent('Update') (data/moves.ts fling, attract).
+        #[cfg(feature = "ps-rng")]
+        let fling_tie = self.fling_pending.is_some()
+            && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize)
+                .is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::Attract));
         if !hit_sub {
             // eachEvent('Update') over the actives in speed order: the
             // target, and the attacker when this hit cost it HP (Rocky
@@ -13389,6 +13395,9 @@ self.trigger_emergency_exits();
             self.ps_loop_hits = self.ps_loop_hits.max(hit_idx as u8 + 1);
             if self.ps_inline_hit_updates {
                 self.ps_hit_update();
+            }
+            if fling_tie {
+                let _ = self.rng.ps_random_range("shuffle", 0, 2);
             }
             if self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.disguise_busted)
                 && self.disguise_hit_this_move
