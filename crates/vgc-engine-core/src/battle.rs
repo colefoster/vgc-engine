@@ -20211,6 +20211,54 @@ self.trigger_emergency_exits();
                 self.apply_boosts(ts, tslot, &[(2, 1)], actor_side, actor_slot);
                 self.confuse_from_move(ts, tslot, actor_side, actor_slot);
             }
+            data::move_id::TEETERDANCE => {
+                // data/moves.ts teeterdance: `target: allAdjacent`. Accuracy is
+                // rolled per target, then each hit target is confused
+                // (sim/battle-actions.ts trySpreadMoveHit).
+                let mut tgts = [(SideRef::P1, 0u8); 3];
+                let mut k = 0;
+                let n = self.format().active_count() as u8;
+                for ts in [actor_side, actor_side.opposing()] {
+                    for sl in 0..n {
+                        if (ts, sl) != (actor_side, actor_slot)
+                            && self.side(ts).active_mon(sl as usize).is_some_and(|t| t.is_alive() && !t.commanding)
+                        {
+                            tgts[k] = (ts, sl);
+                            k += 1;
+                        }
+                    }
+                }
+                let mut hit = [false; 3];
+                let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                for i in 0..k {
+                    let (ts, sl) = tgts[i];
+                    let Some(t) = self.side(ts).active_mon(sl as usize) else { continue };
+                    if t.is_protected_this_turn() {
+                        pmon!(self, "-activate", ts, sl, "|move: Protect");
+                        continue;
+                    }
+                    self.status_acc_boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
+                    self.status_acc_pair = Some((actor_side, actor_slot, ts, sl));
+                    hit[i] = self.rolled_accuracy_passed(m);
+                }
+                if self.plog() && k > 1 {
+                    let mut attr = String::from("[spread] ");
+                    let mut first = true;
+                    for i in 0..k {
+                        if hit[i] {
+                            if !first { attr.push(','); }
+                            first = false;
+                            attr.push_str(std::str::from_utf8(&crate::battle_protocol::slot_tag(tgts[i].0, tgts[i].1)).unwrap_or(""));
+                        }
+                    }
+                    self.p_attr(&attr);
+                }
+                for i in 0..k {
+                    if hit[i] && !self.status_blocked_by_substitute(tgts[i].0, tgts[i].1, actor_side, actor_slot) {
+                        self.confuse_from_move(tgts[i].0, tgts[i].1, actor_side, actor_slot);
+                    }
+                }
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
