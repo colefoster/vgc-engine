@@ -25521,6 +25521,14 @@ self.trigger_emergency_exits();
                         && self.side(actor_side).active_mon((actor_slot ^ 1) as usize).is_some_and(|p| {
                             p.is_alive() && matches!(p.effective_ability_id(), data::ability_id::SOUNDPROOF | data::ability_id::GOODASGOLD)
                         });
+                    // Dig or Fly: hitStepInvulnerabilityEvent's `-miss` comes first.
+                    let howl_ally_missed = move_id == data::move_id::HOWL
+                        && self.format().active_count() >= 2
+                        && self.side(actor_side).active_mon((actor_slot ^ 1) as usize).is_some_and(|p| p.is_alive() && p.semi_invuln != 0);
+                    let howl_ally_blocked = howl_ally_blocked && !howl_ally_missed;
+                    if howl_ally_missed {
+                        self.p_miss(actor_side, actor_slot, actor_side, actor_slot ^ 1);
+                    }
                     if howl_ally_blocked {
                         let ab = self.side(actor_side).active_mon((actor_slot ^ 1) as usize).map_or(0, |p| p.effective_ability_id());
                         pmon!(self, "-immune", actor_side, actor_slot ^ 1, "|[from] ability: {}", crate::battle_protocol::ability_name(ab));
@@ -25574,7 +25582,7 @@ self.trigger_emergency_exits();
                             let ally_alive = self.side(actor_side)
                                 .active_mon(ally_slot as usize)
                                 .is_some_and(|p| p.is_alive());
-                            if ally_alive && howl_ally_blocked {
+                            if ally_alive && (howl_ally_blocked || howl_ally_missed) {
                                 self.p_attr(&format!("[spread] p{}{}", actor_side as u8 + 1, if actor_slot == 0 { 'a' } else { 'b' }));
                             } else if ally_alive {
                                 self.apply_boosts(actor_side, ally_slot, &[(0, 1)], actor_side, actor_slot);
