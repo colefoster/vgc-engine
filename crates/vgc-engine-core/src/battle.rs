@@ -2404,7 +2404,7 @@ impl Battle {
                 }
             }
             for (copy, fx) in [
-                (opportunist, crate::protocol::BoostFx::AbilitySelf(data::ability_id::OPPORTUNIST)),
+                (opportunist, crate::protocol::BoostFx::Ability(data::ability_id::OPPORTUNIST)),
                 (herb, crate::protocol::BoostFx::Item(data::item_id::MIRRORHERB)),
             ] {
                 if !copy {
@@ -6595,7 +6595,11 @@ self.trigger_emergency_exits();
         self.apply_stealth_rock_to(side, actor_slot);
         self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
+        // White Herb's onAnySwitchIn (priority -2) comes after every hazard of the
+        // batch (sim/battle.ts fieldEvent, data/items.ts whiteherb).
+        let defer = std::mem::replace(&mut self.defer_white_herb, true);
         self.apply_sticky_web_to(side, actor_slot);
+        self.defer_white_herb = defer;
         if let Some(l) = self.protocol.log_mut() {
             l.hold_for = None;
         }
@@ -8347,6 +8351,7 @@ self.trigger_emergency_exits();
             // data/moves.ts fling onPrepareHit: ignoringItem(true) (Embargo, Magic
             // Room), the item's TakeItem (own Mega Stone), then `item.fling`.
             let flingable = attacker.item_id != u16::MAX
+                && attacker.effective_ability_id() != data::ability_id::KLUTZ
                 && data::ITEMS[attacker.item_id as usize].fling_bp != 255
                 && !attacker.holds_own_mega_stone()
                 && self.magic_room_turns == 0
@@ -9094,8 +9099,8 @@ self.trigger_emergency_exits();
                         // Ground into an airborne target: runImmunity's `-immune`, or
                         // Levitate's onTryHit line (data/abilities.ts levitate).
                         self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
-                        if defender.effective_ability_id() == data::ability_id::LEVITATE {
-                            pmon!(self, "-immune", tside, tslot, "|[from] ability: Levitate");
+                        if matches!(defender.effective_ability_id(), data::ability_id::LEVITATE | data::ability_id::EELEVATE) {
+                            pmon!(self, "-immune", tside, tslot, "|[from] ability: {}", crate::battle_protocol::ability_name(defender.effective_ability_id()));
                         } else {
                             pmon!(self, "-immune", tside, tslot);
                         }
@@ -9773,7 +9778,7 @@ self.trigger_emergency_exits();
                 };
                 if darts_phase[ti] == 1 && darts_smart {
                 } else if defender.effective_ability_id() == data::ability_id::LEVITATE && !attacker_breaks_mold && !flying {
-                    pmon!(self, "-immune", tside, tslot, "|[from] ability: Levitate");
+                    pmon!(self, "-immune", tside, tslot, "|[from] ability: {}", crate::battle_protocol::ability_name(defender.effective_ability_id()));
                 } else {
                     pmon!(self, "-immune", tside, tslot);
                 }
@@ -12631,23 +12636,23 @@ self.trigger_emergency_exits();
             _ if self.p1.is_defeated() || self.p2.is_defeated() => {}
             "moxie" => {
                 self.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::MOXIE));
-                self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
+                self.apply_boosts(side, slot, &[(0, amount)], side, slot);
             }
             "beastboost" | "eelevate" => {
-                if let Some(ab) = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).map(|a| a.effective_ability_id()) {
+                if let Some(ab) = self.side(side).active_mon(slot as usize).map(|a| a.effective_ability_id()) {
                     self.p_boost_fx(crate::protocol::BoostFx::Ability(ab));
                 }
                 let idx = self
-                    .side(ctx.actor_side)
-                    .active_mon(ctx.actor_slot as usize)
+                    .side(side)
+                    .active_mon(slot as usize)
                     .map(crate::ability::best_stat_index)
                     .unwrap_or(0);
-                self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
+                self.apply_boosts(side, slot, &[(idx, amount)], side, slot);
             }
             _ => {}
         }
-        if fell_stinger && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive()) {
-            self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 3)], ctx.actor_side, ctx.actor_slot);
+        if fell_stinger && self.side(side).active_mon(slot as usize).is_some_and(|a| a.is_alive()) {
+            self.apply_boosts(side, slot, &[(0, 3)], side, slot);
         }
     }
 
@@ -15820,7 +15825,12 @@ self.trigger_emergency_exits();
         // of lock, target gets confused. The PS volatile auto-decrements
         // each turn; we mirror with `lockin_turns` counting *remaining*
         // turns including the current one.
-        if any_damage_dealt > 0
+        // A hit that takes no HP still runs selfDrops (sim/battle-actions.ts spreadMoveHit).
+        #[cfg(feature = "ps-rng")]
+        let recharge_hit = any_damage_dealt > 0 || self.ps_loop_hits > 0;
+        #[cfg(not(feature = "ps-rng"))]
+        let recharge_hit = any_damage_dealt > 0;
+        if recharge_hit
             && matches!(
                 move_id,
                 data::move_id::HYPERBEAM | data::move_id::GIGAIMPACT | data::move_id::BLASTBURN
@@ -21270,7 +21280,11 @@ self.trigger_emergency_exits();
                         .active_mon(tslot as usize)
                         .is_some_and(|t| t.substitute_hp() > 0);
                     if !sub_blocks {
+                        let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(ts, tslot, &[(6, -1)], actor_side, actor_slot);
+                        if ts != actor_side {
+                            self.after_foe_drop(ts, tslot, before, true);
+                        }
                     }
                     // removeTarget, in data/moves.ts defog onHit order.
                     let sid = self.p_side_ident(ts);
@@ -21299,7 +21313,7 @@ self.trigger_emergency_exits();
                 self.clear_entry_hazards(actor_side);
                 // Clear Terrain (gen 8+).
                 if self.terrain != crate::terrain::Terrain::None {
-                    let name = crate::battle_protocol::terrain_name(self.terrain);
+                    let name = crate::battle_protocol::terrain_end_name(self.terrain);
                     plog!(self, "|-fieldend|{name}");
                 }
                 self.terrain = crate::terrain::Terrain::None;
@@ -21714,12 +21728,14 @@ self.trigger_emergency_exits();
                     // whiteherb onStart).
                     if my_item != u16::MAX {
                         crate::item::white_herb_on_start(self, ts, tslot);
+                        self.p_air_balloon(ts, tslot);
                         self.p_item_line("-item", ts, tslot, my_item, &format!("|[from] move: {name}"));
                     } else {
                         self.p_item_line("-enditem", ts, tslot, your_item, &format!("|[silent]|[from] move: {name}"));
                     }
                     if your_item != u16::MAX {
                         crate::item::white_herb_on_start(self, actor_side, actor_slot);
+                        self.p_air_balloon(actor_side, actor_slot);
                         self.p_item_line("-item", actor_side, actor_slot, your_item, &format!("|[from] move: {name}"));
                     } else {
                         self.p_item_line("-enditem", actor_side, actor_slot, my_item, &format!("|[silent]|[from] move: {name}"));
@@ -22313,7 +22329,16 @@ self.trigger_emergency_exits();
                 let Some((ts, tslot)) = opp_target else { return };
                 if self.status_blocked_by_substitute(ts, tslot, actor_side, actor_slot) { return; }
                 self.apply_boosts(ts, tslot, &[(2, 1)], actor_side, actor_slot);
-                self.confuse_from_move(ts, tslot, actor_side, actor_slot);
+                let before = self.side(ts).active_mon(tslot as usize).map_or(0, |t| t.boosts[2]);
+                let hit = self.confuse_no_update(ts, tslot, actor_side, actor_slot);
+                if hit == SpreadHit::True {
+                    crate::item::try_consume_persim_berry(self, ts, tslot);
+                }
+                // runMoveEffects: a capped boost (null) and a repeat confusion
+                // (false) combine to false: `-fail`, `[still]`, after the 0 line.
+                if hit == SpreadHit::False && before >= 6 {
+                    self.p_try_fail(actor_side, actor_slot);
+                }
             }
             data::move_id::TEETERDANCE => {
                 // data/moves.ts teeterdance: `target: allAdjacent`,
@@ -24688,7 +24713,7 @@ fn ps_cantsuppress(a: u16) -> bool {
 /// either the user or target has one (sim/battle.ts:1316). Sourced from
 /// `data/abilities.ts` (gen 9). Mirrors the unswappable set: forme/Tera
 /// gimmicks, signature immunities, and the paradox boosters.
-fn ability_fails_skill_swap(slug: &str) -> bool {
+pub(crate) fn ability_fails_skill_swap(slug: &str) -> bool {
     matches!(
         slug,
         "asoneglastrier"
