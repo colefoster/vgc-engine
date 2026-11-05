@@ -1659,8 +1659,9 @@ pub(crate) fn try_consume_red_card(
     attacker_side: SideRef,
     attacker_slot: u8,
 ) -> bool {
+    // The item event doesn't run under Magic Room or Klutz (sim/pokemon.ts ignoringItem).
     let (alive, item_id) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.is_alive(), m.item_id),
+        Some(m) => (m.is_alive(), m.effective_item_id()),
         None => return false,
     };
     if !alive || item_id != data::item_id::REDCARD {
