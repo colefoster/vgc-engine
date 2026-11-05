@@ -10,9 +10,9 @@
 // the default `ps-rng` feature keeps no trace otherwise.
 //
 // Both sims run the same stream, so the raw value at index i is equal by construction; two draws
-// differ in their arguments or, when the arguments match, in which code drew them. `kind`:
-//   hidden   arguments differ at a draw made before the first differing log line
-//   visible  no argument difference before that line: the log line itself is wrong
+// differ in their span or, when the spans match, in what they are for (psPurpose). `kind`:
+//   hidden   the draws differ before the first differing log line
+//   visible  no draw difference before that line: the log line itself is wrong
 //   draws    logs are equal and the draws differ
 //   same     nothing differs
 'use strict';
@@ -171,13 +171,34 @@ function runEngine(inputLog) {
 	});
 }
 
+// What a draw is for, when the two sims name it clearly. Equal spans with different purposes are
+// still a difference: a speed tie and a two-foe random target both draw random(2).
+function psPurpose(d) {
+	const frames = d.stack.map(f => f.split(' ')[0]);
+	if (frames.includes('Battle.speedSort')) return 'sort';
+	if (frames.includes('Battle.getRandomTarget')) return 'target';
+	if (frames.includes('Battle.randomizer')) return 'roll';
+	const first = frames.find(f => !/^Battle\.(?:random|randomChance|sample)$/.test(f));
+	if (first === 'BattleActions.hitStepAccuracy') return 'percent';
+	if (first === 'BattleActions.secondaries') return 'percent';
+	if (first === 'BattleActions.getDamage') return 'crit';
+	return null;
+}
+const VGC_PURPOSE = { shuffle: 'sort', get_target: 'target', random_target: 'target', damage: 'roll', crit: 'crit', percent: 'percent' };
+function drawsDiffer(p, v) {
+	if (p.span !== v.span || p.raw !== v.raw) return true;
+	const a = psPurpose(p);
+	const b = VGC_PURPOSE[v.op];
+	return !!(a && b && a !== b);
+}
+
 function compare(ps, vgc) {
 	let line = 0;
 	while (line < ps.log.length && line < vgc.log.length && ps.log[line] === vgc.log[line]) line++;
 	const logDiffers = line < ps.log.length || line < vgc.log.length;
 	let at = 0;
 	const n = Math.min(ps.draws.length, vgc.draws.length);
-	while (at < n && ps.draws[at].span === vgc.draws[at].span && ps.draws[at].raw === vgc.draws[at].raw) at++;
+	while (at < n && !drawsDiffer(ps.draws[at], vgc.draws[at])) at++;
 	const drawDiffers = at < ps.draws.length || at < vgc.draws.length;
 	// Draws PS made before it logged the first differing line.
 	const before = logDiffers ? ps.draws.filter(d => d.line <= line).length : ps.draws.length;
@@ -230,7 +251,7 @@ async function single(file, game, around, outFile) {
 	console.log(`aligned draws around #${center}:`);
 	for (let i = Math.max(0, center - around); i <= center + around; i++) {
 		if (!ps.draws[i] && !vgc.draws[i]) break;
-		const mark = ps.draws[i] && vgc.draws[i] && ps.draws[i].span === vgc.draws[i].span ? ' ' : '*';
+		const mark = ps.draws[i] && vgc.draws[i] && !drawsDiffer(ps.draws[i], vgc.draws[i]) ? ' ' : '*';
 		console.log(`${mark}${String(i).padStart(5)} ps  ${fmtPs(ps.draws[i])}\n       vgc ${fmtVgc(vgc.draws[i])}`);
 	}
 	if (outFile) fs.writeFileSync(outFile, JSON.stringify({ compare: c, ps: ps.draws, vgc: vgc.draws }, null, 1));
