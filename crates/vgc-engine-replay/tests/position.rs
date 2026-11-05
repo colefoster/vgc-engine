@@ -154,6 +154,8 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                             ("added_type", serde_json::json!(255)),
                             ("type_unseen", serde_json::json!(false)),
                             ("borrowed_slot", serde_json::json!([65535, 0])),
+                            ("last_foe_damage", serde_json::json!(0)),
+                            ("hurt_this_turn", serde_json::json!(false)),
                         ] {
                             if m.get(key) == Some(&rest) {
                                 m.remove(key);
