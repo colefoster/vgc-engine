@@ -219,6 +219,19 @@ impl BattleStream {
         Vec::new()
     }
 
+    /// Each draw's span, op and source line, for debugging a draw-order difference
+    /// (`VGC_DRAW_SITES=<file>` beside `VGC_DRAW_TRACE`).
+    pub fn draw_sites(&self) -> Vec<String> {
+        #[cfg(feature = "ps-rng")]
+        if let Some(s) = self.session.as_ref() {
+            let mut b = s.battle().clone_with_log();
+            if let Some(t) = b.rng_mut().ps_mut().and_then(|p| p.take_trace()) {
+                return t.iter().map(|d| format!("{} {} {}:{}", d.span, d.op, d.file, d.line)).collect();
+            }
+        }
+        Vec::new()
+    }
+
     /// PS `BattleStream._write` (sim/battle-stream.ts:35-54): every `>`
     /// line of the chunk, then one `sendUpdates`. `Err` is what PS throws
     /// (with `noCatch`, `simulate-battle` dies on it).
@@ -700,6 +713,9 @@ pub fn run_simulate_battle(opts: StreamOptions, mut input: impl std::io::Read, m
                 if let Some(path) = std::env::var_os("VGC_DRAW_TRACE") {
                     let spans: Vec<String> = s.draw_spans().iter().map(u32::to_string).collect();
                     let _ = std::fs::write(path, spans.join("\n"));
+                    if let Some(path) = std::env::var_os("VGC_DRAW_SITES") {
+                        let _ = std::fs::write(path, s.draw_sites().join("\n"));
+                    }
                 }
                 return Ok(());
             }
