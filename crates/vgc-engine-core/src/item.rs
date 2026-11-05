@@ -1268,10 +1268,7 @@ pub fn on_damaging_hit(
     // <https://bulbapedia.bulbagarden.net/wiki/Absorb_Bulb>.
     // Aura Wheel's onModifyType has already run (data/moves.ts:801-807):
     // Dark from a Morpeko-Hangry, so it doesn't trigger Cell Battery.
-    let move_type = match battle.side(attacker_side).active_mon(attacker_slot as usize) {
-        Some(a) if move_id == data::move_id::AURAWHEEL => crate::damage::aura_wheel_type(a),
-        _ => data::MOVES[move_id as usize].type_,
-    };
+    let move_type = crate::ability::hit_move_type(battle, attacker_side, attacker_slot, move_id);
     // (slug, required type, stat index — 0=Atk, 2=SpA, 3=SpD).
     let booster_entry = match item_id {
         data::item_id::ABSORBBULB   => Some((2u8, 2usize)), // Water → SpA

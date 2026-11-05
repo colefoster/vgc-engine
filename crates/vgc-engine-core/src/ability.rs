@@ -1838,6 +1838,19 @@ pub(crate) fn magician_steal(
 /// damage and the hit must not have been absorbed by a Substitute
 /// (PS treats sub-absorbed hits as not reaching the holder, so
 /// Stamina / Rough Skin / Iron Barbs etc. don't fire).
+/// `move.type` as DamagingHit reads it, after ModifyType (Weather Ball, Electrify, -ate).
+pub(crate) fn hit_move_type(battle: &Battle, attacker_side: SideRef, attacker_slot: u8, move_id: u16) -> u8 {
+    match battle.side(attacker_side).active_mon(attacker_slot as usize) {
+        Some(a) => crate::damage::move_type_in_ctx(a, move_id, &crate::damage::DamageContext {
+            weather: battle.effective_weather_for(attacker_side, attacker_slot),
+            terrain: battle.terrain,
+            champions: battle.champions,
+            ..crate::damage::DamageContext::default()
+        }),
+        None => data::MOVES[move_id as usize].type_,
+    }
+}
+
 pub fn on_damaging_hit(
     battle: &mut Battle,
     target_side: SideRef,
@@ -1965,7 +1978,7 @@ pub fn on_damaging_hit(
     // switch-out via `clear_type_override`. Kecleon signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Color_Change_(Ability)>.
     if ability_id == data::ability_id::COLORCHANGE && target_alive {
-        let move_type = data::MOVES[move_id as usize].type_;
+        let move_type = hit_move_type(battle, attacker_side, attacker_slot, move_id);
         if move_type != u8::MAX {
             let already_has = battle
                 .side(target_side)
@@ -2125,7 +2138,7 @@ pub fn on_damaging_hit(
     // +1 Atk on incoming Dark move. Lucario / Arcanine / Gallade etc.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Justified_(Ability)>.
     if ability_id == data::ability_id::JUSTIFIED && target_alive {
-        let move_type = data::MOVES[move_id as usize].type_;
+        let move_type = hit_move_type(battle, attacker_side, attacker_slot, move_id);
         if move_type == 15 {
             battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Justified self-boost (+1 Atk) on incoming Dark move.
@@ -2207,7 +2220,7 @@ pub fn on_damaging_hit(
     // Iron Treads / Coalossal signature. Type codes: 1=Fire, 2=Water.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Steam_Engine_(Ability)>.
     if ability_id == data::ability_id::STEAMENGINE && target_alive {
-        let move_type = data::MOVES[move_id as usize].type_;
+        let move_type = hit_move_type(battle, attacker_side, attacker_slot, move_id);
         if move_type == 1 || move_type == 2 {
             battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Steam Engine self-boost — PS `boost({spe: 6})` (additive +6).
@@ -2226,7 +2239,7 @@ pub fn on_damaging_hit(
     // — TODO when Rattled holders see Intimidate). Gumshoos / Sableye HA.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
     if ability_id == data::ability_id::RATTLED && target_alive {
-        let move_type = data::MOVES[move_id as usize].type_;
+        let move_type = hit_move_type(battle, attacker_side, attacker_slot, move_id);
         if matches!(move_type, 11 | 13 | 15) {
             battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Rattled self-boost (+1 Spe) on incoming Bug/Ghost/Dark.
