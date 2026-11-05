@@ -10660,7 +10660,11 @@ self.trigger_emergency_exits();
         self.called_ran = true;
         if let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) {
             mon.last_used_move_slot = saved.2;
-            mon.last_used_move_target = saved.3;
+            // twoturnmove onStart: a called charge move keeps its target's location
+            // for the release (data/conditions.ts twoturnmove).
+            if !(mon.charging_turns > 0 && mon.charging_move_slot == 3) {
+                mon.last_used_move_target = saved.3;
+            }
             mon.moves_used = saved.4;
             // A called move that locks the user (Outrage, Dig) keeps the slot until the
             // lock ends (`release_borrowed_slot`): the request shows it alone.
