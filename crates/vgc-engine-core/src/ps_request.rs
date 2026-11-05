@@ -357,6 +357,12 @@ impl Battle {
         let mut first = true;
         let moves = match (&m.transform_base, fainted) {
             (Some(t), true) => t.moves,
+            // A called locking move holds slot 3; the side keeps its real moves.
+            _ if m.borrowed_slot.0 != u16::MAX => {
+                let mut real = m.moves;
+                real[3] = m.borrowed_slot.0;
+                real
+            }
             _ => m.moves,
         };
         for &mv in moves.iter().filter(|&&mv| mv != u16::MAX) {

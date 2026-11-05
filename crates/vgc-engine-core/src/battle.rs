@@ -15470,6 +15470,12 @@ self.trigger_emergency_exits();
         idx: usize,
         pending_kind: &mut [[u8; 2]; 2],
     ) {
+        // A called charge move released this action gives its slot back.
+        if let Some(a) = order.as_mut_slice().get(idx).copied() {
+            if let Some(m) = self.side_mut(a.side).active_mon_mut(a.actor_slot as usize) {
+                m.release_borrowed_slot();
+            }
+        }
         // After You / Quash reorder the remaining queue. Apply the
         // request (if any) to the unprocessed tail `(idx..]` before
         // advancing — a no-op when the target already acted.
