@@ -2162,6 +2162,26 @@ pub(crate) fn calculate_damage_with_bp(
     let eff_def_stage = def_policy.project(def_stage);
     let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
     let mut d = apply_boost(def_stat, eff_def_stage).max(1);
+    // Sandstorm's onModifySpD and Snow's onModifyDef, priority 10
+    // (data/conditions.ts sandstorm, snowscape): on the staged stat, for the
+    // types the mon has now. Mega Sol makes the attacker's weather reads 'sunnyday'
+    // (sim/pokemon.ts effectiveWeather).
+    {
+        let reads_def = physical
+            || matches!(move_id, data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD);
+        let (eff_types, eff_num) = defender.effective_types();
+        let has = |t: u8| eff_types[..eff_num as usize].contains(&t);
+        let mega_sol = attacker.effective_ability_id() == data::ability_id::MEGASOL;
+        let weather_buff = !mega_sol
+            && match ctx.weather {
+                crate::weather::Weather::Sand => !reads_def && has(12),
+                crate::weather::Weather::Snow => reads_def && has(5),
+                _ => false,
+            };
+        if weather_buff {
+            d = (d * 6144 / 4096).max(1);
+        }
+    }
 
     // Defeatist — PS `data/abilities.ts:873`:
     //   onModifyAtk(atk, pokemon) {

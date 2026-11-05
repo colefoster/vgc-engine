@@ -9883,54 +9883,6 @@ self.trigger_emergency_exits();
             {
                 def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
             }
-            // Sandstorm — Rock-type defenders get ×1.5 SpD while Sand
-            // is the active weather. PS `data/conditions.ts:sandstorm`
-            // `onModifySpD` priority 10:
-            //   if (pokemon.hasType('Rock') && pokemon.effectiveWeather() === 'sandstorm')
-            //     return this.modify(spd, 1.5);
-            // Applied to the defender's *effective* types (post-Tera) so
-            // a Tera-Rock mon also gets the boost; PS reads `hasType`
-            // which follows the same convention.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>.
-            // Mega Sol (Champions): while the attacker has it, PS
-            // `Pokemon.effectiveWeather` (sim/pokemon.ts) reports 'sunnyday'
-            // for Weather-sourced reads, so neither boost below applies.
-            let mega_sol_attacker =
-                attacker.effective_ability_id() == data::ability_id::MEGASOL;
-            if matches!(self.effective_weather(), crate::weather::Weather::Sand)
-                && m.category == 1
-                && !mega_sol_attacker
-            {
-                let (eff_types, eff_num) = defender.effective_types();
-                let is_rock = (0..eff_num as usize).any(|i| eff_types[i] == 12);
-                if is_rock {
-                    def_stats_ovr.spd =
-                        ((def_stats_ovr.spd as u32 * 3 / 2)
-                            .min(u16::MAX as u32)) as u16;
-                }
-            }
-            // Snow (gen 9) — Ice-type defenders get ×1.5 Def while Snowscape
-            // is the active weather. PS `data/conditions.ts:706` snowscape
-            // `onModifyDef` priority 10:
-            //   if (pokemon.hasType('Ice') && pokemon.effectiveWeather() === 'snowscape')
-            //     return this.modify(def, 1.5);
-            // Every Def read (onModifyDef): a physical move's, and a special
-            // move that hits Def (Psyshock / Psystrike / Secret Sword).
-            // Mirrors the Sandstorm Rock-SpD boost above; uses effective
-            // (post-Tera) types like PS hasType. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
-            if matches!(self.effective_weather(), crate::weather::Weather::Snow)
-                && m.category != 2
-                && !mega_sol_attacker
-            {
-                let (eff_types, eff_num) = defender.effective_types();
-                let is_ice = (0..eff_num as usize).any(|i| eff_types[i] == 5);
-                if is_ice {
-                    def_stats_ovr.def =
-                        ((def_stats_ovr.def as u32 * 3 / 2)
-                            .min(u16::MAX as u32)) as u16;
-                }
-            }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
             if defender.boosted_stat == 1 && m.category == 0 {
