@@ -1959,6 +1959,17 @@ impl Battle {
         pmon!(self, "-miss", side, slot, "|{t}");
     }
 
+    /// A future move's miss: its source may be off the field.
+    pub(crate) fn p_future_miss(&mut self, side: SideRef, idx: u8, tside: SideRef, tslot: u8) {
+        if !self.plog() {
+            return;
+        }
+        self.p_attr("[miss]");
+        let src = self.p_ident_idx(side, idx);
+        let t = self.p_ident(tside, tslot);
+        self.p_push(format!("|-miss|{src}|{t}"));
+    }
+
     /// An absorbing ability's boost (Lightning Rod, Storm Drain, Motor
     /// Drive, Sap Sipper, Wind Rider, Well-Baked Body): the ability boost,
     /// or `-immune` when the stat is capped.
