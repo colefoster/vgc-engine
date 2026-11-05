@@ -3181,6 +3181,10 @@ self.trigger_emergency_exits();
                 self.p_damage(actor_side, actor_slot, "|[from] confusion");
                 if disguised {
                     self.disguise_bust_at(actor_side, actor_slot);
+                    #[cfg(feature = "ps-rng")]
+                    if self.rng.is_ps() {
+                        self.ps_reset_speed(actor_side, actor_slot as usize);
+                    }
                 }
                 if std::mem::take(&mut self.charge_end_after_yield) {
                     self.end_charge(actor_side, actor_slot);
@@ -12552,13 +12556,10 @@ self.trigger_emergency_exits();
         };
         // Forme-change first, then mark busted and apply the chip. The base stats
         // match, but setSpecies recomputes storedStats, ending a Power Split, and
-        // caches the raw Speed (sim/pokemon.ts setSpecies).
+        // caches the raw Speed (sim/pokemon.ts setSpecies). The caller resets that
+        // cache: the eachEvent running this handler sorted on the old Speed.
         if let Some(busted_id) = busted_id {
             self.set_forme(tside, tslot, busted_id, true);
-            #[cfg(feature = "ps-rng")]
-            if self.rng.is_ps() {
-                self.ps_reset_speed(tside, tslot as usize);
-            }
         }
         if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
             d.disguise_busted = true;
@@ -13334,6 +13335,11 @@ self.trigger_emergency_exits();
             self.ps_loop_hits = self.ps_loop_hits.max(hit_idx as u8 + 1);
             if self.ps_inline_hit_updates {
                 self.ps_hit_update();
+            }
+            if self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| d.disguise_busted)
+                && self.disguise_hit_this_move
+            {
+                self.ps_reset_speed(ctx.tside, ctx.tslot as usize);
             }
         }
     }
@@ -15974,7 +15980,8 @@ self.trigger_emergency_exits();
             self.sync_weather_terrain_cache();
         }
         if let Some(drops) = self_stat_drops(m.slug, self.champions) {
-            if any_damage_dealt > 0 {
+            // A Disguise's 0 is still a hit (sim/battle-actions.ts selfDrops).
+            if any_damage_dealt > 0 || self.disguise_hit_this_move {
                 // PS `selfDrops` rolls `random(100)` for a `self.boosts`
                 // move even though the drop is unconditional
                 // (sim/battle-actions.ts selfDrops, a5df8274).

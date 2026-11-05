@@ -2657,7 +2657,7 @@ pub fn on_damaging_hit(
     // suppress the RNG draw entirely. One draw per unblocked hit keeps the
     // oracle stream aligned. Gliscor / Pecharunt signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Chain_(Ability)>.
-    if attacker_ability_id == data::ability_id::TOXICCHAIN && target_alive {
+    if attacker_ability_id == data::ability_id::TOXICCHAIN {
         let blocked = battle
             .side(target_side)
             .active_mon(target_slot as usize)
