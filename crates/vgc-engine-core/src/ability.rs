@@ -2261,6 +2261,12 @@ pub fn on_damaging_hit(
                     battle.p_damage(attacker_side, attacker_slot, &format!("|[from] ability: {}|[of] {of}", crate::battle_protocol::ability_name(ability_id)));
                     battle.p_sub(3);
                 }
+            } else if battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| a.is_alive()) && battle.plog() {
+                // magicguard onDamage names the ability it stops, on its holder
+                // (data/abilities.ts magicguard).
+                battle.p_sub(1);
+                pmon!(battle, "-activate", target_side, target_slot, "|ability: {}", crate::battle_protocol::ability_name(ability_id));
+                battle.p_sub(3);
             }
         }
     }
