@@ -23868,6 +23868,11 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) {
                     return;
                 }
+                // addVolatile's own failure comes ahead of TryAddVolatile
+                // (sim/pokemon.ts addVolatile).
+                if self.side(opp).active_mon(target_slot as usize).is_some_and(|t| t.attract_source().is_some()) {
+                    return;
+                }
                 if self.side_has_aroma_veil(opp, attract_src_breaks_mold) {
                     self.p_aroma_veil_block(opp, target_slot);
                     return;
