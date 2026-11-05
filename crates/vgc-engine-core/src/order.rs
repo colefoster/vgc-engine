@@ -211,7 +211,9 @@ pub fn effective_speed(
     // Linoone / Ursaring HA.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Quick_Feet_(Ability)>.
     let statused = !matches!(mon.status, Status::None);
-    let has_quick_feet = mon.ability_id == data::ability_id::QUICKFEET;
+    // The current ability: Mummy, Skill Swap and Neutralizing Gas count.
+    let ability = mon.effective_ability_id();
+    let has_quick_feet = ability == data::ability_id::QUICKFEET;
     // Every onModifySpe below is a chainModify: PS chains them into one
     // 4096-based modifier (sim/battle.ts chainModify) applied once, then
     // paralysis (onModifySpePriority -101) finalModify()s and floors half
@@ -226,9 +228,11 @@ pub fn effective_speed(
         chain(8192);
     }
     // Choice Scarf: ×1.5 to final speed.
-    if mon.item_id == data::item_id::CHOICESCARF {
+    // effective_item_id: the item's onModifySpe doesn't run under Magic Room.
+    let item = mon.effective_item_id();
+    if item == data::item_id::CHOICESCARF {
         chain(6144);
-    } else if mon.item_id == data::item_id::IRONBALL {
+    } else if item == data::item_id::IRONBALL {
         // Iron Ball — PS `data/items.ts:ironball` `onModifySpe`:
         //   `return this.chainModify(0.5);`
         // Halves the holder's speed unconditionally. Bulbapedia:
@@ -248,7 +252,7 @@ pub fn effective_speed(
     // suspends the boost (the latch persists until switch-out). Hawlucha /
     // Sceptile / Hitmonlee signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Unburden_(Ability)>.
-    if mon.ability_id == data::ability_id::UNBURDEN && mon.unburden_active && mon.item_id == u16::MAX {
+    if ability == data::ability_id::UNBURDEN && mon.unburden_active && mon.item_id == u16::MAX {
         chain(8192);
     }
     // Weather speed abilities — PS `data/abilities.ts` `onModifySpe`
@@ -257,7 +261,7 @@ pub fn effective_speed(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swift_Swim_(Ability)>.
     use crate::weather::Weather;
     let weather_double = matches!(
-        (mon.ability_id, weather),
+        (ability, weather),
         (data::ability_id::SWIFTSWIM, Weather::Rain)
             | (data::ability_id::CHLOROPHYLL, Weather::Sun)
             | (data::ability_id::SANDRUSH, Weather::Sand)
@@ -265,14 +269,14 @@ pub fn effective_speed(
     );
     // Surge Surfer — PS data/abilities.ts surgesurfer `onModifySpe`:
     // chainModify(2) in Electric Terrain (no grounding check).
-    let surge_double = mon.ability_id == data::ability_id::SURGESURFER
+    let surge_double = ability == data::ability_id::SURGESURFER
         && matches!(terrain, crate::terrain::Terrain::Electric);
     if weather_double || surge_double {
         chain(8192);
     }
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
-    if mon.ability_id == data::ability_id::SLOWSTART && mon.slow_start_active_turns > 0 {
+    if ability == data::ability_id::SLOWSTART && mon.slow_start_active_turns > 0 {
         chain(2048);
     }
     // sim/battle.ts modify: tr((tr(value * modifier) + 2048 - 1) / 4096).

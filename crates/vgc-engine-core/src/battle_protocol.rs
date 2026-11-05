@@ -374,6 +374,16 @@ impl Battle {
         }
     }
 
+    /// `-damage` from directDamage (Substitute, Belly Drum, confusion ...), which
+    /// doesn't set hurtThisTurn (sim/battle.ts directDamage, spreadDamage).
+    pub(crate) fn p_direct_damage(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        let hurt = self.side(side).active_mon(slot as usize).is_some_and(|m| m.hurt_this_turn);
+        self.p_damage(side, slot, suffix);
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.hurt_this_turn = hurt;
+        }
+    }
+
     /// `|-damage|`, queueing a faint when the HP hit 0 (PS `damage` ->
     /// `faintQueue`, sim/battle.ts:2108-2142).
     #[inline(always)]
@@ -1095,7 +1105,7 @@ impl Battle {
         let Some(m) = self.side(side).active_mon(slot as usize) else { return };
         let grass = {
             let (t, n) = m.effective_types();
-            t[..n as usize].contains(&4)
+            t[..n as usize].contains(&4) || m.added_type == 4
         };
         if grass {
             pmon!(self, "-immune", side, slot);
@@ -1578,7 +1588,9 @@ impl Battle {
                         return Some((t.side, t.slot));
                     }
                     if t.side == side {
-                        return Some((t.side, t.slot));
+                        // sim/battle.ts getTarget: adjacentAllyOrSelf falls back to
+                        // the user when the ally fainted.
+                        return Some(if tcode == 3 { (side, slot) } else { (t.side, t.slot) });
                     }
                 }
             }
@@ -1644,7 +1656,7 @@ impl Battle {
         let mut rod: Option<(SideRef, u8, u16)> = None;
         if let Some(t) = display {
             let m = &self.moves()[move_id as usize];
-            if matches!(m.target, 0 | 4 | 10) {
+            if matches!(m.target, 0 | 4 | 10 | 13) {
                 let r = self.resolve_targets(side, slot, move_id, attacker, m, crate::battle::TargetBuf::single(t));
                 if r.len() == 1 {
                     if r[0] != t {
@@ -1663,8 +1675,12 @@ impl Battle {
             pmon!(self, "-curestatus", side, slot, "|frz|[from] move: {}", move_name(move_id));
         }
         // Curse from a non-Ghost targets itself (data/moves.ts curse onModifyMove).
-        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) {
+        if move_id == data::move_id::CURSE && !attacker.effective_types().0[..attacker.effective_types().1 as usize].contains(&13) && attacker.added_type != 13 {
             display = Some((side, slot));
+        }
+        // wonderroom onModifyMove (data/moves.ts) on a move with overrideOffensiveStat.
+        if move_id == data::move_id::BODYPRESS && self.wonder_room_turns > 0 {
+            self.p_push("|-hint|Body Press uses Def boosts when Wonder Room is active.".to_string());
         }
         // struggle onModifyMove, before the `|move|` line (data/moves.ts:18226).
         if move_id == data::move_id::STRUGGLE {
@@ -1689,7 +1705,13 @@ impl Battle {
             }
         }
         let id = self.p_ident(side, slot);
-        let tgt = display.map(|(s, sl)| self.p_ident(s, sl)).unwrap_or_default();
+        // getRandomTarget's null for an adjacentAlly move with no ally reaches
+        // addMove as `null` (sim/battle.ts getRandomTarget, addMove).
+        let tgt = match display {
+            Some((s, sl)) => self.p_ident(s, sl),
+            None if self.moves()[move_id as usize].target == 2 => "null".to_string(),
+            None => String::new(),
+        };
         let locked = attacker.lockin_turns > 0 || attacker.charging_turns > 0;
         let from = if self.called_from != u16::MAX {
             format!("|[from] move: {}", move_name(self.called_from))

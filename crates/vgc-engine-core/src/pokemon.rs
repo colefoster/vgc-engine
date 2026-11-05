@@ -1766,7 +1766,7 @@ impl Pokemon {
     /// A Choice item's or Gorilla Tactics' lock from a move that got as far as
     /// onModifyMove (sim/battle-actions.ts useMoveInner, data/items.ts choicescarf).
     pub(crate) fn lock_choice(&mut self, move_slot: u8) {
-        let choice = matches!(self.item_id, data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
+        let choice = matches!(self.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF)
             || self.effective_ability_id() == data::ability_id::GORILLATACTICS;
         if choice && self.locked_move_slot() == 255 {
             self.set_locked_move_slot(move_slot);
@@ -1807,6 +1807,15 @@ impl Pokemon {
             turns_remaining: 0,
             payload: variant as u32,
         });
+    }
+
+    /// Whether the active Protect volatile stops `m`. King's Shield, Obstruct,
+    /// Burning Bulwark and Silk Trap (variants 3, 4, 5, 6) call
+    /// checkMoveBypassesProtect with blockStatus false, so status moves pass
+    /// (sim/battle.ts:1082, data/moves.ts kingsshield).
+    #[inline]
+    pub fn protect_stops(&self, m: &data::MoveDef) -> bool {
+        self.is_protected_this_turn() && (m.category != 2 || !matches!(self.protect_variant(), 3..=6))
     }
 
     /// Which protect-family move laid the active Protect volatile (0 = plain
@@ -2553,6 +2562,10 @@ impl Pokemon {
         if (ab == data::ability_id::LEVITATE || ab == data::ability_id::EELEVATE)
             && !ignore_levitate
         {
+            return false;
+        }
+        // sim/pokemon.ts isGrounded: Magnet Rise and Telekinesis, after Levitate.
+        if self.volatiles.has(VolatileKind::MagnetRise) || self.volatiles.has(VolatileKind::Telekinesis) {
             return false;
         }
         if self.effective_item_id() == data::item_id::AIRBALLOON {

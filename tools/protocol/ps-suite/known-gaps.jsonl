@@ -1,5 +1,4 @@
 {"game":"Berserk should activate prior to healing from Sitrus Berry","format":"gen9customgame"}
-{"game":"Berserk should be suppressed by Sheer Force","format":"gen9customgame"}
 {"game":"Berserk should not activate prior to healing from Sitrus Berry after a multi-hit move","format":"gen9customgame"}
 {"game":"Clear Body should be suppressed by Mold Breaker if it is forced out by a move","format":"gen9customgame"}
 {"game":"Cloud Nine should not negate Desolate Land's ability to prevent other weathers from activating","format":"gen9customgame"}
@@ -69,7 +68,6 @@
 {"game":"Pastel Veil should only check for Pastel Veil cures after Lum/Pecha Berry","format":"gen9doublescustomgame"}
 {"game":"Pickpocket should not steal a foe's item if forced to switch out","format":"gen9customgame"}
 {"game":"Pickup should pick up flung items","format":"gen9customgame"}
-{"game":"Prankster should not leak the ability via hint if the target is immune to the Status move","format":"gen9customgame"}
 {"game":"Primordial Sea should cause Fire-type attacks to fail","format":"gen9customgame"}
 {"game":"Primordial Sea should not cause Fire-type Status moves to fail","format":"gen9customgame"}
 {"game":"Primordial Sea should cause the Primordial Sea weather to fade if it switches out and no other Primordial Sea Pokemon are active","format":"gen9customgame"}
@@ -94,15 +92,12 @@
 {"game":"Trace should not activate twice","format":"gen9customgame"}
 {"game":"Truant should allow the user to act after a recharge turn","format":"gen9customgame"}
 {"game":"Truant should prevent a newly-Mega Evolved Pokemon from acting if given the ability","format":"gen9customgame"}
-{"game":"Champions abilities Emergency Exit should activate alongside Volt Switch","format":"gen9championscustomgame"}
 {"game":"Champions items Eject Button should only activate one Eject Button when multiple holders are hit","format":"gen9championsdoublescustomgame"}
-{"game":"Champions moves Ceaseless Edge should set Spikes when the user faints from Rocky Helmet","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse should be able to hit a semi-invulnerable target if a non-Ghost user has Protean","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse shouldn't fail if the target is already afflicted with Curse, but only became a Ghost-type mid-turn","format":"gen9championscustomgame"}
 {"game":"Champions moves Curse [forced by Encore] should fail if the target is already afflicted with Curse even if becomes a Ghost-type with Trick-or-Treat","format":"gen9championsdoublescustomgame"}
 {"game":"Champions moves Knock Off should remove the target's item when the user faints mid-move","format":"gen9championscustomgame"}
 {"game":"Champions moves Rapid Spin should remove hazards when the user faints from Rocky Helmet","format":"gen9championscustomgame"}
-{"game":"Champions moves Stone Axe should set Stealth Rock when the user faints from Rocky Helmet","format":"gen9championscustomgame"}
 {"game":"Eject Pack should not switch out the user if the user acquired the Eject Pack after the stat drop occurred","format":"gen9customgame"}
 {"game":"Lum Berry should cure Poison and confusion after Poison Puppeteer activation","format":"gen9customgame"}
 {"game":"Red Card should not trigger if the target should be KOed from Destiny Bond and also not crash the client","format":"gen9doublescustomgame"}
@@ -114,7 +109,6 @@
 {"game":"Fainted forme regression should not revert Terapagos-Terastal to base Terapagos","format":"gen9customgame"}
 {"game":"Fainted forme regression should revert Terapagos-Stellar to base Terapagos","format":"gen9customgame"}
 {"game":"Hazards should damage Pokemon before regular entrance Abilities","format":"gen9customgame"}
-{"game":"Hazards should apply hazards in the order they were set up","format":"gen9customgame"}
 {"game":"Hazards should allow Berries to trigger between hazards","format":"gen9customgame"}
 {"game":"Mega Evolution should not break priority","format":"gen9customgame"}
 {"game":"Ogerpon should reject the Terastallization choice while Transformed into Ogerpon","format":"gen9customgame"}
@@ -129,17 +123,14 @@
 {"game":"Mega Evolution should cause an ability copied with Trace by a mega to affect the order of the turn in which it happens","format":"gen9customgame"}
 {"game":"Mega Evolution should cause base ability to not affect the order of the turn in which it happens","format":"gen9customgame"}
 {"game":"Mega Evolution should cause mega forme speed to decide turn order","format":"gen9customgame"}
-{"game":"After You should cause the targeted Pokemon to immediately move next","format":"gen9doublescustomgame"}
 {"game":"Belch should still count berries as consumed after switch out","format":"gen9customgame"}
 {"game":"Burning Jealousy should burn a target whose stats were boosted at the start of the match","format":"gen9customgame"}
 {"game":"Burning Jealousy should not burn a target whose stats were boosted at a switch after a KO","format":"gen9customgame"}
 {"game":"Clear Smog should trigger before Anger Point activates during critical hits","format":"gen9customgame"}
 {"game":"Court Change should swap certain side conditions to the opponent's side and vice versa","format":"gen9customgame"}
 {"game":"Curse should curse a non-Ghost user with Protean","format":"gen9customgame"}
-{"game":"Dragon Darts should hit one target twice if the other is protected by an ability","format":"gen9doublescustomgame"}
 {"game":"Future Sight should only cause the user to take Life Orb recoil on its damaging turn","format":"gen9customgame"}
 {"game":"Future Sight should target particular slots in Doubles","format":"gen9doublescustomgame"}
-{"game":"Grassy Terrain should heal grounded Pokemon by 1/16 of their max HP","format":"gen9customgame"}
 {"game":"Heal Bell should not heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Heal Bell with Mold Breaker should heal the major status conditions of a Pokemon with Soundproof","format":"gen9doublescustomgame"}
 {"game":"Healing Wish should heal an ally fully after Ally Switch","format":"gen9doublescustomgame"}
@@ -160,4 +151,3 @@
 {"game":"Trick should not remove correctly held mega stones","format":"gen9customgame"}
 {"game":"Wonder Room should cause Body Press to use Sp. Def stat stage changes","format":"gen9customgame"}
 {"game":"Wonder Room should be ignored by Download when determining raw stats, but not stat stage changes","format":"gen9customgame"}
-{"game":"Inverse Battle should not affect move-based immunities","format":"gen9customgame"}
