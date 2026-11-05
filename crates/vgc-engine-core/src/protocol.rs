@@ -330,6 +330,8 @@ pub struct ProtocolLog {
     pub(crate) loop_ended: bool,
     /// Lines printed right before a mon's `|faint|` (Destiny Bond).
     pub(crate) faint_prefix: Vec<(u8, u8, String)>,
+    /// A faint another's onFaint causes: (holder, the mon it takes down, line).
+    pub(crate) faint_chain: Vec<((u8, u8), (u8, u8), String)>,
     /// Magic Room's setter, named again at its end.
     pub(crate) magic_room_source: String,
     /// The status move being resolved: (user side, user slot, target).
@@ -552,6 +554,7 @@ impl ProtocolLog {
             hitcount: None,
             loop_ended: false,
             faint_prefix: Vec::new(),
+            faint_chain: Vec::new(),
             magic_room_source: String::new(),
             status_ctx: None,
             since_move: 0,

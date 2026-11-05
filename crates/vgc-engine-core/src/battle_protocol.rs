@@ -480,7 +480,14 @@ impl Battle {
                 let keys = std::mem::take(&mut l.faint_keys);
                 let mut q: Vec<_> = keys.into_iter().zip(std::mem::take(&mut l.faint_queue)).collect();
                 q.sort_by_key(|&(k, _)| k);
-                q.into_iter().map(|(_, e)| e).collect::<Vec<_>>()
+                let mut q: Vec<_> = q.into_iter().map(|(_, e)| e).collect();
+                for &(_, taken, _) in &l.faint_chain {
+                    if let Some(i) = q.iter().position(|&e| e == taken) {
+                        let e = q.remove(i);
+                        q.push(e);
+                    }
+                }
+                q
             }
             None => return,
         };
@@ -503,6 +510,17 @@ impl Battle {
             }
             let id = self.p_ident_idx(side, idx);
             self.p_push(format!("|faint|{id}"));
+            let chained: Vec<String> = match self.protocol.log_mut() {
+                Some(l) => {
+                    let (hit, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut l.faint_chain).into_iter().partition(|&(h, _, _)| h == (s, idx));
+                    l.faint_chain = keep;
+                    hit.into_iter().map(|(_, _, line)| line).collect()
+                }
+                None => Vec::new(),
+            };
+            for line in chained {
+                self.p_push(line);
+            }
             // faintMessages runs the ability's End while still active.
             if let Some(slot) = self.side(side).active.iter().position(|&a| a == idx).filter(|&s| s < self.format().active_count()) {
                 self.p_ability_end_lines(side, slot as u8, true);
