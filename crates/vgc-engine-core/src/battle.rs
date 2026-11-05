@@ -397,7 +397,7 @@ pub struct Battle {
     status_sub_blocks: bool,
     /// While a called move runs (sim/battle-actions.ts useMove from Sleep Talk,
     /// Copycat): the calling move. It skips runMove's BeforeMove and PP.
-    #[serde(skip)]
+    #[serde(skip, default = "no_called_move")]
     pub(crate) called_from: u16,
     /// A called move ran, for the caller's result.
     #[serde(skip)]
@@ -25213,6 +25213,10 @@ fn is_type_immune_to_status((types, n): ([u8; 2], u8), status: Status) -> bool {
 ///
 /// Used for the gen-6+ "sound bypasses Substitute" rule and (when
 /// implemented) the Soundproof / Throat Spray / Punk Rock hooks.
+fn no_called_move() -> u16 {
+    u16::MAX
+}
+
 pub(crate) fn is_sound_move(slug: &str) -> bool {
     matches!(
         slug,
