@@ -24149,6 +24149,13 @@ self.trigger_emergency_exits();
             | data::move_id::MILKDRINK | data::move_id::ROOST
             | data::move_id::SYNTHESIS | data::move_id::MORNINGSUN
             | data::move_id::MOONLIGHT | data::move_id::SHOREUP => {
+                // The mod's Milk Drink can aim at the ally: `heal` lands on the target
+                // (data/mods/champions/moves.ts milkdrink).
+                let actor_slot = match target {
+                    Some(t) if move_id == data::move_id::MILKDRINK && t.side == actor_side
+                        && self.side(t.side).active_mon(t.slot as usize).is_some_and(|p| p.is_alive()) => t.slot,
+                    _ => actor_slot,
+                };
                 let hp_before = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.current_hp);
                 // Recover-class self heals. PS data/moves.ts: each entry
                 // either declares `heal: [1,2]` (flat 50%) or uses an
