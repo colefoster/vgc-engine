@@ -24183,7 +24183,15 @@ self.trigger_emergency_exits();
                 // (sim/battle-actions.ts:1209); the weather moves heal
                 // this.modify(maxhp, factor) with factor 0.5 / 0.667 / 0.25,
                 // i.e. tr((maxhp * tr(factor * 4096) + 2047) / 4096).
-                let user_weather = self.effective_weather_for(actor_side, actor_slot);
+                let mut user_weather = self.effective_weather_for(actor_side, actor_slot);
+                // effectiveWeather's Mega Sol message (sim/pokemon.ts effectiveWeather).
+                if matches!(move_id, data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT)
+                    && user_weather != crate::weather::Weather::Sun
+                    && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.effective_ability_id() == data::ability_id::MEGASOL)
+                {
+                    pmon!(self, "-activate", actor_side, actor_slot, "|ability: Mega Sol");
+                    user_weather = crate::weather::Weather::Sun;
+                }
                 // `None` = heal: [1, 2]; `Some(m)` = modify by m/4096.
                 let modifier: Option<u32> = match move_id {
                     data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT => Some(match user_weather {
