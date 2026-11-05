@@ -194,7 +194,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         let p = self.0;
         // Field count below MUST equal the number of `serialize_field`
         // calls — serde checks this in debug builds.
-        let mut s = ser.serialize_struct("Pokemon", 45)?;
+        let mut s = ser.serialize_struct("Pokemon", 49)?;
         s.serialize_field("species_id", &p.species_id)?;
         // The forme a non-permanent change returns to (`forme_origin_key`).
         // A legacy core Minior that still knows its colour hashes like a
@@ -274,6 +274,10 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("must_recharge", &p.must_recharge)?;
         s.serialize_field("lockin_turns", &p.lockin_turns)?;
         s.serialize_field("lockin_move_slot", &p.lockin_move_slot)?;
+        s.serialize_field("lockin_true", &p.lockin_true)?;
+        s.serialize_field("lost_focus", &p.lost_focus)?;
+        s.serialize_field("metronome_count", &p.metronome_count)?;
+        s.serialize_field("metronome_move", &p.metronome_move)?;
         s.serialize_field("tera_type", &p.tera_type)?;
         s.serialize_field("terastallized", &p.terastallized)?;
         s.serialize_field("stellar_boosted_types", &p.stellar_boosted_types)?;
@@ -336,6 +340,11 @@ impl<'a> Serialize for CanonicalVolatileSetView<'a> {
         // Volatile is `Copy`, so this is a stack memcpy.
         let mut items: [Volatile; 8] = vs.items;
         for v in items.iter_mut().take(vs.len as usize) {
+            // The hurtThisTurn HP only matters to Emergency Exit within the turn;
+            // like HP itself it must not split the hash.
+            if v.kind == VolatileKind::DamagedThisTurn {
+                v.payload = 0;
+            }
             if v.kind == VolatileKind::Substitute && v.payload > 0 {
                 v.payload = 1;
             }

@@ -159,7 +159,7 @@ fn candidate_passes(
 }
 
 fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
-    let ctx = |roll: u8| DamageContext {
+    let ctx = |roll: u8| DamageContext { ssa_physical: false,
         crit: false,
         roll,
         is_spread: false,
@@ -172,7 +172,7 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         fairy_aura_active: false,
         dark_aura_active: false,
         aura_break_active: false,
-        attacker_total_fainted_allies: 0,
+        attacker_total_fainted_allies: 0, speed_stats: None,
         attacker_stats: None,
         defender_stats: None,
         pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
@@ -184,7 +184,7 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         // Replay recon reads Champions ladder logs.
         champions: true,
         defender_resist_berry: false,
-        parental_bond_hit: false,
+        parental_bond_hit: false, attacker_stat_mod: 0, defender_stat_mod: 0,
     };
     let lo = calculate_damage(a, d, mid, ctx(DamageContext::MIN_ROLL));
     let hi = calculate_damage(a, d, mid, ctx(DamageContext::MAX_ROLL));

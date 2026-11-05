@@ -179,6 +179,10 @@ pub fn type_resist_berry_fires(
     if move_type != type_code {
         return false;
     }
+    // struggle onModifyMove: `move.type = '???'` (data/moves.ts).
+    if move_id == data::move_id::STRUGGLE {
+        return false;
+    }
     if requires_se {
         use crate::damage::TypeEff;
         let eff = crate::damage::effectiveness_for_move_type(move_id, move_type, defender);
@@ -261,6 +265,12 @@ pub fn on_before_damage(
         // Only meaningful on a damaging hit (PS `onDamage` runs when
         // damage > 0). `incoming == 0` hits don't reach the draw.
         if incoming > 0 && current > 0 {
+            // spreadDamage applies damage after getSpreadDamage has rolled every
+            // target (sim/battle-actions.ts spreadMoveHit), so this draw sorts
+            // after all of the move's damage rolls.
+            #[cfg(feature = "ps-rng")]
+            let proc = if rng.is_ps() { rng.ps_random_range("focusband", 0, 10) == 0 } else { rng.range(10) == 0 };
+            #[cfg(not(feature = "ps-rng"))]
             let proc = rng.range(10) == 0;
             if proc && incoming >= current {
                 pmon!(battle, "-activate", side, slot, "|item: Focus Band");
@@ -281,6 +291,97 @@ pub fn on_after_damage(
     slot: u8,
     rng: &mut crate::rng::Rng,
 ) {
+    if battle.side(side).active_mon(slot as usize).map_or(true, update_idle) {
+        return;
+    }
+    hp_berries_on_update(battle, side, slot, rng);
+    // The Update before runSwitch sees no status yet: the engine has applied the
+    // hazards, whose handlers PS runs in runSwitch (sim/battle-actions.ts).
+    if battle.unnerve_unstarted == 0 {
+        on_update_cures(battle, side, slot);
+    }
+}
+
+/// A bitset of ids, for handlers that every active asks about after every hit.
+const fn id_mask<const N: usize>(ids: [u16; N]) -> [u64; 16] {
+    let mut mask = [0u64; 16];
+    let mut k = 0;
+    while k < N {
+        // Out of range fails the build.
+        mask[(ids[k] >> 6) as usize] |= 1 << (ids[k] & 63);
+        k += 1;
+    }
+    mask
+}
+
+#[inline]
+fn in_mask(mask: &[u64; 16], id: u16) -> bool {
+    mask.get((id >> 6) as usize).is_some_and(|w| w >> (id & 63) & 1 != 0)
+}
+
+/// The items `hp_berries_on_update` acts on.
+const HP_BERRIES: [u64; 16] = id_mask([
+    data::item_id::SITRUSBERRY,
+    data::item_id::ORANBERRY,
+    data::item_id::FIGYBERRY,
+    data::item_id::WIKIBERRY,
+    data::item_id::MAGOBERRY,
+    data::item_id::AGUAVBERRY,
+    data::item_id::IAPAPABERRY,
+    data::item_id::LIECHIBERRY,
+    data::item_id::GANLONBERRY,
+    data::item_id::PETAYABERRY,
+    data::item_id::APICOTBERRY,
+    data::item_id::SALACBERRY,
+    data::item_id::MICLEBERRY,
+    data::item_id::LANSATBERRY,
+    data::item_id::STARFBERRY,
+]);
+
+/// The items `on_update_cures` acts on.
+const UPDATE_CURE_ITEMS: [u64; 16] = id_mask([
+    data::item_id::LEPPABERRY,
+    data::item_id::CHERIBERRY,
+    data::item_id::CHESTOBERRY,
+    data::item_id::PECHABERRY,
+    data::item_id::RAWSTBERRY,
+    data::item_id::ASPEARBERRY,
+    data::item_id::LUMBERRY,
+    data::item_id::PERSIMBERRY,
+    data::item_id::MENTALHERB,
+]);
+
+/// The abilities `on_update_cures` acts on.
+const UPDATE_CURE_ABILITIES: [u64; 16] = id_mask([
+    data::ability_id::IMMUNITY,
+    data::ability_id::PASTELVEIL,
+    data::ability_id::INSOMNIA,
+    data::ability_id::VITALSPIRIT,
+    data::ability_id::LIMBER,
+    data::ability_id::MAGMAARMOR,
+    data::ability_id::THERMALEXCHANGE,
+    data::ability_id::WATERBUBBLE,
+    data::ability_id::WATERVEIL,
+    data::ability_id::OWNTEMPO,
+    data::ability_id::OBLIVIOUS,
+]);
+
+/// `on_after_damage` has nothing to do for this mon. It runs for every active
+/// after every action and hit. The HP berries eat at half HP at most (a quarter,
+/// or a half with Gluttony); the rest of eachEvent('Update') is `on_update_cures`.
+#[inline]
+pub(crate) fn update_idle(m: &crate::pokemon::Pokemon) -> bool {
+    !(in_mask(&HP_BERRIES, m.item_id) && m.current_hp * 2 <= m.stats.hp)
+        && !in_mask(&UPDATE_CURE_ITEMS, m.item_id)
+        && !in_mask(&UPDATE_CURE_ABILITIES, m.effective_ability_id())
+}
+
+fn hp_berries_on_update(
+    battle: &mut Battle,
+    side: SideRef,
+    slot: u8,
+    rng: &mut crate::rng::Rng,
+) {
     let (item_id, max, current) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => (m.effective_item_id(), m.stats.hp, m.current_hp),
         _ => return,
@@ -289,6 +390,22 @@ pub fn on_after_damage(
     // pinch stat berries, Figy family, Micle, Lansat, Starf). If an
     // opposing mon has Unnerve, none of them may be eaten.
     if !can_eat_berry(battle, side, item_id) {
+        return;
+    }
+    // Healing berries' onTryEatItem asks runEvent('TryHeal'), and Heal Block's
+    // onTryHeal says no, so they stay uneaten (data/items.ts sitrusberry et al.,
+    // data/moves.ts healblock).
+    if matches!(
+        item_id,
+        data::item_id::SITRUSBERRY
+            | data::item_id::ORANBERRY
+            | data::item_id::FIGYBERRY
+            | data::item_id::WIKIBERRY
+            | data::item_id::MAGOBERRY
+            | data::item_id::AGUAVBERRY
+            | data::item_id::IAPAPABERRY
+    ) && battle.side(side).active_mon(slot as usize).is_some_and(|m| m.is_heal_blocked())
+    {
         return;
     }
     // Gluttony — PS data/abilities.ts:gluttony: berries that normally fire at
@@ -303,8 +420,7 @@ pub fn on_after_damage(
     let quarter = if gluttony { current * 2 <= max } else { current * 4 <= max };
     if item_id == data::item_id::SITRUSBERRY && current * 2 <= max {
         // Heal 25% max HP, consume berry. PS data/items.ts:sitrusberry —
-        // gen 6+ heals 1/4 max (was 30 flat HP in gen 4). Under Heal Block
-        // the berry is still eaten but `onTryHeal` vetoes the recovery.
+        // gen 6+ heals 1/4 max (was 30 flat HP in gen 4).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !m.is_heal_blocked() {
                 let heal = (m.stats.hp / 4).max(1);
@@ -463,6 +579,15 @@ pub fn on_after_damage(
         }
     }
 
+    after_berry_eaten(battle, side, slot, item_id);
+    // Unburden speed latch / Symbiosis ally hand-off — fire once if a real
+    // item was just consumed.
+    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+/// `eatItem`'s EatItem event (sim/pokemon.ts eatItem): Cud Chew remembers the
+/// berry and Cheek Pouch heals. Runs after the berry's own onEat.
+fn after_berry_eaten(battle: &mut Battle, side: SideRef, slot: u8, item_id: u16) {
     // Cud Chew — PS `data/abilities.ts:732` `onEatItem`: when the holder
     // eats a Berry, store it on `effectState.berry` with `counter = 2` so
     // it is re-eaten one more time at the end of the next turn. We detect
@@ -473,7 +598,7 @@ pub fn on_after_damage(
     if item_id != u16::MAX && data::ITEMS[item_id as usize].is_berry {
         let in_residual = battle.in_residual;
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if m.item_id == u16::MAX && m.ability_id == data::ability_id::CUDCHEW {
+            if m.item_id == u16::MAX && m.effective_ability_id() == data::ability_id::CUDCHEW {
                 m.cud_chew_berry = item_id;
                 // PS abilities.ts:748: eaten during residuals (empty queue)
                 // starts at 1, so the same turn's order-28 tick re-eats it.
@@ -508,9 +633,106 @@ pub fn on_after_damage(
             }
         }
     }
-    // Unburden speed latch / Symbiosis ally hand-off — fire once if a real
-    // item was just consumed.
-    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+/// The rest of `eachEvent('Update')`: berries and abilities that cure a status
+/// or volatile, and Mental Herb (data/items.ts cheriberry et al. `onUpdate`,
+/// data/abilities.ts immunity et al. `onUpdate`).
+pub fn on_update_cures(battle: &mut Battle, side: SideRef, slot: u8) {
+    use crate::pokemon::{Status, VolatileKind as VK};
+    // Called for every active after every action: nothing below concerns most mons.
+    let Some(m) = battle.side(side).active_mon(slot as usize) else { return };
+    if !m.is_alive() || !(in_mask(&UPDATE_CURE_ITEMS, m.item_id) || in_mask(&UPDATE_CURE_ABILITIES, m.effective_ability_id())) {
+        return;
+    }
+    // leppaberry onUpdate (data/items.ts).
+    on_pp_depleted(battle, side, slot);
+    let Some(m) = battle.side(side).active_mon(slot as usize) else { return };
+    if !m.is_alive() {
+        return;
+    }
+    let (ability, item, status) = (m.effective_ability_id(), m.effective_item_id(), m.status);
+    let confused = m.volatiles.has(VK::Confusion);
+    let attracted = m.volatiles.has(VK::Attract);
+    let taunted = m.volatiles.has(VK::Taunt);
+    let cured_by_ability = match ability {
+        data::ability_id::IMMUNITY | data::ability_id::PASTELVEIL => matches!(status, Status::Poison | Status::Toxic),
+        data::ability_id::INSOMNIA | data::ability_id::VITALSPIRIT => status == Status::Sleep,
+        data::ability_id::LIMBER => status == Status::Paralysis,
+        data::ability_id::MAGMAARMOR => status == Status::Freeze,
+        data::ability_id::THERMALEXCHANGE | data::ability_id::WATERBUBBLE | data::ability_id::WATERVEIL => status == Status::Burn,
+        _ => false,
+    };
+    if cured_by_ability {
+        pmon!(battle, "-activate", side, slot, "|ability: {}", crate::battle_protocol::ability_name(ability));
+        cure_status_with_line(battle, side, slot);
+    }
+    if ability == data::ability_id::OWNTEMPO && confused {
+        pmon!(battle, "-activate", side, slot, "|ability: Own Tempo");
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.volatiles.remove(VK::Confusion);
+        }
+        pmon!(battle, "-end", side, slot, "|confusion");
+    }
+    if ability == data::ability_id::OBLIVIOUS && (attracted || taunted) {
+        // oblivious onUpdate: `-activate`, removeVolatile('attract'), then
+        // `-end|move: Taunt` from Taunt's own onEnd.
+        pmon!(battle, "-activate", side, slot, "|ability: Oblivious");
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.volatiles.remove(VK::Attract);
+            m.volatiles.remove(VK::Taunt);
+            m.sync_move_locks();
+        }
+        if attracted {
+            pmon!(battle, "-end", side, slot, "|move: Attract|[from] ability: Oblivious");
+        }
+        if taunted {
+            pmon!(battle, "-end", side, slot, "|move: Taunt");
+        }
+    }
+    let Some(m) = battle.side(side).active_mon(slot as usize) else { return };
+    let (status, confused) = (m.status, m.volatiles.has(VK::Confusion));
+    let cures_status = match item {
+        data::item_id::CHERIBERRY => status == Status::Paralysis,
+        data::item_id::CHESTOBERRY => status == Status::Sleep,
+        data::item_id::PECHABERRY => matches!(status, Status::Poison | Status::Toxic),
+        data::item_id::RAWSTBERRY => status == Status::Burn,
+        data::item_id::ASPEARBERRY => status == Status::Freeze,
+        data::item_id::LUMBERRY => status != Status::None,
+        _ => false,
+    };
+    let cures_confusion = confused && matches!(item, data::item_id::PERSIMBERRY | data::item_id::LUMBERRY);
+    if (cures_status || cures_confusion) && can_eat_berry(battle, side, item) {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.consume_item();
+        }
+        battle.p_item_line("-enditem", side, slot, item, "|[eat]");
+        if cures_status {
+            cure_status_with_line(battle, side, slot);
+        }
+        if cures_confusion {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.volatiles.remove(VK::Confusion);
+            }
+            pmon!(battle, "-end", side, slot, "|confusion");
+        }
+        after_berry_eaten(battle, side, slot, item);
+        maybe_on_item_consumed(battle, side, slot, item);
+    }
+    try_consume_mental_herb(battle, side, slot);
+}
+
+/// `cureStatus()`: `-curestatus|<status>|[msg]` (sim/pokemon.ts).
+fn cure_status_with_line(battle: &mut Battle, side: SideRef, slot: u8) {
+    if let Some(st) = battle.side(side).active_mon(slot as usize).map(|m| crate::battle_protocol::status_id(m.status)) {
+        pmon!(battle, "-curestatus", side, slot, "|{st}|[msg]");
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.status = crate::pokemon::Status::None;
+        m.set_toxic_counter(0);
+        m.set_sleep_turns(0);
+    }
+    battle.sync_status_dot_bit(side, slot);
 }
 
 /// Cud Chew re-eat — re-apply a Berry's `onEat` effect for the Cud Chew
@@ -528,25 +750,138 @@ pub fn cud_chew_reeat(
     berry_id: u16,
     rng: &mut crate::rng::Rng,
 ) {
+    eat_effect(battle, side, slot, berry_id, rng, None);
+}
+
+/// A berry's heal: sim/battle.ts heal prints nothing when no HP moved, and
+/// `[of]` a source other than the eater (Fling's user).
+fn eat_heal(battle: &mut Battle, side: SideRef, slot: u8, amount: u16, name: &str, of: Option<(SideRef, u8)>) {
+    let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) else { return };
+    if m.is_heal_blocked() || m.current_hp == 0 || m.current_hp >= m.stats.hp {
+        return;
+    }
+    m.current_hp = m.current_hp.saturating_add(amount).min(m.stats.hp);
+    if battle.plog() {
+        let suffix = match of {
+            Some((s, sl)) => format!("|[from] item: {name}|[of] {}", battle.p_ident(s, sl)),
+            None => format!("|[from] item: {name}"),
+        };
+        battle.p_heal(side, slot, &suffix);
+    }
+}
+
+/// runEvent('EatItem') for a berry fed from outside (Fling): Cud Chew schedules
+/// the re-eat, Cheek Pouch heals (data/abilities.ts cudchew, cheekpouch).
+pub(crate) fn on_eat_item_event(battle: &mut Battle, side: SideRef, slot: u8, berry_id: u16, of: Option<(SideRef, u8)>) {
+    let in_residual = battle.in_residual;
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        if m.effective_ability_id() == data::ability_id::CUDCHEW {
+            m.cud_chew_berry = berry_id;
+            m.cud_chew_counter = if in_residual { 1 } else { 2 };
+        }
+    }
+    on_cheek_pouch(battle, side, slot, berry_id, of);
+}
+
+/// data/abilities.ts cheekpouch onEatItem: heals a third; `[of]` an outside source.
+pub(crate) fn on_cheek_pouch(battle: &mut Battle, side: SideRef, slot: u8, berry_id: u16, of: Option<(SideRef, u8)>) {
+    if !data::ITEMS[berry_id as usize].is_berry {
+        return;
+    }
+    let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) else { return };
+    if !m.is_alive() || m.effective_ability_id() != data::ability_id::CHEEKPOUCH || m.is_heal_blocked() {
+        return;
+    }
+    let before = m.current_hp;
+    m.current_hp = m.current_hp.saturating_add((m.stats.hp / 3).max(1)).min(m.stats.hp);
+    if m.current_hp != before && battle.plog() {
+        let suffix = match of {
+            Some((s, sl)) => format!("|[from] ability: Cheek Pouch|[of] {}", battle.p_ident(s, sl)),
+            None => "|[from] ability: Cheek Pouch".to_string(),
+        };
+        battle.p_heal(side, slot, &suffix);
+    }
+}
+
+/// A berry's onEat on `side`/`slot`. `of`: the source when someone else fed it.
+pub(crate) fn eat_effect(
+    battle: &mut Battle,
+    side: SideRef,
+    slot: u8,
+    berry_id: u16,
+    rng: &mut crate::rng::Rng,
+    of: Option<(SideRef, u8)>,
+) {
     // Heal berries — fixed-fraction heal regardless of current HP (capped
     // at max). Heal Block vetoes recovery (PS `onTryHeal`). Sitrus 1/4,
     // Oran flat 10, Figy-family 1/3.
     if berry_id == data::item_id::SITRUSBERRY {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if !m.is_heal_blocked() {
-                let heal = (m.stats.hp / 4).max(1);
-                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+        let heal = battle.side(side).active_mon(slot as usize).map_or(1, |m| (m.stats.hp / 4).max(1));
+        eat_heal(battle, side, slot, heal, "Sitrus Berry", of);
+        return;
+    }
+    // Status berries (data/items.ts lumberry et al. onEat), reached by
+    // Bug Bite, Fling, Teatime and Cud Chew.
+    let cures = match berry_id {
+        data::item_id::LUMBERRY => Some(None),
+        data::item_id::CHERIBERRY => Some(Some(crate::pokemon::Status::Paralysis)),
+        data::item_id::CHESTOBERRY => Some(Some(crate::pokemon::Status::Sleep)),
+        data::item_id::PECHABERRY => Some(Some(crate::pokemon::Status::Poison)),
+        data::item_id::RAWSTBERRY => Some(Some(crate::pokemon::Status::Burn)),
+        data::item_id::ASPEARBERRY => Some(Some(crate::pokemon::Status::Freeze)),
+        _ => None,
+    };
+    if let Some(want) = cures {
+        use crate::pokemon::Status as St;
+        let Some(cur) = battle.side(side).active_mon(slot as usize).map(|m| m.status) else { return };
+        let hit = match want {
+            None => cur != St::None,
+            Some(St::Poison) => matches!(cur, St::Poison | St::Toxic),
+            Some(x) => cur == x,
+        };
+        if hit {
+            pmon!(battle, "-curestatus", side, slot, "|{}|[msg]", crate::battle_protocol::status_id(cur));
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.status = St::None;
             }
         }
-        battle.p_heal(side, slot, "|[from] item: Sitrus Berry");
+        if berry_id == data::item_id::LUMBERRY {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                if m.volatiles.has(crate::pokemon::VolatileKind::Confusion) {
+                    m.volatiles.remove(crate::pokemon::VolatileKind::Confusion);
+                    pmon!(battle, "-end", side, slot, "|confusion");
+                }
+            }
+        }
+        return;
+    }
+    if berry_id == data::item_id::PERSIMBERRY {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if m.volatiles.has(crate::pokemon::VolatileKind::Confusion) {
+                m.volatiles.remove(crate::pokemon::VolatileKind::Confusion);
+                pmon!(battle, "-end", side, slot, "|confusion");
+            }
+        }
+        return;
+    }
+    // data/items.ts leppaberry onEat: the first move at 0 PP, else the first
+    // that has spent any; `-activate` names it.
+    if berry_id == data::item_id::LEPPABERRY {
+        let ripen = battle.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN);
+        let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) else { return };
+        let known = |m: &crate::pokemon::Pokemon, i: usize| m.moves[i] != u16::MAX;
+        let found = (0..m.pp.len()).find(|&i| known(m, i) && m.pp[i] == 0)
+            .or_else(|| (0..m.pp.len()).find(|&i| known(m, i) && m.pp[i] < m.max_pp(i)));
+        if let Some(i) = found {
+            let max = m.max_pp(i);
+            m.pp[i] = m.pp[i].saturating_add(if ripen { 20 } else { 10 }).min(max);
+            let mv = m.moves[i];
+            pmon!(battle, "-activate", side, slot, "|item: Leppa Berry|{}|[consumed]", crate::battle_protocol::move_name(mv));
+        }
         return;
     }
     if berry_id == data::item_id::ORANBERRY {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if !m.is_heal_blocked() {
-                m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
-            }
-        }
+        eat_heal(battle, side, slot, 10, "Oran Berry", of);
         return;
     }
     if matches!(
@@ -766,6 +1101,7 @@ pub fn on_attacker_contact_hit(
                     a.fainted = true;
                 }
             }
+            battle.ps_note_hit_ko(attacker_side, attacker_slot);
             if battle.plog() {
                 let of = battle.p_ident(target_side, target_slot);
                 // onDamagingHitOrder: 2 (data/items.ts rockyhelmet).
@@ -818,8 +1154,12 @@ pub fn on_damaging_hit(
             .active_mon_mut(target_slot as usize)
         {
             t.consume_item();
+            // The pop clears the item without setting lastItem: Recycle can't bring
+            // it back (data/items.ts airballoon).
+            t.consumed_item = u16::MAX;
         }
         battle.p_item_line("-enditem", target_side, target_slot, raw_item_id, "");
+        crate::ability::on_item_consumed(battle, target_side, target_slot);
     }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
@@ -1020,6 +1360,7 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                battle.ps_note_hit_ko(attacker_side, attacker_slot);
             }
         }
     }
@@ -1054,6 +1395,7 @@ pub fn on_damaging_hit(
                 a.fainted = true;
             }
         }
+        battle.ps_note_hit_ko(attacker_side, attacker_slot);
     }
 }
 
@@ -1085,7 +1427,6 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // which waits for the end of a running move action
     // (`Battle::white_herb_after_move`). Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/White_Herb>.
-    try_consume_white_herb(battle, side, slot);
     // Mental Herb cleans up Encore / Taunt / etc carried across a switch.
     try_consume_mental_herb(battle, side, slot);
     // Terrain seeds — fire if the matching terrain is active when the
@@ -1099,6 +1440,10 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Room Service — PS `onStart`: consume for -1 Spe if Trick Room is
     // already active when the holder switches in.
     try_consume_room_service(battle, side, slot);
+    // After the priority -1 seeds and Room Service.
+    try_consume_white_herb(battle, side, slot);
+    // onAnySwitchInPriority -3 (data/abilities.ts opportunist, data/items.ts mirrorherb).
+    battle.flush_foe_boost_copies();
     // HP-threshold berries (Sitrus et al. onUpdate) in runSwitch's Update.
     let mut rng = std::mem::replace(battle.rng_mut(), crate::rng::Rng::Splitmix(0));
     on_after_damage(battle, side, slot, &mut rng);
@@ -1178,23 +1523,7 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     if !matches!(item_id, data::item_id::PERSIMBERRY | data::item_id::LUMBERRY) || !confused {
         return;
     }
-    // Opposing Unnerve suppresses the Persim eat (it is a Berry).
-    if !can_eat_berry(battle, side, item_id) {
-        return;
-    }
-    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        m.volatiles.remove(VK::Confusion);
-        if item_id == data::item_id::LUMBERRY {
-            m.status = crate::pokemon::Status::None;
-            m.set_toxic_counter(0);
-            m.set_sleep_turns(0);
-        }
-        m.consume_item();
-    }
-    if item_id == data::item_id::LUMBERRY {
-        battle.sync_status_dot_bit(side, slot);
-    }
-    maybe_on_item_consumed(battle, side, slot, item_id);
+    on_update_cures(battle, side, slot);
 }
 
 /// Room Service — PS `data/items.ts:5305` (roomservice).
@@ -1288,24 +1617,57 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
         return;
     }
     use crate::pokemon::VolatileKind as VK;
-    let kinds = [VK::Attract, VK::Encore, VK::Taunt, VK::Disable, VK::Torment, VK::HealBlock];
+    // mentalherb onUpdate: useItem, then removeVolatile in this order, each
+    // printing its own onEnd line (data/items.ts, data/moves.ts).
+    let kinds: [(VK, &str); 6] = [
+        (VK::Attract, "|move: Attract|[from] item: Mental Herb"),
+        (VK::Taunt, "|move: Taunt"),
+        (VK::Encore, "|Encore"),
+        (VK::Torment, "|Torment"),
+        (VK::Disable, "|Disable"),
+        (VK::HealBlock, "|move: Heal Block"),
+    ];
+    let Some(m) = battle.side(side).active_mon(slot as usize) else { return };
+    if !kinds.iter().any(|(k, _)| m.volatiles.has(*k)) {
+        return;
+    }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        let mut removed = false;
-        for k in kinds {
-            if m.volatiles.has(k) {
+        m.consume_item();
+    }
+    battle.p_item_line("-enditem", side, slot, item_id, "");
+    mental_herb_end(battle, side, slot, kinds);
+    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+fn mental_herb_end(battle: &mut Battle, side: SideRef, slot: u8, kinds: [(crate::pokemon::VolatileKind, &str); 6]) {
+    for (k, line) in kinds {
+        let had = battle.side(side).active_mon(slot as usize).is_some_and(|m| m.volatiles.has(k));
+        if had {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.volatiles.remove(k);
-                removed = true;
+                // Keep the `move_locks` bitset in sync (PR-LC3).
+                m.sync_move_locks();
             }
-        }
-        if removed {
-            // PR-LC3: Mental Herb directly removes Encore / Taunt /
-            // Disable / HealBlock volatiles — keep the `move_locks`
-            // bitset in sync.
-            m.sync_move_locks();
-            m.consume_item();
+            // attract onEnd prints its own silent line first (data/conditions.ts attract).
+            if k == crate::pokemon::VolatileKind::Attract {
+                pmon!(battle, "-end", side, slot, "|Attract|[silent]");
+            }
+            pmon!(battle, "-end", side, slot, "{line}");
         }
     }
-    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+/// A thrown Mental Herb's `fling.effect` (data/items.ts mentalherb).
+pub(crate) fn mental_herb_cure(battle: &mut Battle, side: SideRef, slot: u8) {
+    use crate::pokemon::VolatileKind as VK;
+    mental_herb_end(battle, side, slot, [
+        (VK::Attract, "|move: Attract|[from] item: Mental Herb"),
+        (VK::Taunt, "|move: Taunt"),
+        (VK::Encore, "|Encore"),
+        (VK::Torment, "|Torment"),
+        (VK::Disable, "|Disable"),
+        (VK::HealBlock, "|move: Heal Block"),
+    ]);
 }
 
 /// Reactive switch trigger — Eject Button.
@@ -1343,13 +1705,19 @@ pub(crate) fn try_consume_eject_button(
     target_slot: u8,
 ) -> bool {
     let (alive, item_id) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.is_alive(), m.item_id),
+        // Klutz / Embargo / Magic Room leave it unused (sim/pokemon.ts ignoringItem).
+        Some(m) => (m.is_alive(), m.effective_item_id()),
         None => return false,
     };
     if !alive || item_id != data::item_id::EJECTBUTTON {
         return false;
     }
     if battle.first_bench_index(target_side).is_none() {
+        return false;
+    }
+    // ejectbutton onAfterMoveSecondary: not when already being forced out
+    // (`target.forceSwitchFlag`, data/items.ts).
+    if battle.force_switch_flags[target_side as usize][(target_slot as usize).min(1)] {
         return false;
     }
     // Consume the item, then force-switch.
@@ -1385,8 +1753,9 @@ pub(crate) fn try_consume_red_card(
     attacker_side: SideRef,
     attacker_slot: u8,
 ) -> bool {
+    // The item event doesn't run under Magic Room or Klutz (sim/pokemon.ts ignoringItem).
     let (alive, item_id) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.is_alive(), m.item_id),
+        Some(m) => (m.is_alive(), m.effective_item_id()),
         None => return false,
     };
     if !alive || item_id != data::item_id::REDCARD {
@@ -1414,6 +1783,8 @@ pub(crate) fn try_consume_red_card(
         let of = battle.p_ident(attacker_side, attacker_slot);
         battle.p_item_line("-enditem", target_side, target_slot, item_id, &format!("|[of] {of}"));
     }
+    // useItem's AfterUseItem: Symbiosis (data/abilities.ts symbiosis).
+    crate::ability::on_item_consumed(battle, target_side, target_slot);
     if !battle.can_be_dragged_out(attacker_side, attacker_slot, false) {
         return false;
     }
@@ -1471,59 +1842,14 @@ pub(crate) fn try_consume_eject_pack(
     battle.force_switch_auto(side, slot)
 }
 
-/// Mirror Herb — PS data/items.ts:mirrorherb (line 4145).
-/// `onFoeAfterBoost`: accumulate positive deltas in `effectState.boosts`;
-/// on the holder's next chance to act (move / switch / mega / residual),
-/// `useItem()` and `boost(effectState.boosts, holder)`. The Herb consumes
-/// once it copies, regardless of how many boosts were stacked.
-///
-/// V1 simplification: immediate dispatch. When a positive boost lands on
-/// any mon, scan opposing actives — any Mirror Herb holder copies the
-/// same stage delta to the same stat and consumes. PS's accumulator
-/// (which lets multiple boosts in a row stack on the next action) is
-/// deferred — the common case is a single stat-up move (Dragon Dance,
-/// Swords Dance, Quiver Dance per-stat) where immediate-vs-accumulator
-/// behaviour matches.
-///
-/// `boosted_side` / `boosted_slot` identify the mon whose stat went up;
-/// `stat_idx` is 0..=6 (Atk/Def/SpA/SpD/Spe/Acc/Eva); `delta` is the
-/// positive stage delta actually applied (post-clamp).
-///
-/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mirror_Herb>.
-pub fn try_consume_mirror_herb_on_foe_boost(
-    battle: &mut Battle,
-    boosted_side: SideRef,
-    _boosted_slot: u8,
-    boosts: &[(u8, i8)],
-) {
-    if boosts.is_empty() {
-        return;
-    }
-    let opp = boosted_side.opposing();
-    let n = battle.format().active_count() as u8;
-    for s in 0..n {
-        let holder = battle.side(opp).active_mon(s as usize)
-            .map(|m| m.is_alive() && m.item_id == data::item_id::MIRRORHERB)
-            .unwrap_or(false);
-        if !holder {
-            continue;
-        }
-        if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-            let mut any_positive = false;
-            for &(idx, delta) in boosts {
-                if delta > 0 && (idx as usize) < 7 {
-                    t.boosts[idx as usize] = (t.boosts[idx as usize] + delta).clamp(-6, 6);
-                    any_positive = true;
-                }
-            }
-            if any_positive {
-                t.consume_item();
-            }
-        }
+#[inline]
+/// data/items.ts whiteherb onStart from setItem: at once, not after the move.
+pub(crate) fn white_herb_on_start(battle: &mut Battle, side: SideRef, slot: u8) {
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
+        try_consume_white_herb_now(battle, side, slot);
     }
 }
 
-#[inline]
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     // Raw-item prefilter: only a White Herb holder can consume one.
     if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
@@ -1535,6 +1861,10 @@ fn try_consume_white_herb_inner(battle: &mut Battle, side: SideRef, slot: u8) {
     if battle.white_herb_deferred() {
         return;
     }
+    try_consume_white_herb_now(battle, side, slot);
+}
+
+fn try_consume_white_herb_now(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
@@ -1572,6 +1902,11 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
     };
     if item_id == data::item_id::LEFTOVERS {
         let before = battle.side(side).active_mon(slot as usize).map_or(0, |m| m.current_hp);
+        // ripen onTryHeal announces itself for Leftovers without doubling it
+        // (data/abilities.ts).
+        if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::RIPEN) {
+            pmon!(battle, "-activate", side, slot, "|ability: Ripen");
+        }
         // Heal 1/16 max HP, capped at max. Heal Block vetoes the recovery
         // (PS Heal Block `onTryHeal`).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {

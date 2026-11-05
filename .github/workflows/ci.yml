@@ -50,3 +50,5 @@ jobs:
         run: cargo test --workspace --exclude vgc-engine-py
       - name: Showdown suite (ps-rng)
         run: cargo test -p vgc-engine-conformance --features ps-rng --test ps_suite
+      - name: Save/load differential
+        run: cargo test -p vgc-engine-conformance --features ps-rng --test save_load

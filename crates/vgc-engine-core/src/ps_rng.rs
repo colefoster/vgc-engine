@@ -141,7 +141,7 @@ pub struct PsDraw {
 }
 
 /// PS `PRNG`: a backend plus the optional draw trace.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PsRng {
     backend: PsBackend,
     /// Number of 32-bit draws taken so far.
@@ -164,6 +164,21 @@ pub struct PsRng {
     /// An open reorder window ([`PsRng::window_begin`]), else `None`.
     #[serde(skip)]
     window: Option<Box<DrawWindow>>,
+}
+
+/// Leaves out the `ctx_*` labels: each draw site sets them, they name draws in
+/// the trace and tag a reorder window, and a snapshot does not keep them. The
+/// save/load differential test (vgc-engine-conformance) compares this text.
+impl std::fmt::Debug for PsRng {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PsRng")
+            .field("backend", &self.backend)
+            .field("draws", &self.draws)
+            .field("trace_turn", &self.trace_turn)
+            .field("trace", &self.trace)
+            .field("window", &self.window)
+            .finish()
+    }
 }
 
 /// Capacity of a [`DrawWindow`]: draws past it pass through unmapped.
@@ -344,6 +359,7 @@ impl PsRng {
                     // target's getSpreadDamage.
                     "crit" | "damage" if self.ctx_sub => phase::ACCURACY * 8 + 4 + rank,
                     "crit" | "damage" => phase::DAMAGE * 8 + rank,
+                    "focusband" => phase::DAMAGE * 8 + 4 + rank,
                     "selfdrop" => phase::SELF_DROP * 8,
                     "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY * 8 + rank,
                     // Before any hit step, a `secondary`-keyed roll is a

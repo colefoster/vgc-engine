@@ -330,6 +330,8 @@ pub struct ProtocolLog {
     pub(crate) loop_ended: bool,
     /// Lines printed right before a mon's `|faint|` (Destiny Bond).
     pub(crate) faint_prefix: Vec<(u8, u8, String)>,
+    /// A faint another's onFaint causes: (holder, the mon it takes down, line).
+    pub(crate) faint_chain: Vec<((u8, u8), (u8, u8), String)>,
     /// Magic Room's setter, named again at its end.
     pub(crate) magic_room_source: String,
     /// The status move being resolved: (user side, user slot, target).
@@ -349,6 +351,8 @@ pub struct ProtocolLog {
     pub(crate) ee_announced: u8,
     /// The running move's `|move|` target (side, slot).
     pub(crate) move_target: Option<(u8, u8)>,
+    /// The last of the move's targets in Showdown's order, once they are known.
+    pub(crate) last_target: Option<(u8, u8)>,
     /// The last residual handler ended by duration: fieldEvent `continue`s
     /// past its faintMessages (sim/battle.ts:515-521).
     /// The residual's modelled handler order (protocol_residual.rs).
@@ -501,6 +505,8 @@ pub(crate) mod step {
     pub const TRY_IMMUNE: u8 = 4;
     pub const ACCURACY: u8 = 5;
     pub const BREAK_PROTECT: u8 = 6;
+    // TryPrimaryHit: a Substitute takes its hit before getSpreadDamage (data/moves.ts substitute).
+    pub const SUB_HIT: u8 = 7;
     pub const CALC: u8 = 8;
     pub const DAMAGE: u8 = 10;
     pub const EFFECTS: u8 = 11;
@@ -548,6 +554,7 @@ impl ProtocolLog {
             hitcount: None,
             loop_ended: false,
             faint_prefix: Vec::new(),
+            faint_chain: Vec::new(),
             magic_room_source: String::new(),
             status_ctx: None,
             since_move: 0,
@@ -557,6 +564,7 @@ impl ProtocolLog {
             last_faint: None,
             ee_announced: 0,
             move_target: None,
+            last_target: None,
             res_plan: None,
             res_hold_faints: false,
             oracle_shuffles: Vec::new(),
