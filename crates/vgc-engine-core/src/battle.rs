@@ -16631,7 +16631,11 @@ self.trigger_emergency_exits();
         if !mon.is_alive() {
             return;
         }
-        let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+        // A recharging mon's action is 'recharge', not a status move, so Quick
+        // Draw rolls for it (data/abilities.ts quickdraw, data/conditions.ts mustrecharge).
+        let move_id = if mon.must_recharge {
+            data::move_id::HYPERBEAM
+        } else if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
             data::move_id::STRUGGLE
         } else {
             mon.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
