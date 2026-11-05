@@ -10149,6 +10149,25 @@ self.trigger_emergency_exits();
                 }
             }
 
+            // hitStepTryImmunity: a move called by a Prankster-boosted status move inherits
+            // pranksterBoosted (sim/battle-actions.ts:478-479, :674-684).
+            if damaging
+                && self.called_from != u16::MAX
+                && tside != actor_side
+                && attacker.effective_ability_id() == data::ability_id::PRANKSTER
+                && {
+                    let (t, n) = defender.effective_types();
+                    t[..n as usize].contains(&15)
+                }
+            {
+                self.p_tag(crate::protocol::step::TYPE_IMMUNE, tside, tslot);
+                if self.plog() {
+                    self.p_push("|-hint|Since gen 7, Dark is immune to Prankster moves.".to_string());
+                }
+                pmon!(self, "-immune", tside, tslot);
+                continue;
+            }
+
             // Accuracy. It runs after the TryHit checks above (Protect and
             // its kin, absorbing / immunity abilities, Wonder Guard) and the
             // Ground immunity, as PS orders its hit steps: TryHit, type
