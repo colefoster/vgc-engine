@@ -988,6 +988,12 @@ pub struct Pokemon {
     /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
     /// mirroring PS `effectState.counter`.
     pub cud_chew_counter: u8,
+    /// Metronome item: the consecutive-use count and the last move counted
+    /// (data/items.ts metronome condition's effectState).
+    #[serde(skip)]
+    pub metronome_count: u8,
+    #[serde(skip)]
+    pub metronome_move: u16,
     /// Supreme Overlord's `effectState.fallen` (data/abilities.ts:4730-4738):
     /// min(side.totalFainted, 5) latched at the ability's onStart, so allies
     /// fainting later do not raise it. `u8::MAX` = never started (e.g. a
@@ -1140,6 +1146,8 @@ impl Pokemon {
             commanded: false,
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
+            metronome_count: 0,
+            metronome_move: u16::MAX,
             supreme_overlord_fallen: u8::MAX,
             used_item_this_turn: false,
             ate_berry: false,

@@ -2681,6 +2681,11 @@ pub(crate) fn calculate_damage_with_bp(
     if atk_item == data::item_id::LIFEORB {
         dmg_mod = chain_modify(dmg_mod, 5324, 4096);
     }
+    // Metronome's volatile onModifyDamage (data/items.ts metronome).
+    if atk_item == data::item_id::METRONOME && attacker.metronome_count > 0 {
+        const MOD: [u64; 6] = [4096, 4915, 5734, 6553, 7372, 8192];
+        dmg_mod = chain_modify(dmg_mod, MOD[(attacker.metronome_count as usize).min(5)], 4096);
+    }
     if atk_item == data::item_id::EXPERTBELT && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
         dmg_mod = chain_modify(dmg_mod, 4915, 4096);
     }
