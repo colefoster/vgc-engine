@@ -13256,6 +13256,9 @@ self.trigger_emergency_exits();
                             "moldbreaker" | "teravolt" | "turboblaze"
                         )
                     });
+                if still_alive && self.has_eligible_bench(ts) && !self.can_be_dragged_out(ts, tslot, breaks_mold) {
+                    self.p_drag_blocked(ts, tslot);
+                }
                 if still_alive
                     && self.has_eligible_bench(ts)
                     && self.can_be_dragged_out(ts, tslot, breaks_mold)
@@ -17025,6 +17028,19 @@ self.trigger_emergency_exits();
     /// Breakable: a Mold-Breaker phazer bypasses the *ability* blockers
     /// (Suction Cups / Guard Dog are `breakable`), but NOT Ingrain (a move
     /// volatile, not an ability). Returns true when the mon CAN be dragged.
+    /// A blocked DragOut's line (data/moves.ts ingrain, data/abilities.ts
+    /// suctioncups, guarddog onDragOut).
+    fn p_drag_blocked(&mut self, side: SideRef, slot: u8) {
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if m.volatiles.has(crate::pokemon::VolatileKind::Ingrain) {
+            pmon!(self, "-activate", side, slot, "|move: Ingrain");
+        } else if m.effective_ability_id() == data::ability_id::SUCTIONCUPS {
+            pmon!(self, "-activate", side, slot, "|ability: Suction Cups");
+        } else if m.effective_ability_id() == data::ability_id::GUARDDOG {
+            pmon!(self, "-activate", side, slot, "|ability: Guard Dog");
+        }
+    }
+
     pub(crate) fn can_be_dragged_out(&self, side: SideRef, slot: u8, breaks_mold: bool) -> bool {
         let mon = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => m,
@@ -21127,6 +21143,7 @@ self.trigger_emergency_exits();
                         )
                     });
                 if !self.can_be_dragged_out(ts, tslot, breaks_mold) {
+                    self.p_drag_blocked(ts, tslot);
                     return;
                 }
                 // The move only sets `forceSwitchFlag`; runAction drags the
