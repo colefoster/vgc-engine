@@ -21195,6 +21195,8 @@ self.trigger_emergency_exits();
                 if success {
                     pmon!(self, "-activate", actor_side, actor_slot, "|move: Tidy Up");
                 }
+                // this.boost(..., isSelf = true): a capped stat prints nothing.
+                self.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
                 self.apply_boosts(actor_side, actor_slot, &[(0, 1), (4, 1)], actor_side, actor_slot);
             }
             data::move_id::COURTCHANGE => {
