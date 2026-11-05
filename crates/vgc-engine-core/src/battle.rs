@@ -11028,6 +11028,25 @@ self.trigger_emergency_exits();
     /// sim/battle-actions.ts useMove from a calling move: the called move runs in
     /// a borrowed slot, without BeforeMove or PP; the caller keeps its own history.
     fn run_called_move(&mut self, side: SideRef, slot: u8, called: u16, from: u16, pending_kind: &[[u8; 2]; 2]) {
+        // useMoveInner's ModifyMove stops a called move: throatchop, healblock, gravity
+        // condition onModifyMove (data/moves.ts).
+        if let Some(u) = self.side(side).active_mon(slot as usize) {
+            let md = &self.moves()[called as usize];
+            let gravity_flag = matches!(called, data::move_id::FLY | data::move_id::BOUNCE | data::move_id::SKYDROP | data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK | data::move_id::SPLASH | data::move_id::MAGNETRISE | data::move_id::TELEKINESIS | data::move_id::FLYINGPRESS);
+            let name = md.name;
+            if u.throat_chop_turns() > 0 && md.is_sound {
+                pmon!(self, "cant", side, slot, "|move: Throat Chop");
+                return;
+            }
+            if self.gravity_turns > 0 && gravity_flag {
+                pmon!(self, "cant", side, slot, "|move: Gravity|{name}");
+                return;
+            }
+            if u.heal_block_turns() > 0 && md.is_heal {
+                pmon!(self, "cant", side, slot, "|move: Heal Block|{name}");
+                return;
+            }
+        }
         let Some(mon) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
         let saved = (mon.moves[3], mon.pp[3], mon.last_used_move_slot, mon.last_used_move_target, mon.moves_used);
         mon.moves[3] = called;
