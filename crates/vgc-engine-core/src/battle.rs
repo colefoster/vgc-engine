@@ -11194,7 +11194,7 @@ self.trigger_emergency_exits();
 
     /// sim/battle-actions.ts useMove from a calling move: the called move runs in
     /// a borrowed slot, without BeforeMove or PP; the caller keeps its own history.
-    fn run_called_move(&mut self, side: SideRef, slot: u8, called: u16, from: u16, pending_kind: &[[u8; 2]; 2]) {
+    fn run_called_move(&mut self, side: SideRef, slot: u8, called: u16, from: u16, pending_kind: &[[u8; 2]; 2], will_act: bool) {
         // useMoveInner's ModifyMove stops a called move: throatchop, healblock, gravity
         // condition onModifyMove (data/moves.ts).
         if let Some(u) = self.side(side).active_mon(slot as usize) {
@@ -11234,14 +11234,14 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         let windowed = {
             let inline = std::mem::replace(&mut self.ps_inline_hit_updates, false);
-            let w = self.ps_spread_window(action, pending_kind, true);
+            let w = self.ps_spread_window(action, pending_kind, will_act);
             self.ps_inline_hit_updates = if w { false } else { inline };
             w
         };
         #[cfg(not(feature = "ps-rng"))]
         let windowed = false;
         if !windowed {
-            self.resolve_move_with_pending(action, pending_kind, true);
+            self.resolve_move_with_pending(action, pending_kind, will_act);
         }
         // The called move's useMove runs its own hit loop, closing Update
         // included (data/mods/champions/scripts.ts:575), inside the caller's hit.
@@ -22477,7 +22477,7 @@ self.trigger_emergency_exits();
                 if copycat_fails(self.moves()[prev as usize].slug) {
                     return;
                 }
-                self.run_called_move(actor_side, actor_slot, prev, move_id, pending_kind);
+                self.run_called_move(actor_side, actor_slot, prev, move_id, pending_kind, will_act);
             }
             data::move_id::HEALINGWISH => {
                 // data/moves.ts healingwish onTryHit, `selfdestruct: ifHit`, slotCondition.
@@ -22949,7 +22949,7 @@ self.trigger_emergency_exits();
                             .nth(picked as usize)
                     });
                     if let Some(called) = called {
-                        self.run_called_move(actor_side, actor_slot, called, move_id, pending_kind);
+                        self.run_called_move(actor_side, actor_slot, called, move_id, pending_kind, will_act);
                     }
                 }
             }
