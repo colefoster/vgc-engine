@@ -6803,19 +6803,7 @@ self.trigger_emergency_exits();
         if let Some(l) = self.protocol.log_mut() {
             l.hold_for = Some((side as u8, actor_slot));
         }
-        // data/moves.ts healingwish condition onSwitchIn / onSwap.
-        if self.healing_wish[side as usize][(actor_slot as usize).min(1)]
-            && self.side(side).active_mon(actor_slot as usize)
-                .is_some_and(|m| m.is_alive() && (m.current_hp < m.stats.hp || !matches!(m.status, Status::None)))
-        {
-            if let Some(m) = self.side_mut(side).active_mon_mut(actor_slot as usize) {
-                m.current_hp = m.stats.hp;
-                m.status = Status::None;
-            }
-            self.healing_wish[side as usize][(actor_slot as usize).min(1)] = false;
-            self.sync_status_dot_bit(side, actor_slot);
-            self.p_heal(side, actor_slot, "|[from] move: Healing Wish");
-        }
+        self.healing_wish_swap(side, actor_slot);
         // Hazards run in the order they were laid (effectOrder, sim/battle.ts
         // comparePriority). White Herb's onAnySwitchIn (priority -2) comes after
         // every hazard of the batch (sim/battle.ts fieldEvent, data/items.ts whiteherb).
@@ -6847,6 +6835,23 @@ self.trigger_emergency_exits();
         // `step()` and via per-mutation syncs in the ability dispatcher.
         self.sync_weather_terrain_cache();
         true
+    }
+
+    /// data/moves.ts healingwish condition onSwitchIn / onSwap: the slot's wish waits
+    /// for a mon that needs it.
+    fn healing_wish_swap(&mut self, side: SideRef, slot: u8) {
+        if self.healing_wish[side as usize][(slot as usize).min(1)]
+            && self.side(side).active_mon(slot as usize)
+                .is_some_and(|m| m.is_alive() && (m.current_hp < m.stats.hp || !matches!(m.status, Status::None)))
+        {
+            if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                m.current_hp = m.stats.hp;
+                m.status = Status::None;
+            }
+            self.healing_wish[side as usize][(slot as usize).min(1)] = false;
+            self.sync_status_dot_bit(side, slot);
+            self.p_heal(side, slot, "|[from] move: Healing Wish");
+        }
     }
 
     /// Set field weather from a manual weather-setting move (Sunny Day /
@@ -21771,6 +21776,9 @@ self.trigger_emergency_exits();
                 self.sync_status_dot_bit(actor_side, actor_slot);
                 self.sync_status_dot_bit(actor_side, partner_slot as u8);
                 self.ally_switch_pending = Some(actor_side);
+                // swapPosition's Swap events, the partner first (sim/battle.ts:1621-1622).
+                self.healing_wish_swap(actor_side, actor_slot);
+                self.healing_wish_swap(actor_side, partner_slot as u8);
             }
             data::move_id::RAGEPOWDER | data::move_id::FOLLOWME => {
                 // Doubles-only redirection. PS data/moves.ts:
