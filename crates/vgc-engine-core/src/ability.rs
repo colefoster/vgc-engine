@@ -2376,7 +2376,7 @@ pub fn on_damaging_hit(
         let attacker_eligible = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
-            .is_some_and(|a| a.is_alive() && a.disabled_move_slot() == 255);
+            .is_some_and(|a| a.disabled_move_slot() == 255);
         // Aroma Veil — the would-be-disabled attacker (or a partner on its
         // side) being immune vetoes the Disable. PS `data/abilities.ts:234`
         // `onAllyTryAddVolatile` returns null for any effect type, so
