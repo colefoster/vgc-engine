@@ -1571,6 +1571,20 @@ impl Battle {
         if !matches!(ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) || a.protean_used || a.terastallized {
             return None;
         }
+        // protean onPrepareHit skips `move.callsMove`; a move whose own onTry
+        // failed never gets to PrepareHit (sim/battle-actions.ts useMoveInner).
+        if matches!(
+            move_id,
+            data::move_id::ASSIST | data::move_id::COPYCAT | data::move_id::MEFIRST | data::move_id::METRONOME
+                | data::move_id::MIRRORMOVE | data::move_id::NATUREPOWER | data::move_id::SLEEPTALK
+        ) || (move_id == data::move_id::REST
+            && (a.current_hp >= a.stats.hp
+                || a.status == Status::Sleep
+                || matches!(ability, data::ability_id::INSOMNIA | data::ability_id::VITALSPIRIT | data::ability_id::COMATOSE)))
+            || (move_id == data::move_id::SNORE && a.status != Status::Sleep)
+        {
+            return None;
+        }
         // `move.type` here is post-onModifyType (runMove's ModifyType
         // precedes PrepareHit, sim/battle-actions.ts useMoveInner): Weather
         // Ball in rain retypes to Water, an -ate Normal move to the -ate type.
@@ -14026,8 +14040,10 @@ self.trigger_emergency_exits();
                         a.charging_move_slot = move_slot;
                     }
                     crate::item::on_pp_depleted(self, actor_side, actor_slot);
-                    // twoturnmove onStart's attrLastMove('[still]') (data/conditions.ts:310).
+                    // twoturnmove onStart's attrLastMove('[still]') (data/conditions.ts:310),
+                    // then its PrepareHit event: Protean.
                     self.p_attr("[still]");
+                    self.protean_after_stall(actor_side, actor_slot, move_id);
                     return ChargeOutcome::Abort;
                 }
             }
@@ -14065,6 +14081,7 @@ self.trigger_emergency_exits();
                 }
                 crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 self.p_attr("[still]");
+                self.protean_after_stall(actor_side, actor_slot, move_id);
                 return ChargeOutcome::Abort;
             }
         }
