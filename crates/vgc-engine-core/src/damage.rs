@@ -1419,6 +1419,10 @@ pub(crate) fn calculate_damage_with_bp(
             ate_boost = true;
         }
     }
+    // data/moves.ts electrify condition onModifyType (priority -2, after -ate).
+    if attacker.volatiles.has(crate::pokemon::VolatileKind::Electrify) && move_id != data::move_id::STRUGGLE {
+        move_type = 3;
+    }
 
     // Terrain BP modifier — PS data/moves.ts:electricterrain (:4533),
     // grassyterrain (:7699), psychicterrain (:14132) `onBasePower`
