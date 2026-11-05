@@ -151,6 +151,7 @@ fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
                             ("metronome_count", serde_json::json!(0)),
                             ("metronome_move", serde_json::json!(65535)),
                             ("ate_berry", serde_json::json!(false)),
+                            ("foe_boosts_pending", serde_json::json!([0, 0, 0, 0, 0, 0, 0])),
                             ("added_type", serde_json::json!(255)),
                             ("type_unseen", serde_json::json!(false)),
                             ("borrowed_slot", serde_json::json!([65535, 0])),

@@ -2350,43 +2350,73 @@ impl Battle {
         if !deltas.iter().any(|&(_, d)| d > 0) {
             return;
         }
-        // Opportunist reacts to a FOE's boost — scan the side opposing the
-        // boosted mon. The boosted mon could be on either side (it may be an
-        // Opportunist holder's foe, OR the holder's own teammate's foe), so
-        // the holder is always found on `boosted_side.opposing()`.
+        // Reacts to a FOE's boost: the holder is on `boosted_side.opposing()`.
         let opp = boosted_side.opposing();
-        let n = self.format().active_count() as u8;
-        for slot in 0..n {
-            let is_holder = self
-                .side(opp)
-                .active_mon(slot as usize)
-                .is_some_and(|m| {
-                    m.is_alive()
-                        && m.effective_ability_id() == data::ability_id::OPPORTUNIST
-                });
-            if !is_holder {
+        for slot in 0..self.format().active_count() {
+            if let Some(m) = self.side_mut(opp).active_mon_mut(slot) {
+                if m.is_alive() && (m.effective_ability_id() == data::ability_id::OPPORTUNIST || m.item_id == data::item_id::MIRRORHERB) {
+                    for &(idx, delta) in deltas {
+                        if delta > 0 {
+                            m.foe_boosts_pending[idx as usize] = m.foe_boosts_pending[idx as usize].saturating_add(delta);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opportunist and Mirror Herb spend what they collected, on the event that
+    /// ends the move or switch: onAnyAfterMove, onAnySwitchIn, onAnyAfterMega,
+    /// onResidual (data/abilities.ts opportunist, data/items.ts mirrorherb). The
+    /// copy writes the stages directly, so it can't chain into another copy.
+    pub(crate) fn flush_foe_boost_copies(&mut self) {
+        let (order, k) = self.residual_speed_order();
+        for &(side, slot) in &order[..k] {
+            let Some(m) = self.side(side).active_mon(slot as usize) else { continue };
+            let pending = m.foe_boosts_pending;
+            if pending == [0; 7] {
                 continue;
             }
-            let before = self.side(opp).active_mon(slot as usize).map(|m| m.boosts);
-            if let Some(m) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                for &(idx, delta) in deltas {
-                    if delta > 0 {
-                        let stage = &mut m.boosts[idx as usize];
-                        *stage = (*stage + delta).clamp(-6, 6);
-                    }
+            let alive = m.is_alive();
+            let opportunist = m.effective_ability_id() == data::ability_id::OPPORTUNIST;
+            let herb = m.item_id == data::item_id::MIRRORHERB;
+            if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                m.foe_boosts_pending = [0; 7];
+            }
+            if !alive {
+                continue;
+            }
+            let mut rises = [(0u8, 0i8); 7];
+            let mut n = 0;
+            for (i, &d) in pending.iter().enumerate() {
+                if d > 0 {
+                    rises[n] = (i as u8, d);
+                    n += 1;
                 }
             }
-            // onFoeAfterBoost's boost(): `-ability|Opportunist|boost`, then its stats.
-            if let Some(before) = before.filter(|_| self.plog()) {
-                let mut rises = [(0u8, 0i8); 7];
-                let mut k = 0;
-                for &(idx, delta) in deltas {
-                    if delta > 0 && k < 7 {
-                        rises[k] = (idx, delta);
-                        k += 1;
+            for (copy, fx) in [
+                (opportunist, crate::protocol::BoostFx::AbilitySelf(data::ability_id::OPPORTUNIST)),
+                (herb, crate::protocol::BoostFx::Item(data::item_id::MIRRORHERB)),
+            ] {
+                if !copy {
+                    continue;
+                }
+                let before = self.side(side).active_mon(slot as usize).map_or([0; 7], |m| m.boosts);
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    for &(i, d) in &rises[..n] {
+                        m.boosts[i as usize] = (m.boosts[i as usize] + d).clamp(-6, 6);
                     }
                 }
-                self.p_boost_lines(opp, slot, &rises[..k], before, crate::protocol::BoostFx::AbilitySelf(data::ability_id::OPPORTUNIST));
+                if matches!(fx, crate::protocol::BoostFx::Item(_)) {
+                    self.p_item_line("-enditem", side, slot, data::item_id::MIRRORHERB, "");
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.consume_item();
+                    }
+                }
+                self.p_boost_lines(side, slot, &rises[..n], before, fx);
+                if matches!(fx, crate::protocol::BoostFx::Item(_)) {
+                    crate::ability::on_item_consumed(self, side, slot);
+                }
             }
         }
     }
@@ -5789,6 +5819,7 @@ self.trigger_emergency_exits();
         // Drought-sun, Mega Manectric → Intimidate, ...). Reuses the
         // established re-invoke pattern (cf. Ogerpon-Tera switch-in).
         crate::ability::on_switch_in(self, side, actor_slot);
+        self.flush_foe_boost_copies();
     }
 
     /// Resolve every voluntary pre-turn switch from both sides, interleaved by
@@ -6358,6 +6389,7 @@ self.trigger_emergency_exits();
             incoming.unburden_active = false; // Unburden speed-double latch clears on switch-out (PS `onEnd`).
             incoming.commanding = false; // Commander (Tatsugiri) volatile clears on switch-out.
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
+            incoming.foe_boosts_pending = [0; 7];
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
             incoming.metronome_count = 0;
@@ -15537,9 +15569,6 @@ self.trigger_emergency_exits();
             self.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1), (4, 1)], actor_side, actor_slot);
             // Mirror Herb copies the spe raise onto a foe.
-            crate::item::try_consume_mirror_herb_on_foe_boost(
-                self, actor_side, actor_slot, &[(4, 1)],
-            );
             crate::item::try_consume_white_herb(self, actor_side, actor_slot);
             let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
         }
@@ -18249,6 +18278,7 @@ self.trigger_emergency_exits();
                 self.hunger_switch_update(side, slot);
             }
         }
+        self.flush_foe_boost_copies();
         self.p_res_close();
         // The residual action's faintMessages, before its Update.
         self.faint_forme_cleanup();
@@ -19398,6 +19428,7 @@ self.trigger_emergency_exits();
 
     fn white_herb_after_move(&mut self) {
         self.locked_move_after_move();
+        self.flush_foe_boost_copies();
         if !self.white_herb_move_defer {
             return;
         }
@@ -20507,9 +20538,6 @@ self.trigger_emergency_exits();
                 let boosts: &[(u8, i8)] = &[(0, 1), (1, 1)];
                 self.apply_boosts(actor_side, ally_slot, boosts, actor_side, actor_slot);
                 // Mirror Herb on a foe copies an opposing stat rise.
-                crate::item::try_consume_mirror_herb_on_foe_boost(
-                    self, actor_side, ally_slot, boosts,
-                );
             }
             data::move_id::DECORATE => {
                 // PS data/moves.ts:decorate (num 777) — target: "normal",
@@ -20534,9 +20562,6 @@ self.trigger_emergency_exits();
                 self.apply_boosts(tside, tslot, boosts, actor_side, actor_slot);
                 // Mirror Herb on a foe (relative to the boosted mon) copies
                 // the stat rise — e.g. Decorate aimed at an opponent.
-                crate::item::try_consume_mirror_herb_on_foe_boost(
-                    self, tside, tslot, boosts,
-                );
             }
             data::move_id::ACUPRESSURE => {
                 // PS data/moves.ts:acupressure (num 367) — target
@@ -20588,7 +20613,6 @@ self.trigger_emergency_exits();
                 let pick = self.rng.range(n as u32) as usize;
                 let delta: &[(u8, i8)] = &[(stats[pick], 2)];
                 self.apply_boosts(tside, tslot, delta, actor_side, actor_slot);
-                crate::item::try_consume_mirror_herb_on_foe_boost(self, tside, tslot, delta);
             }
             data::move_id::AROMATICMIST => {
                 // PS data/moves.ts:aromaticmist — target adjacentAlly,
@@ -20602,7 +20626,6 @@ self.trigger_emergency_exits();
                 }
                 let boosts: &[(u8, i8)] = &[(3, 1)];
                 self.apply_boosts(actor_side, ally, boosts, actor_side, actor_slot);
-                crate::item::try_consume_mirror_herb_on_foe_boost(self, actor_side, ally, boosts);
             }
             data::move_id::ALLYSWITCH => {
                 // PS data/moves.ts:allyswitch (num 502) — priority +2,
@@ -22390,12 +22413,6 @@ self.trigger_emergency_exits();
                     // Mirror Herb on a foe copies the Atk/Def rise; White Herb
                     // / Eject Pack react to the Spe drop — mirror the
                     // self-boost site's item handling.
-                    crate::item::try_consume_mirror_herb_on_foe_boost(
-                        self,
-                        actor_side,
-                        actor_slot,
-                        &[(0, 1), (1, 1)],
-                    );
                     crate::item::try_consume_white_herb(self, actor_side, actor_slot);
                     let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
                     return;
@@ -24212,9 +24229,6 @@ self.trigger_emergency_exits();
                             kind: V::Stockpile, turns_remaining: 0, payload: ((state & !3) | (layers + 1)) + add,
                         });
                     }
-                    crate::item::try_consume_mirror_herb_on_foe_boost(
-                        self, actor_side, actor_slot, boosts,
-                    );
                     return;
                 }
                 // Self-boost status moves — PS data/moves.ts: each
@@ -24268,9 +24282,6 @@ self.trigger_emergency_exits();
                     // moves (Dragon Dance, Quiver Dance) copy all stats
                     // before the Herb consumes. Only positive deltas are
                     // copied, so passing Shell Smash's full set is fine.
-                    crate::item::try_consume_mirror_herb_on_foe_boost(
-                        self, actor_side, actor_slot, boosts,
-                    );
                     // White Herb restores negative stages and Eject Pack
                     // reacts to a drop — relevant only for mixed-sign
                     // self-boosts (Shell Smash: -1 def/-1 spd). Both are
@@ -24312,9 +24323,6 @@ self.trigger_emergency_exits();
                             }
                             // Howl also raises an ally's Atk — Mirror
                             // Herb on a foe should copy.
-                            crate::item::try_consume_mirror_herb_on_foe_boost(
-                                self, actor_side, ally_slot, &[(0u8, 1i8)],
-                            );
                         }
                     }
                 }
@@ -25442,7 +25450,6 @@ fn apply_self_boost_secondary(
         battle.apply_boosts(attacker_side, attacker_slot, boosts, attacker_side, attacker_slot);
         // Mirror Herb — a foe copies the user's stat raise. PS
         // `data/items.ts:mirrorherb.onFoeAfterBoost`.
-        crate::item::try_consume_mirror_herb_on_foe_boost(battle, attacker_side, attacker_slot, boosts);
     }
 }
 
