@@ -2306,11 +2306,12 @@ pub fn on_damaging_hit(
                 // Contact-ability status (Static/Flame Body/Poison Point):
                 // the ABILITY HOLDER (the defender) is the source, so
                 // Safeguard on the attacker's side vetoes it.
-                battle.try_set_status_from(
+                battle.try_set_status_from_src(
                     attacker_side,
                     attacker_slot,
                     status,
-                    attacker_side.opposing(),
+                    target_side,
+                    target_slot,
                 );
             }
         }
@@ -2334,11 +2335,12 @@ pub fn on_damaging_hit(
             .is_some_and(|a| a.is_alive());
         if attacker_alive {
             battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
-            battle.try_set_status_from(
+            battle.try_set_status_from_src(
                 attacker_side,
                 attacker_slot,
                 crate::pokemon::Status::Burn,
-                attacker_side.opposing(),
+                target_side,
+                target_slot,
             );
         }
     }
@@ -2603,11 +2605,12 @@ pub fn on_damaging_hit(
         battle.p_status_fx(crate::protocol::StatusFx::Ability(attacker_ability_id, attacker_side as u8, attacker_slot));
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
-        battle.try_set_status_from(
+        battle.try_set_status_from_src(
             target_side,
             target_slot,
             crate::pokemon::Status::Poison,
-            target_side.opposing(),
+            attacker_side,
+            attacker_slot,
         );
     }
 
