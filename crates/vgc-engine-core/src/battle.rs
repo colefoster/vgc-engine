@@ -477,6 +477,9 @@ pub struct Battle {
     /// The user whose runMove reached its AfterMove event this action.
     #[serde(skip)]
     pub(crate) after_move_user: Option<(SideRef, u8)>,
+    /// A status move stopped at the target's Substitute this action.
+    #[serde(skip)]
+    pub(crate) ps_status_sub_null: bool,
     /// A Round reached its onTry this action (data/moves.ts round).
     #[serde(skip)]
     pub(crate) round_on_try: bool,
@@ -928,6 +931,7 @@ impl Battle {
             fairy_lock_turns: 0,
             pending_queue_reorder: None,
             after_move_user: None,
+            ps_status_sub_null: false,
             round_on_try: false,
             round_chain: [[false; 2]; 2],
             encore_requeue: None,
@@ -11560,6 +11564,7 @@ self.trigger_emergency_exits();
         {
             self.ps_status_missed = false;
         }
+        self.ps_status_sub_null = false;
         self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
         // A status move whose effect failed (runMoveEffects' hit result is
         // false for every target) leaves the hit loop at hit 1 with no Update
@@ -11571,6 +11576,10 @@ self.trigger_emergency_exits();
             && self.ps_status_move_landed(actor_side, actor_slot, m, target)
             && (self.status_move_result(actor_side, actor_slot, m, target, before, false)
                 == crate::pokemon::MoveResult::Succeeded
+                // Substitute's onTryPrimaryHit returns null, which is not `false`:
+                // the loop runs its Updates (data/moves.ts substitute,
+                // data/mods/champions/scripts.ts hitStepMoveHitLoop).
+                || self.ps_status_sub_null
                 // Effects the snapshot cannot see: a stat swap, a called
                 // move, a pending drag, and a heal that fails with NOT_FAIL
                 // (data/moves.js healpulse / floralhealing).
@@ -19342,7 +19351,7 @@ self.trigger_emergency_exits();
                     && !(m.is_powder && self.target_is_powder_immune(ts, tslot))
                     && !self.status_gate_has_own_immunity(move_id, ts, tslot)
                 {
-                    let _ = self.rolled_accuracy_passed(m);
+                    self.ps_status_sub_null = self.rolled_accuracy_passed(m);
                     return;
                 }
             }
