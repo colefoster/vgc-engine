@@ -1543,6 +1543,11 @@ impl Battle {
             // Transform/Imposter (via `transform_into`), and every other
             // forme-change site that routes through `set_forme`.
             m.change_forme(new_species_id, recompute_stats);
+            // setSpecies: setType(species.types), addedType = '' (sim/pokemon.ts).
+            if m.type_override[0] != 255 || m.added_type != 255 {
+                m.type_override = [255; 2];
+                m.added_type = 255;
+            }
         }
     }
 
