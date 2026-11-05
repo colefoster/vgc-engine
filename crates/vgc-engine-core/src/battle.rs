@@ -13575,9 +13575,10 @@ self.trigger_emergency_exits();
             //   on the holder still being alive AND still on the
             //   field (Red Card might have force-switched the
             //   attacker but the holder is still in slot tslot).
-            // afterMoveSecondaryEvent skips AfterMoveSecondary for a move Sheer Force
-            // boosted (sim/battle-actions.ts): Red Card, Eject Button.
-            let sheer_force = crate::damage::move_is_sheer_force_boosted(m)
+            // hitStepMoveHitLoop skips AfterMoveSecondary for a move Sheer Force boosted
+            // (sim/battle-actions.ts:922): Red Card, Eject Button. Champions' copy of the
+            // loop doesn't (data/mods/champions/scripts.ts:575).
+            let sheer_force = !self.champions && crate::damage::move_is_sheer_force_boosted(m)
                 && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(crate::damage::attacker_has_sheer_force);
             if !sheer_force && self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive())
