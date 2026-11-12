@@ -64,13 +64,14 @@ def build_error_label(err: str) -> str:
 
 
 class Brute:
-    def __init__(self):
+    def __init__(self, configs=CONFIGS):
+        self.configs = configs
         self.n = 0
         self.skips = collections.Counter()
         self.shapes = collections.Counter()
         self.depths = collections.Counter()
         z = lambda: {"n": 0, "agree": 0, "nt": 0, "agree_t": 0, "expl": 0, "panic": 0, "max": 0.0, "sum": 0.0, "worst": []}
-        self.cfg = {c: z() for c in CONFIGS}
+        self.cfg = {c: z() for c in self.configs}
         self.mc = [0, 0, 0, 0.0]  # cells, samples, missing, tv max
         self.mc_bad = []
 
@@ -81,7 +82,7 @@ class Brute:
         self.n += 1
         self.shapes[r["desc"].split(":")[0]] += 1
         self.depths[r["depth"]] += 1
-        for c in CONFIGS:
+        for c in self.configs:
             v, a = r["solvers"].get(c, {}), self.cfg[c]
             if "panic" in v:
                 a["panic"] += 1
@@ -111,7 +112,7 @@ class Brute:
                "Reference depth: " + ", ".join(f"d{d} {n}" for d, n in sorted(self.depths.items())) + ".", "",
                "| config | value agrees (abs dv <= 1e-6) | agrees when ref all-terminal | max abs dv | mean abs dv | root policy exploitable > 1e-6 | panics |",
                "|---|---|---|---|---|---|---|"]
-        for c in CONFIGS:
+        for c in self.configs:
             a = self.cfg[c]
             out.append(f"| {c} | {pct(a['agree'], a['n'])} | {pct(a['agree_t'], a['nt'])} | {a['max']:.4f} | "
                        f"{a['sum'] / max(1, a['n']):.4f} | {pct(a['expl'], a['n'])} | {a['panic']} |")
@@ -129,10 +130,11 @@ def main() -> None:
     ap.add_argument("--brute", default="")
     ap.add_argument("--real", default="")
     ap.add_argument("--positions")
+    ap.add_argument("--configs", help="comma-separated brute configs (default: the shipped ones)")
     a = ap.parse_args()
     lines: list[str] = []
     if a.brute:
-        br = Brute()
+        br = Brute(tuple(a.configs.split(",")) if a.configs else CONFIGS)
         for r in stream(a.brute):
             br.add(r)
         lines += br.render()

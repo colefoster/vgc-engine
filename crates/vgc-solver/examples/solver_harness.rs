@@ -27,7 +27,7 @@ use vgc_engine_core::{
 use vgc_solver::{
     enumerate_outcomes_bounded, endgame_solve_bounded, hp_ratio_leaf, joint_actions,
     set_joint_collapse_disabled, solve_zero_sum, BoundedSolve, ChanceCompression, EnumerateOpts, Provenance,
-    SolverConfig, SolverStats,
+    RootMenu, SolverConfig, SolverStats,
 };
 
 /// Resident set size in MB (Linux /proc; 0 elsewhere). The harness skips a
@@ -379,17 +379,37 @@ fn brute(n: usize, seed: u64, max_depth_cap: u32, only: Option<usize>) {
             ("lossy3", SolverConfig { lossy_damage_3bucket: true, ..base.clone() }, false),
             ("served_anytime", SolverConfig { chance_compression: Some(ChanceCompression { mass_eps: 0.02, max_combos: 64 }), ..base.clone() }, true),
         ];
+        let served = SolverConfig { chance_compression: Some(ChanceCompression { mass_eps: 0.02, max_combos: 64 }), ..base.clone() };
+        let mut cfgs = cfgs;
+        cfgs.extend(lossy_cfgs(&served));
         let mut res = serde_json::Map::new();
-        for (name, cfg, anytime) in cfgs {
+        let mut free: Option<BoundedSolve> = None;
+        let emit = |name: &str, cfg: SolverConfig, anytime: bool, free_value: Option<f64>, res: &mut serde_json::Map<String, Value>| -> Option<BoundedSolve> {
             let cfg = SolverConfig { deadline: Some(Instant::now() + Duration::from_secs(20)), ..cfg };
             match run_cfg(&b, &cfg, anytime) {
                 Ok((r, st, ms)) => {
                     let (er, ec) = exploitability(&b, &m, v, &r.node);
-                    res.insert(name.into(), json!({"value": r.node.value, "dv": r.node.value - v, "expl_row": er, "expl_col": ec,
+                    let mut o = json!({"value": r.node.value, "dv": r.node.value - v, "expl_row": er, "expl_col": ec,
                         "prov": prov(r.node.provenance), "depth": r.depth_completed, "trunc": r.truncated.map(|t| t.as_str()), "ms": ms,
-                        "dropped_max": st.chance_mass_dropped_max}));
+                        "dropped_max": st.chance_mass_dropped_max});
+                    lossy_stats(&mut o, &st, free_value);
+                    res.insert(name.into(), o);
+                    Some(r)
                 }
-                Err(e) => { res.insert(name.into(), json!({"panic": e})); }
+                Err(e) => { res.insert(name.into(), json!({"panic": e})); None }
+            }
+        };
+        for (name, cfg, anytime) in cfgs {
+            let r = emit(name, cfg, anytime, None, &mut res);
+            if name == "served_anytime" { free = r; }
+        }
+        // Menus of the k root joint actions with the most policy mass (then
+        // the best per-action root value), per side, from the unrestricted
+        // served solve: a stand-in for a policy network's menu.
+        if let Some(f) = &free {
+            for k in MENU_KS {
+                let cfg = SolverConfig { root_menu: Some(menu_from(&b, f, k)), ..served.clone() };
+                emit(&format!("menu{k}"), cfg, true, Some(f.node.value), &mut res);
             }
         }
         // Real-RNG sampling of up to 12 root cells.
@@ -411,6 +431,56 @@ fn brute(n: usize, seed: u64, max_depth_cap: u32, only: Option<usize>) {
     }
 }
 
+/// Menu sizes measured by `brute` / `real`.
+const MENU_KS: [usize; 5] = [1, 2, 3, 4, 8];
+
+/// The opt-in lossy configs (docs/perf/lossy-moves-2026-11-12.md), built on
+/// the served compressed config; all anytime.
+fn lossy_cfgs(served: &SolverConfig) -> Vec<(&'static str, SolverConfig, bool)> {
+    vec![
+        ("classes", SolverConfig { outcome_classes: true, ..served.clone() }, true),
+        ("sampled16", SolverConfig { chance_samples: Some(16), chance_compression: None, ..served.clone() }, true),
+        ("sampled64", SolverConfig { chance_samples: Some(64), chance_compression: None, ..served.clone() }, true),
+    ]
+}
+
+fn lossy_stats(o: &mut Value, st: &SolverStats, free_value: Option<f64>) {
+    o["cells"] = json!(st.cells);
+    o["raw_combos"] = json!(st.raw_combos);
+    if st.class_cells + st.class_fallbacks > 0 {
+        o["class"] = json!({"cells": st.class_cells, "sites": st.class_sites, "classes": st.class_count,
+            "fallbacks": st.class_fallbacks, "unclassified": st.class_fallback_unclassified, "focus": st.class_fallback_focus,
+            "roll_hp": st.class_fallback_roll_hp, "damage_reading": st.class_fallback_damage_reading, "lazy": st.class_lazy_unclassified});
+    }
+    if st.sampled_cells > 0 {
+        o["sampled"] = json!({"cells": st.sampled_cells, "samples": st.samples});
+    }
+    if let Some(fv) = free_value {
+        o["menu"] = json!({"rows": st.menu_rows, "cols": st.menu_cols, "fallbacks": st.menu_fallbacks});
+        o["dv_free"] = json!(o["value"].as_f64().unwrap_or(fv) - fv);
+    }
+}
+
+/// Top-`k` root joint actions per side: policy mass first, then root value
+/// for that side (P1 high, P2 low), then legal order.
+fn menu_from(b: &Battle, f: &BoundedSolve, k: usize) -> RootMenu {
+    let side_menu = |side: SideRef, pol: &[(Vec<Choice>, f64)], vals: Option<&Vec<(Vec<Choice>, f64)>>| -> Vec<Vec<Choice>> {
+        let sign = if side == SideRef::P1 { 1.0 } else { -1.0 };
+        let mut acts: Vec<(f64, f64, usize, Vec<Choice>)> = joint_actions(b, side).into_iter().enumerate().map(|(i, a)| {
+            let p = pol.iter().find(|x| x.0 == a).map_or(0.0, |x| x.1);
+            let v = vals.and_then(|vs| vs.iter().find(|x| x.0 == a)).map_or(f64::NEG_INFINITY, |x| sign * x.1);
+            (p, v, i, a)
+        }).collect();
+        acts.sort_by(|x, y| y.0.total_cmp(&x.0).then(y.1.total_cmp(&x.1)).then(x.2.cmp(&y.2)));
+        acts.into_iter().take(k).map(|x| x.3).collect()
+    };
+    let rv = f.root_values.as_ref();
+    let rows = side_menu(SideRef::P1, &f.node.row_joint_policy, rv.map(|r| &r.row));
+    let cols = side_menu(SideRef::P2, &f.node.col_joint_policy, rv.map(|r| &r.col));
+    let sup = |m: &[Vec<Choice>]| m.iter().take(1).cloned().collect();
+    RootMenu { row_support: sup(&rows), col_support: sup(&cols), rows: Some(rows), cols: Some(cols) }
+}
+
 fn real(path: &str, budget_ms: u64, exact_ms: u64, skip: usize, limit: usize) {
     use std::io::BufRead;
     let file = std::io::BufReader::new(std::fs::File::open(path).expect("fixtures"));
@@ -423,7 +493,7 @@ fn real(path: &str, budget_ms: u64, exact_ms: u64, skip: usize, limit: usize) {
         let rec: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
         let id = rec.get("id").or_else(|| rec.get("episode")).cloned().unwrap_or(json!(i));
         let mut out = json!({"mode": "real", "i": i, "id": id, "turn": rec["turn"], "side": rec["side"], "src": rec.get("src")});
-        let b: Battle = match rec["battle"].as_str().map(serde_json::from_str::<Battle>) {
+        let b: Battle = match rec["battle"].as_str().map(read_battle) {
             Some(Ok(mut b)) => { b.rehydrate_caches(); b }
             other => {
                 out["error"] = json!(format!("battle json: {:?}", other.map(|r| r.err().map(|e| e.to_string()))));
@@ -448,10 +518,27 @@ fn real(path: &str, budget_ms: u64, exact_ms: u64, skip: usize, limit: usize) {
         };
         let exact = SolverConfig { max_depth: 2, node_budget: 10_000, deadline: Some(Instant::now() + Duration::from_millis(exact_ms)), ..SolverConfig::default() };
         let mut tops: Option<(Vec<Choice>, Vec<Choice>)> = None;
-        for (name, mut cfg, anytime, bud) in [("served", served, true, budget_ms), ("exact_d2", exact, false, exact_ms)] {
+        let lossy_only = std::env::var("HARNESS_LOSSY").is_ok();
+        let mut runs: Vec<(String, SolverConfig, bool, u64)> = vec![("served".into(), served.clone(), true, budget_ms)];
+        if !lossy_only { runs.push(("exact_d2".into(), exact, false, exact_ms)); }
+        if lossy_only {
+            runs.extend(lossy_cfgs(&served).into_iter().map(|(n, c, a)| (n.to_string(), c, a, budget_ms)));
+        }
+        let mut free: Option<BoundedSolve> = None;
+        let mut i_run = 0;
+        while i_run < runs.len() {
+            let (name, mut cfg, anytime, bud) = runs[i_run].clone();
+            i_run += 1;
+            let name = name.as_str();
             cfg.deadline = Some(Instant::now() + Duration::from_millis(bud));
             match run_cfg(&b, &cfg, anytime) {
                 Ok((r, st, ms)) => {
+                    if lossy_only && name == "served" {
+                        for k in [2usize, 4] {
+                            runs.push((format!("menu{k}"), SolverConfig { root_menu: Some(menu_from(&b, &r, k)), ..served.clone() }, true, budget_ms));
+                        }
+                        free = Some(r.clone());
+                    }
                     let legal_ok = [(SideRef::P1, &r.node.row_joint_policy), (SideRef::P2, &r.node.col_joint_policy)].iter().all(|(s, pol)| {
                         b.is_terminal() || (!pol.is_empty() && pol.iter().all(|(j, _)| j.iter().take(b.format().active_count()).enumerate()
                             .all(|(slot, c)| matches!(c, Choice::Pass { .. }) || b.legal_choices(*s, slot as u8).contains(c))))
@@ -463,6 +550,10 @@ fn real(path: &str, budget_ms: u64, exact_ms: u64, skip: usize, limit: usize) {
                         "trunc": r.truncated.map(|t| t.as_str()), "value": r.node.value, "legal_ok": legal_ok,
                         "top_p1": tr.map(|j| joint_str(&b, SideRef::P1, &j)), "top_p2": tc.map(|j| joint_str(&b, SideRef::P2, &j)),
                         "nodes": st.nodes_visited, "cells": st.cells, "raw_combos": st.raw_combos, "dropped_max": st.chance_mass_dropped_max});
+                    if lossy_only {
+                        let fv = if name.starts_with("menu") { free.as_ref().map(|f| f.node.value) } else { None };
+                        lossy_stats(&mut out[name], &st, fv);
+                    }
                 }
                 Err(e) => out[name] = json!({"panic": e}),
             }
@@ -476,6 +567,38 @@ fn real(path: &str, budget_ms: u64, exact_ms: u64, skip: usize, limit: usize) {
             };
         }
         println!("{out}");
+    }
+}
+
+/// Battle JSON as dumped; a battle dumped by a ps-rng wheel carries an RNG
+/// this build cannot read, and every solver replay reseeds anyway.
+fn read_battle(s: &str) -> Result<Battle, serde_json::Error> {
+    serde_json::from_str::<Battle>(s).or_else(|_| {
+        let mut v: Value = serde_json::from_str(s)?;
+        v["rng"] = serde_json::to_value(Rng::new(0))?;
+        serde_json::from_value(v)
+    })
+}
+
+/// `gen <n> [--seed S]`: synthetic late-game doubles 2v2 (up to 4 moves
+/// per mon, 25-100% HP) in the `real` input format, for timing when the
+/// real-position set is not at hand.
+fn gen_positions(n: usize, seed: u64) {
+    let mut rng = Sm(seed);
+    let mut i = 0;
+    while i < n {
+        let t1 = gen_team(&mut rng, 2, 4);
+        let t2 = gen_team(&mut rng, 2, 4);
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: rng.next() }, TeamBuilder::from_json(&t1).unwrap(), TeamBuilder::from_json(&t2).unwrap());
+        b.champions = true;
+        for s in [&mut b.p1, &mut b.p2] {
+            s.conditions.tera_used = true;
+            for m in s.team.iter_mut() {
+                m.current_hp = ((m.stats.hp as f64 * (0.25 + 0.75 * rng.unit())).round() as u16).max(1);
+            }
+        }
+        println!("{}", json!({"id": format!("gen{seed}_{i}"), "src": "gen", "battle": serde_json::to_string(&b).unwrap()}));
+        i += 1;
     }
 }
 
@@ -593,6 +716,7 @@ fn main() {
             get("--skip").map(|v| v.parse().unwrap()).unwrap_or(0),
             get("--limit").map(|v| v.parse().unwrap()).unwrap_or(usize::MAX),
         ),
+        Some("gen") => gen_positions(args[2].parse().unwrap(), get("--seed").map(|v| v.parse().unwrap()).unwrap_or(1)),
         Some("mcdiff") => mcdiff(&args[2], get("--line").map(|v| v.parse().unwrap()).unwrap_or(0),
             get("--cells").map(|v| v.parse().unwrap()).unwrap_or(3), args.iter().any(|a| a == "--lossless")),
         _ => eprintln!("usage: solver_harness brute <n> [--seed S] [--max-depth D] | real <fixtures.jsonl> [--budget-ms] [--exact-ms]"),
