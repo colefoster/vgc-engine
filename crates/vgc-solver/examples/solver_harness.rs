@@ -602,6 +602,33 @@ fn gen_positions(n: usize, seed: u64) {
     }
 }
 
+/// `menus <fixtures.jsonl> [--depth D]`: value of the menu-restricted root
+/// vs the unrestricted solve at the same fixed depth (served chance, no
+/// deadline, replay-capped), for menus of the top-k root actions.
+fn menus(path: &str, depth: u32) {
+    use std::io::BufRead;
+    for (i, line) in std::io::BufReader::new(std::fs::File::open(path).expect("fixtures")).lines().map_while(Result::ok).enumerate() {
+        let rec: Value = match serde_json::from_str(&line) { Ok(v) => v, Err(_) => continue };
+        let Some(Ok(mut b)) = rec["battle"].as_str().map(read_battle) else { continue };
+        b.rehydrate_caches();
+        let cfg = SolverConfig { max_depth: depth, node_budget: u64::MAX, replay_budget: Some(5_000_000),
+            deadline: Some(Instant::now() + Duration::from_secs(60)),
+            chance_compression: Some(ChanceCompression { mass_eps: 0.02, max_combos: 64 }), ..SolverConfig::default() };
+        let Ok((free, fst, fms)) = run_cfg(&b, &cfg, true) else { continue };
+        if free.truncated.is_some() { println!("{}", json!({"mode": "menus", "i": i, "skip": "unrestricted solve truncated"})); continue; }
+        let support = |p: &[(Vec<Choice>, f64)]| p.iter().filter(|x| x.1 > 1e-9).count();
+        let mut out = json!({"mode": "menus", "i": i, "id": rec["id"], "rows": joint_actions(&b, SideRef::P1).len(), "cols": joint_actions(&b, SideRef::P2).len(),
+            "value": free.node.value, "ms": fms, "cells": fst.cells, "support": [support(&free.node.row_joint_policy), support(&free.node.col_joint_policy)]});
+        for k in [1usize, 2, 3, 4, 6, 8, 12, 16] {
+            let c = SolverConfig { root_menu: Some(menu_from(&b, &free, k)), ..cfg.clone() };
+            if let Ok((r, st, ms)) = run_cfg(&b, &c, true) {
+                out[format!("menu{k}")] = json!({"dv_free": r.node.value - free.node.value, "ms": ms, "cells": st.cells, "rows": st.menu_rows, "cols": st.menu_cols, "trunc": r.truncated.map(|t| t.as_str())});
+            }
+        }
+        println!("{out}");
+    }
+}
+
 /// Debug one fixture: find root cells whose real-RNG samples fall outside the
 /// frontier and print the field diff to the nearest frontier state.
 fn mcdiff(path: &str, line_no: usize, max_cells: usize, lossless: bool) {
@@ -716,6 +743,7 @@ fn main() {
             get("--skip").map(|v| v.parse().unwrap()).unwrap_or(0),
             get("--limit").map(|v| v.parse().unwrap()).unwrap_or(usize::MAX),
         ),
+        Some("menus") => menus(&args[2], get("--depth").map(|v| v.parse().unwrap()).unwrap_or(1)),
         Some("gen") => gen_positions(args[2].parse().unwrap(), get("--seed").map(|v| v.parse().unwrap()).unwrap_or(1)),
         Some("mcdiff") => mcdiff(&args[2], get("--line").map(|v| v.parse().unwrap()).unwrap_or(0),
             get("--cells").map(|v| v.parse().unwrap()).unwrap_or(3), args.iter().any(|a| a == "--lossless")),
