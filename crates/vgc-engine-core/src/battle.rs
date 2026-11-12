@@ -66,6 +66,41 @@ fn crit_refine_disabled() -> bool {
     CRIT_REFINE_DISABLED.with(|d| d.get())
 }
 
+thread_local! {
+    /// Solver outcome-class probe (off by default). While `Some`, every
+    /// UNSEGMENTED damage draw on a `Recording` RNG whose only segmentation
+    /// veto is defender coupling (spread / focus / redirect) or a damage
+    /// modifier that the calc already applies (Life Orb, Friend Guard)
+    /// pushes its roll -> post-hit `hp_bucket` partition here, computed with
+    /// the real ctx at the draw site. Never changes a draw or a state.
+    static CLASS_PROBE: std::cell::RefCell<Option<Vec<DamageClassProbe>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One unsegmented damage draw's outcome classes (see [`class_probe_begin`]).
+#[derive(Debug, Clone, Copy)]
+pub struct DamageClassProbe {
+    /// Index of the damage draw in the recording log.
+    pub log_index: usize,
+    /// Rolls partitioned by the defender's post-hit `hp_bucket` under both
+    /// crit values (the same common refinement as segmented sites), valid
+    /// at the defender HP of this record pass.
+    pub classes: crate::rng::DamageSegments,
+}
+
+/// Start collecting [`DamageClassProbe`]s on this thread.
+pub fn class_probe_begin() {
+    CLASS_PROBE.with(|p| *p.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop collecting and return what was collected (empty if not started).
+pub fn class_probe_take() -> Vec<DamageClassProbe> {
+    CLASS_PROBE.with(|p| p.borrow_mut().take().unwrap_or_default())
+}
+
+fn class_probe_active() -> bool {
+    CLASS_PROBE.with(|p| p.borrow().is_some())
+}
+
 /// Read the current thread-local `ko_split_disabled` flag. Lets a caller
 /// (e.g. the solver's `exact_hp` guard) snapshot and later restore it.
 pub fn ko_split_disabled_state() -> bool {
@@ -9826,6 +9861,32 @@ self.trigger_emergency_exits();
                 if eligible && !ko_split_disabled() {
                     Some(defender.current_hp)
                 } else {
+                    // Outcome-class probe (solver opt-in, Recording only):
+                    // the per-defender vetoes that make the hit's post-HP
+                    // not a function of this one roll still apply; the
+                    // coupling vetoes are left to the solver to check.
+                    if fixed_damage.is_none()
+                        && !multihit
+                        && !sturdy_risk
+                        && !sash_risk
+                        && !endure_risk
+                        && !sub_risk
+                        && !attacker_heal_roll_coupled
+                        && self.force_damage_roll.is_none()
+                        && class_probe_active()
+                    {
+                        if let Some(log_index) = self.rng.recording_log().map(|l| l.len()) {
+                            let ctx = crate::damage::ctx_from_inputs(inputs);
+                            let classes = Self::compute_damage_segments(
+                                &attacker, &defender, move_id, ctx, fickle_override, defender.current_hp,
+                            );
+                            CLASS_PROBE.with(|p| {
+                                if let Some(v) = p.borrow_mut().as_mut() {
+                                    v.push(DamageClassProbe { log_index, classes });
+                                }
+                            });
+                        }
+                    }
                     None
                 }
             };

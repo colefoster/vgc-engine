@@ -77,8 +77,8 @@ pub mod terrain;
 pub mod weather;
 
 pub use battle::{
-    ko_split_disabled_state, set_crit_refine_disabled, set_ko_split_disabled, Battle,
-    BattleConfig, StepResult,
+    class_probe_begin, class_probe_take, ko_split_disabled_state, set_crit_refine_disabled,
+    set_ko_split_disabled, Battle, BattleConfig, DamageClassProbe, StepResult,
 };
 pub use choice::{Choice, MoveSlot, Target, RECHARGE_MOVE_SLOT, STRUGGLE_MOVE_SLOT};
 pub use damage::{
