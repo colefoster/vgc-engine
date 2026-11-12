@@ -7,7 +7,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned"
@@ -27,7 +27,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -50,7 +50,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned",
@@ -74,7 +74,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -132,7 +132,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -153,7 +153,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"1 Ability Clause: Limit 1 of each ability",
@@ -177,7 +177,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -198,7 +198,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"1 Ability Clause: Limit 1 of each ability",
@@ -220,7 +220,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"1 Ability Clause: Limit 1 of each ability",
@@ -242,7 +242,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -279,9 +279,8 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
-			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Bad 'n Boosted Mod: All of a Pokemon's base stats below 70 are doubled.",
 			"Sleep Moves Clause: Sleep-inducing moves are banned"
@@ -304,11 +303,11 @@
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"HP Percentage Mod: HP is shown in percentages",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Reveal Clause: Reveals a Pokémon's true species in hackmons-based metagames.",
+			"Species Reveal Clause: Reveals a Pokemon's true species in hackmons-based metagames.",
 			"Terastal Clause: You cannot Terastallize"
 		],
 		"teamPreview": true,
@@ -326,7 +325,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -345,7 +344,7 @@
 		"gameType": "singles",
 		"mod": "gen9",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -363,14 +362,14 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Terastal Clause: You cannot Terastallize",
-			"Camomons Mod: Pokémon have their types set to match their first two moves."
+			"Camomons Mod: Pokemon have their types set to match their first two moves."
 		],
 		"teamPreview": true,
 		"pickedTeamSize": 0,
@@ -387,7 +386,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -409,7 +408,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
@@ -428,7 +427,7 @@
 		"gameType": "doubles",
 		"mod": "champions",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -444,7 +443,7 @@
 		"gameType": "doubles",
 		"mod": "championsregmb",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -466,7 +465,7 @@
 		"gameType": "singles",
 		"mod": "championsregmb",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -482,7 +481,7 @@
 		"gameType": "singles",
 		"mod": "champions",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -506,6 +505,26 @@
 		"clean": true
 	},
 	{
+		"id": "gen9championsdoubles",
+		"name": "[Gen 9 Champions] Doubles",
+		"gameType": "doubles",
+		"mod": "champions",
+		"rules": [
+			"Endless Battle Clause: Forcing endless battles is banned",
+			"Species Clause: Limit one of each Pokemon",
+			"Item Clause: Limit 1 of each item",
+			"OHKO Clause: OHKO moves are banned",
+			"Evasion Moves Clause: Evasion moves are banned",
+			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned"
+		],
+		"teamPreview": true,
+		"pickedTeamSize": 0,
+		"openTeamSheets": false,
+		"debug": false,
+		"supportCancel": true,
+		"clean": true
+	},
+	{
 		"id": "gen9championsdoublescustomgame",
 		"name": "[Gen 9 Champions] Doubles Custom Game",
 		"gameType": "doubles",
@@ -525,7 +544,7 @@
 		"mod": "champions",
 		"rules": [
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Sleep Clause Mod: Limit one foe put to sleep",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
@@ -541,13 +560,29 @@
 		"clean": true
 	},
 	{
+		"id": "gen9championsmegaevolutionbattle",
+		"name": "[Gen 9 Champions] Mega Evolution Battle",
+		"gameType": "doubles",
+		"mod": "champions",
+		"rules": [
+			"Species Clause: Limit one of each Pokemon",
+			"Item Clause: Limit 1 of each item"
+		],
+		"teamPreview": true,
+		"pickedTeamSize": 4,
+		"openTeamSheets": false,
+		"debug": false,
+		"supportCancel": true,
+		"clean": true
+	},
+	{
 		"id": "gen9championsnatdexdraft",
 		"name": "[Gen 9 Champions] NatDex Draft",
 		"gameType": "singles",
 		"mod": "champions",
 		"rules": [
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Sleep Clause Mod: Limit one foe put to sleep",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
@@ -569,7 +604,7 @@
 		"mod": "champions",
 		"rules": [
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"OHKO Clause: OHKO moves are banned",
@@ -592,7 +627,7 @@
 		"mod": "champions",
 		"rules": [
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"OHKO Clause: OHKO moves are banned",
@@ -614,7 +649,7 @@
 		"gameType": "doubles",
 		"mod": "championsregmb",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -630,7 +665,7 @@
 		"gameType": "doubles",
 		"mod": "championsregmb",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -646,7 +681,7 @@
 		"gameType": "doubles",
 		"mod": "champions",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -662,7 +697,7 @@
 		"gameType": "doubles",
 		"mod": "champions",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -680,12 +715,32 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"1 Ability Clause: Limit 1 of each ability",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"Terastal Clause: You cannot Terastallize"
+		],
+		"teamPreview": true,
+		"pickedTeamSize": 0,
+		"openTeamSheets": false,
+		"debug": false,
+		"supportCancel": true,
+		"clean": true
+	},
+	{
+		"id": "gen9convergencemegamons",
+		"name": "[Gen 9] Convergence Megamons",
+		"gameType": "singles",
+		"mod": "gen9",
+		"rules": [
+			"HP Percentage Mod: HP is shown in percentages",
+			"Endless Battle Clause: Forcing endless battles is banned",
+			"Species Clause: Limit one of each Pokemon",
+			"OHKO Clause: OHKO moves are banned",
+			"Evasion Moves Clause: Evasion moves are banned",
+			"Sleep Moves Clause: Sleep-inducing moves are banned"
 		],
 		"teamPreview": true,
 		"pickedTeamSize": 0,
@@ -702,7 +757,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -749,7 +804,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned",
@@ -770,7 +825,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned",
@@ -791,7 +846,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned"
 		],
@@ -810,7 +865,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned",
@@ -853,7 +908,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned"
@@ -873,13 +928,35 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Flipped Mod: Pokemon have their stats flipped (HP becomes Spe, vice versa)."
+		],
+		"teamPreview": true,
+		"pickedTeamSize": 0,
+		"openTeamSheets": false,
+		"debug": false,
+		"supportCancel": true,
+		"clean": true
+	},
+	{
+		"id": "gen9forceofthefallen",
+		"name": "[Gen 9] Force of the Fallen",
+		"gameType": "singles",
+		"mod": "gen9",
+		"rules": [
+			"HP Percentage Mod: HP is shown in percentages",
+			"Endless Battle Clause: Forcing endless battles is banned",
+			"Species Clause: Limit one of each Pokemon",
+			"OHKO Clause: OHKO moves are banned",
+			"Evasion Moves Clause: Evasion moves are banned",
+			"Force of the Fallen Mod: Pok&émon pass the move in their last moveslot to their allies when they're KOed",
+			"Sleep Moves Clause: Sleep-inducing moves are banned",
+			"Terastal Clause: You cannot Terastallize"
 		],
 		"teamPreview": true,
 		"pickedTeamSize": 0,
@@ -896,7 +973,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -921,10 +998,10 @@
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
-			"Forme Clause: Limit one of each forme of a Pokémon",
+			"Forme Clause: Limit one of each forme of a Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
-			"Species Reveal Clause: Reveals a Pokémon's true species in hackmons-based metagames.",
+			"Species Reveal Clause: Reveals a Pokemon's true species in hackmons-based metagames.",
 			"Mega Rayquaza Clause: You cannot mega evolve Rayquaza"
 		],
 		"teamPreview": true,
@@ -942,7 +1019,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -963,12 +1040,12 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"2 Ability Clause: Limit 2 of each ability",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
-			"Frantic Fusions Mod: Pokémon nicknamed after another Pokémon get buffed stats and more abilities.",
+			"Frantic Fusions Mod: Pokemon nicknamed after another Pokemon get buffed stats and more abilities.",
 			"Terastal Clause: You cannot Terastallize"
 		],
 		"teamPreview": true,
@@ -986,7 +1063,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1008,7 +1085,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"1 Ability Clause: Limit 1 of each ability",
@@ -1030,7 +1107,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -1053,7 +1130,7 @@
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned"
@@ -1074,7 +1151,7 @@
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned"
@@ -1109,13 +1186,13 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
-			"Same Color Clause: Pokémon in a team must be the same color"
+			"Same Color Clause: Pokemon in a team must be the same color"
 		],
 		"teamPreview": true,
 		"pickedTeamSize": 0,
@@ -1133,12 +1210,12 @@
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
-			"Same Type Clause: Pokémon in a team must share a type",
+			"Same Type Clause: Pokemon in a team must share a type",
 			"Terastal Clause: You cannot Terastallize"
 		],
 		"teamPreview": true,
@@ -1173,10 +1250,10 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
-			"Camomons Mod: Pokémon have their types set to match their first two moves.",
+			"Camomons Mod: Pokemon have their types set to match their first two moves.",
 			"CFZ Clause: Crystal-free Z-Moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"Terastal Clause: You cannot Terastallize"
@@ -1241,7 +1318,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1267,7 +1344,7 @@
 			"Endless Battle Clause: Forcing endless battles is banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"OHKO Clause: OHKO moves are banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"Terastal Clause: You cannot Terastallize",
 			"Accuracy Moves Clause: Accuracy-lowering moves are banned"
@@ -1293,11 +1370,11 @@
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Forme Clause: Limit one of each forme of a Pokémon",
+			"Forme Clause: Limit one of each forme of a Pokemon",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"Terastal Clause: You cannot Terastallize",
 			"Baton Pass Stat Clause: No Baton Passer may have a way to boost its stats",
-			"Baton Pass Stat Trap Clause: No Baton Passer may have a way to boost stats or trap Pokémon",
+			"Baton Pass Stat Trap Clause: No Baton Passer may have a way to boost stats or trap Pokemon",
 			"Mega Rayquaza Clause: You cannot mega evolve Rayquaza"
 		],
 		"teamPreview": true,
@@ -1315,7 +1392,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1357,7 +1434,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Forme Clause: Limit one of each forme of a Pokémon",
+			"Forme Clause: Limit one of each forme of a Pokemon",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
 			"2 Ability Clause: Limit 2 of each ability",
 			"OHKO Clause: OHKO moves are banned",
@@ -1381,7 +1458,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned",
@@ -1402,7 +1479,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned"
 		],
@@ -1421,7 +1498,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1446,7 +1523,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1469,7 +1546,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1493,15 +1570,40 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Same Type Clause: Pokémon in a team must share a type",
+			"Same Type Clause: Pokemon in a team must share a type",
 			"Terastal Clause: You cannot Terastallize"
+		],
+		"teamPreview": true,
+		"pickedTeamSize": 0,
+		"openTeamSheets": false,
+		"debug": false,
+		"supportCancel": true,
+		"clean": true
+	},
+	{
+		"id": "gen9nationaldexmonotypeubers",
+		"name": "[Gen 9] National Dex Monotype Ubers",
+		"gameType": "singles",
+		"mod": "gen9",
+		"rules": [
+			"HP Percentage Mod: HP is shown in percentages",
+			"Endless Battle Clause: Forcing endless battles is banned",
+			"Species Clause: Limit one of each Pokemon",
+			"OHKO Clause: OHKO moves are banned",
+			"Sleep Clause Mod: Limit one foe put to sleep",
+			"Same Type Clause: Pokemon in a team must share a type",
+			"Terastal Clause: You cannot Terastallize",
+			"Evasion Moves Clause: Evasion moves are banned",
+			"Evasion Abilities Clause: Evasion abilities are banned",
+			"Mega Rayquaza Clause: You cannot mega evolve Rayquaza",
+			"Dynamax Clause: You cannot dynamax"
 		],
 		"teamPreview": true,
 		"pickedTeamSize": 0,
@@ -1518,7 +1620,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1542,7 +1644,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1566,7 +1668,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1588,7 +1690,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1610,7 +1712,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1632,7 +1734,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1656,7 +1758,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned"
@@ -1676,7 +1778,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -1697,7 +1799,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1719,7 +1821,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1741,7 +1843,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1763,7 +1865,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1784,7 +1886,7 @@
 		"mod": "gen9",
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
-			"Species Reveal Clause: Reveals a Pokémon's true species in hackmons-based metagames.",
+			"Species Reveal Clause: Reveals a Pokemon's true species in hackmons-based metagames.",
 			"Endless Battle Clause: Forcing endless battles is banned"
 		],
 		"teamPreview": true,
@@ -1802,7 +1904,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -1823,11 +1925,11 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Revelationmons Mod: The first moveslots have their types changed to match the Pokémon's types",
+			"Revelationmons Mod: The first moveslots have their types changed to match the Pokemon's types",
 			"Terastal Clause: You cannot Terastallize"
 		],
 		"teamPreview": true,
@@ -1845,7 +1947,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1867,7 +1969,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
@@ -1890,7 +1992,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -1911,7 +2013,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -1934,7 +2036,7 @@
 			"Tera Type Preview: Tera Types are shown at Team Preview",
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned"
@@ -1954,7 +2056,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Clause Mod: Limit one foe put to sleep"
 		],
@@ -1973,7 +2075,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -1981,32 +2083,7 @@
 			"Evasion Clause: Evasion abilities, items, and moves are banned",
 			"Evasion Abilities Clause: Evasion abilities are banned",
 			"Evasion Items Clause: Evasion items are banned",
-			"Tier Shift Mod: Pokémon get stat buffs depending on their tier, excluding HP."
-		],
-		"teamPreview": true,
-		"pickedTeamSize": 0,
-		"openTeamSheets": false,
-		"debug": false,
-		"supportCancel": true,
-		"clean": true
-	},
-	{
-		"id": "gen9tiershiftaaa",
-		"name": "[Gen 9] Tier Shift AAA",
-		"gameType": "singles",
-		"mod": "gen9",
-		"rules": [
-			"HP Percentage Mod: HP is shown in percentages",
-			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
-			"OHKO Clause: OHKO moves are banned",
-			"Evasion Moves Clause: Evasion moves are banned",
-			"Evasion Abilities Clause: Evasion abilities are banned",
-			"Evasion Items Clause: Evasion items are banned",
-			"Sleep Moves Clause: Sleep-inducing moves are banned",
-			"2 Ability Clause: Limit 2 of each ability",
-			"Tier Shift Mod: Pokémon get stat buffs depending on their tier, excluding HP.",
-			"Terastal Clause: You cannot Terastallize"
+			"Tier Shift Mod: Pokemon get stat buffs depending on their tier, excluding HP."
 		],
 		"teamPreview": true,
 		"pickedTeamSize": 0,
@@ -2023,7 +2100,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -2045,7 +2122,7 @@
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned"
@@ -2066,7 +2143,7 @@
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
 			"Sleep Clause Mod: Limit one foe put to sleep",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned"
@@ -2086,7 +2163,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
@@ -2106,7 +2183,7 @@
 		"gameType": "doubles",
 		"mod": "gen9predlc",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -2122,7 +2199,7 @@
 		"gameType": "doubles",
 		"mod": "gen9predlc",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -2138,7 +2215,7 @@
 		"gameType": "doubles",
 		"mod": "gen9",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -2154,7 +2231,7 @@
 		"gameType": "doubles",
 		"mod": "gen9",
 		"rules": [
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"Item Clause: Limit 1 of each item"
 		],
 		"teamPreview": true,
@@ -2172,7 +2249,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Moves Clause: Evasion moves are banned",
 			"Sleep Moves Clause: Sleep-inducing moves are banned",
@@ -2193,7 +2270,7 @@
 		"rules": [
 			"HP Percentage Mod: HP is shown in percentages",
 			"Endless Battle Clause: Forcing endless battles is banned",
-			"Species Clause: Limit one of each Pokémon",
+			"Species Clause: Limit one of each Pokemon",
 			"OHKO Clause: OHKO moves are banned",
 			"Evasion Items Clause: Evasion items are banned",
 			"Evasion Moves Clause: Evasion moves are banned",

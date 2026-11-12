@@ -357,6 +357,12 @@ impl Battle {
         let mut first = true;
         let moves = match (&m.transform_base, fainted) {
             (Some(t), true) => t.moves,
+            // A called locking move holds slot 3; the side keeps its real moves.
+            _ if m.borrowed_slot.0 != u16::MAX => {
+                let mut real = m.moves;
+                real[3] = m.borrowed_slot.0;
+                real
+            }
             _ => m.moves,
         };
         for &mv in moves.iter().filter(|&&mv| mv != u16::MAX) {
@@ -364,7 +370,13 @@ impl Battle {
                 out.push(',');
             }
             first = false;
-            json_str(out, data::MOVES.get(mv as usize).map(|d| d.slug).unwrap_or(""));
+            // Return and Frustration list their power (sim/side.ts getRequestData);
+            // the engine doesn't model happiness, so it's PS's default of 255.
+            match mv {
+                data::move_id::RETURN => json_str(out, "return102"),
+                data::move_id::FRUSTRATION => json_str(out, "frustration1"),
+                _ => json_str(out, data::MOVES.get(mv as usize).map(|d| d.slug).unwrap_or("")),
+            }
         }
         out.push(']');
         let base_ability = m.transform_base.as_ref().map(|t| t.ability_id).unwrap_or(m.ability_id);
@@ -456,11 +468,11 @@ impl Battle {
     fn ps_move_disabled(&self, side: SideRef, m: &Pokemon, i: usize) -> Option<bool> {
         let mv = m.moves[i];
         let md = &self.moves()[mv as usize];
-        let is_choice = matches!(m.item_id, data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF);
+        let is_choice = matches!(m.effective_item_id(), data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF);
         if m.pp.get(i).copied().unwrap_or(0) == 0 {
             return Some(true);
         }
-        if m.item_id == data::item_id::ASSAULTVEST && md.category == 2 {
+        if m.effective_item_id() == data::item_id::ASSAULTVEST && md.category == 2 {
             return Some(true);
         }
         // Champions Fake Out / First Impression (data/mods/champions/moves.ts:352,
@@ -486,6 +498,18 @@ impl Battle {
             return Some(true);
         }
         if m.throat_chop_turns() > 0 && md.is_sound {
+            return Some(true);
+        }
+        // gravity onDisableMove (data/moves.ts gravity condition, flags.gravity).
+        if self.gravity_turns > 0
+            && matches!(
+                mv,
+                data::move_id::FLY | data::move_id::BOUNCE | data::move_id::SKYDROP
+                    | data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK
+                    | data::move_id::SPLASH | data::move_id::MAGNETRISE
+                    | data::move_id::TELEKINESIS | data::move_id::FLYINGPRESS
+            )
+        {
             return Some(true);
         }
         if m.taunt_turns() > 0 && md.category == 2 && mv != data::move_id::MEFIRST {
@@ -530,7 +554,9 @@ impl Battle {
         let mut trapped: Option<bool> = None; // Some(true) = 'hidden'
         let mut maybe = false;
         if !ghost {
-            if m.volatiles.has(VolatileKind::PartialTrap) || m.volatiles.has(VolatileKind::NoRetreat) {
+            if m.volatiles.get(VolatileKind::PartialTrap).is_some_and(|v| self.partial_trap_source_active(v.payload))
+                || m.volatiles.has(VolatileKind::NoRetreat)
+            {
                 trapped = Some(false);
             }
             if let Some(v) = m.volatiles.get(VolatileKind::Octolock) {
@@ -575,7 +601,8 @@ impl Battle {
                 continue;
             }
             let species = &data::SPECIES[f.species_id as usize];
-            for ab in std::iter::once(fa).chain(species.legal_abilities.iter().copied().filter(|&a| a != u16::MAX && a != fa)) {
+            let hide_others = self.ps_no_maybe_trap;
+            for ab in std::iter::once(fa).chain(species.legal_abilities.iter().copied().filter(|&a| !hide_others && a != u16::MAX && a != fa)) {
                 let hit = match ab {
                     data::ability_id::SHADOWTAG => my_ability != data::ability_id::SHADOWTAG,
                     data::ability_id::ARENATRAP => m.is_grounded(),

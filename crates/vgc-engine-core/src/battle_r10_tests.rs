@@ -1339,3 +1339,18 @@ fn quick_guard_reads_modified_priority() {
         assert_eq!(miltank.current_hp, miltank.stats.hp, "seed {seed}: Grassy Glide blocked");
     }
 }
+
+#[test]
+fn metronome_count_and_other_move_state_survive_save_and_load() {
+    let mut m = crate::team::TeamBuilder::from_json(r#"[{"species":"eevee","level":50,"item":"metronome","moves":["tackle"]}]"#).unwrap().remove(0);
+    m.metronome_count = 3;
+    m.metronome_move = 7;
+    m.ate_berry = true;
+    m.added_type = 13;
+    m.borrowed_slot = (9, 4);
+    let back: crate::pokemon::Pokemon = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+    assert_eq!((back.metronome_count, back.metronome_move), (3, 7));
+    assert!(back.ate_berry);
+    assert_eq!(back.added_type, 13);
+    assert_eq!(back.borrowed_slot, (9, 4));
+}
