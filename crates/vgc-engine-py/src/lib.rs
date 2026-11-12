@@ -1689,8 +1689,23 @@ fn solver_error_dict<'py>(py: Python<'py>, msg: &str, t0: std::time::Instant) ->
 /// on `depth_completed`). The dict carries the same keys as
 /// `solve_endgame_exact` plus `timed_out`, `chance_mass_dropped_max`,
 /// `cells`, `outcomes`, `raw_combos`.
+///
+/// Opt-in lossy modes (all off by default; see
+/// `docs/perf/lossy-moves-2026-11-12.md`):
+/// - `outcome_classes=True`: unsegmented damage rolls split by the
+///   defender's post-hit HP bucket (exact KO mass) instead of 3 rolls.
+///   Reports `class_cells`, `class_sites`, `class_count`, `class_fallbacks`
+///   and `class_fallback_reasons`.
+/// - `chance_samples=N`: each cell is N seeded samples (common seeds within
+///   a node). Reports `sampled_cells`, `samples`.
+/// - `row_menu` / `col_menu`: lists of joint actions (each a list of
+///   `legal_choices`-style tuples, the shape of `row_joint_policy` entries)
+///   the root may use; `row_support` / `col_support` seed the root double
+///   oracle. Reports `menu_rows`, `menu_cols`, `menu_fallbacks` (a menu with
+///   no legal entry is ignored).
 #[pyfunction]
-#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64, replay_budget = None))]
+#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64, replay_budget = None, outcome_classes = false, chance_samples = None, row_menu = None, col_menu = None, row_support = None, col_support = None))]
+#[allow(clippy::too_many_arguments)]
 fn solve_endgame_anytime<'py>(
     py: Python<'py>,
     battle: &PyBattle,
@@ -1700,14 +1715,39 @@ fn solve_endgame_anytime<'py>(
     mass_eps: f64,
     max_combos: usize,
     replay_budget: Option<u64>,
+    outcome_classes: bool,
+    chance_samples: Option<u32>,
+    row_menu: Option<Vec<Vec<LegalChoice>>>,
+    col_menu: Option<Vec<Vec<LegalChoice>>>,
+    row_support: Option<Vec<Vec<LegalChoice>>>,
+    col_support: Option<Vec<Vec<LegalChoice>>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let t0 = std::time::Instant::now();
+    let joints = |v: Option<Vec<Vec<LegalChoice>>>| -> PyResult<Option<Vec<Vec<core::Choice>>>> {
+        v.map(|js| js.iter().map(|j| j.iter().map(choice_from_tuple).collect()).collect()).transpose()
+    };
+    if chance_samples == Some(0) {
+        return Err(PyValueError::new_err("chance_samples must be >= 1"));
+    }
+    let root_menu = if row_menu.is_some() || col_menu.is_some() || row_support.is_some() || col_support.is_some() {
+        Some(vgc_solver::RootMenu {
+            rows: joints(row_menu)?,
+            cols: joints(col_menu)?,
+            row_support: joints(row_support)?.unwrap_or_default(),
+            col_support: joints(col_support)?.unwrap_or_default(),
+        })
+    } else {
+        None
+    };
     let cfg = vgc_solver::SolverConfig {
         max_depth,
         node_budget: u64::MAX,
         deadline: Some(t0 + std::time::Duration::from_millis(time_budget_ms)),
         replay_budget,
         chance_compression: compress.then_some(vgc_solver::ChanceCompression { mass_eps, max_combos }),
+        outcome_classes,
+        chance_samples,
+        root_menu,
         ..vgc_solver::SolverConfig::default()
     };
     let (r, stats) = match bounded_solve(py, &battle.inner, &cfg, true) {
@@ -1731,6 +1771,28 @@ fn solve_endgame_anytime<'py>(
     d.set_item("cells", stats.cells)?;
     d.set_item("outcomes", stats.outcomes)?;
     d.set_item("raw_combos", stats.raw_combos)?;
+    if outcome_classes {
+        d.set_item("class_cells", stats.class_cells)?;
+        d.set_item("class_sites", stats.class_sites)?;
+        d.set_item("class_count", stats.class_count)?;
+        d.set_item("class_fallbacks", stats.class_fallbacks)?;
+        let why = PyDict::new(py);
+        why.set_item("unclassified", stats.class_fallback_unclassified)?;
+        why.set_item("focus", stats.class_fallback_focus)?;
+        why.set_item("roll_coupled_hp", stats.class_fallback_roll_hp)?;
+        why.set_item("damage_reading", stats.class_fallback_damage_reading)?;
+        why.set_item("lazy_unclassified", stats.class_lazy_unclassified)?;
+        d.set_item("class_fallback_reasons", why)?;
+    }
+    if chance_samples.is_some() {
+        d.set_item("sampled_cells", stats.sampled_cells)?;
+        d.set_item("samples", stats.samples)?;
+    }
+    if cfg.root_menu.is_some() {
+        d.set_item("menu_rows", stats.menu_rows)?;
+        d.set_item("menu_cols", stats.menu_cols)?;
+        d.set_item("menu_fallbacks", stats.menu_fallbacks)?;
+    }
     Ok(d)
 }
 
