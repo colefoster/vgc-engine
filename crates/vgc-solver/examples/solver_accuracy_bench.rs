@@ -960,6 +960,9 @@ fn prod_config(depth: u32) -> SolverConfig {
         deadline: None,
         replay_budget: None,
         chance_compression: None,
+        outcome_classes: false,
+        chance_samples: None,
+        root_menu: None,
     }
 }
 

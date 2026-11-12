@@ -201,6 +201,39 @@ pub struct SolverConfig {
     /// and each cell replays best-first up to a mass / count cap. `None`
     /// (default) keeps the lossless enumerator.
     pub chance_compression: Option<crate::compress::ChanceCompression>,
+    /// Opt-in outcome-class chance (lossy, see
+    /// [`crate::compress::enumerate_outcomes_classes`]): unsegmented damage
+    /// draws are split by the defender's post-hit HP bucket (KO / not and
+    /// the TT's HP thresholds) with exact class mass, one central roll per
+    /// class, instead of the 3 rolls {0, 7, 15}. Uses `chance_compression`
+    /// (or its default) for truncation. Cells with couplings it cannot
+    /// classify fall back to the compressed path and are counted in
+    /// [`SolverStats::class_fallbacks`]. `false` (default) = unchanged.
+    pub outcome_classes: bool,
+    /// Opt-in sampled chance (lossy, unbiased): each cell is `N` seeded
+    /// `step()`s, merged by canonical hash at mass `1/N` each. Every cell of
+    /// one node uses the same `N` seeds (common random numbers). A cell
+    /// costs at most `N` replays, all charged to the replay budget / checked
+    /// against the deadline. Takes precedence over the other chance modes.
+    /// `None` (default) = unchanged.
+    pub chance_samples: Option<u32>,
+    /// Opt-in policy-restricted root (lossy): the root's joint actions are
+    /// limited to the given menus, so double oracle only ever adds menu
+    /// actions to the support. `None` (default) = unchanged.
+    pub root_menu: Option<RootMenu>,
+}
+
+/// Root action menus for [`SolverConfig::root_menu`]. A side whose menu is
+/// `None` keeps every legal joint action. Menu entries that are not legal
+/// at the root are dropped; an all-illegal menu keeps the full list
+/// ([`SolverStats::menu_fallbacks`]). `*_support` seeds the root
+/// double oracle (entries must be in the menu; ignored otherwise).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RootMenu {
+    pub rows: Option<Vec<Vec<Choice>>>,
+    pub cols: Option<Vec<Vec<Choice>>>,
+    pub row_support: Vec<Vec<Choice>>,
+    pub col_support: Vec<Vec<Choice>>,
 }
 
 impl Default for SolverConfig {
@@ -221,9 +254,15 @@ impl Default for SolverConfig {
             deadline: None,
             replay_budget: None,
             chance_compression: None,
+            outcome_classes: false,
+            chance_samples: None,
+            root_menu: None,
         }
     }
 }
+
+/// XORed into a menu-restricted root's TT key.
+const ROOT_MENU_SALT: u64 = 0x6D65_6E75_5F72_6F6F;
 
 /// Top-level entry point. Builds an empty transposition table and
 /// recursively solves the game tree from `battle`. The `leaf` evaluator
@@ -242,7 +281,7 @@ pub fn endgame_solve(
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut tt: HashMap<u64, SolvedNode> = HashMap::new();
     let mut stats = SolverStats::default();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats, root_pending: false, root_values: None };
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats, root_pending: cfg.root_menu.is_some(), root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -294,7 +333,7 @@ pub fn endgame_solve_with_tt(
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut stats = SolverStats::default();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats, root_pending: false, root_values: None };
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats, root_pending: cfg.root_menu.is_some(), root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -311,7 +350,7 @@ pub fn endgame_solve_with_tt_stats(
 ) -> SolvedNode {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats, root_pending: false, root_values: None };
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats, root_pending: cfg.root_menu.is_some(), root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -357,6 +396,31 @@ pub struct SolverStats {
     pub chance_mass_dropped_sum: f64,
     /// Compressed cells that dropped more than 5% of their prior mass.
     pub cells_dropped_over_5pct: u64,
+    /// Outcome-class cells (`outcome_classes`) that used classes for at
+    /// least one unsegmented damage draw.
+    pub class_cells: u64,
+    /// Unsegmented damage draws replaced by classes, summed over cells.
+    pub class_sites: u64,
+    /// Classes (replayed representatives) over those draws.
+    pub class_count: u64,
+    /// Outcome-class cells that fell back to the 3-roll compressed path,
+    /// total and by reason.
+    pub class_fallbacks: u64,
+    pub class_fallback_unclassified: u64,
+    pub class_fallback_focus: u64,
+    pub class_fallback_roll_hp: u64,
+    pub class_fallback_damage_reading: u64,
+    /// Classified cells where a later replay found an unsegmented damage
+    /// draw the record pass missed (it got 3-roll representatives).
+    pub class_lazy_unclassified: u64,
+    /// Sampled cells (`chance_samples`) and the `step()` samples they ran.
+    pub sampled_cells: u64,
+    pub samples: u64,
+    /// Root menu sizes actually used (legal entries), last root solved.
+    pub menu_rows: u64,
+    pub menu_cols: u64,
+    /// Root menus that had no legal entry (the full list was used).
+    pub menu_fallbacks: u64,
 }
 
 /// Borrowed bag of mutable state threaded through the recursion. Kept
@@ -575,7 +639,11 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     // defeating the whole point of the exact-HP path. The reference oracle
     // (`solver_accuracy_bench::ref_solve`) uses NO TT for the same reason; we
     // match it so `exact_hp` reproduces the reference value bit-for-bit.
-    let hash = battle.canonical_hash();
+    // A menu-restricted root is a different game from the same state
+    // reached inside the tree, so it gets its own TT key.
+    let menu = if is_root { state.cfg.root_menu.as_ref() } else { None };
+    let node_hash = battle.canonical_hash();
+    let hash = if menu.is_some() { node_hash ^ ROOT_MENU_SALT } else { node_hash };
     if !state.cfg.exact_hp {
         state.stats.tt_lookups += 1;
         if let Some(cached) = state.tt.get(&hash) {
@@ -591,8 +659,28 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     // Joint action lists = Cartesian product over active slots. For singles
     // this is exactly the slot-0 legal choices (each wrapped length-1), so
     // behavior is bit-identical to the pre-doubles solver.
-    let row_choices = bounded_actions(battle, SideRef::P1, state.cfg);
-    let col_choices = bounded_actions(battle, SideRef::P2, state.cfg);
+    let mut row_choices = bounded_actions(battle, SideRef::P1, state.cfg);
+    let mut col_choices = bounded_actions(battle, SideRef::P2, state.cfg);
+    let mut menu_seed: Option<(Vec<usize>, Vec<usize>)> = None;
+    if let Some(m) = menu {
+        let restrict = |acts: &mut Vec<Vec<Choice>>, menu: &Option<Vec<Vec<Choice>>>, fallbacks: &mut u64| {
+            if let Some(menu) = menu {
+                let kept: Vec<Vec<Choice>> = acts.iter().filter(|a| menu.contains(a)).cloned().collect();
+                if kept.is_empty() { *fallbacks += 1; } else { *acts = kept; }
+            }
+        };
+        restrict(&mut row_choices, &m.rows, &mut state.stats.menu_fallbacks);
+        restrict(&mut col_choices, &m.cols, &mut state.stats.menu_fallbacks);
+        state.stats.menu_rows = row_choices.len() as u64;
+        state.stats.menu_cols = col_choices.len() as u64;
+        let idx = |acts: &[Vec<Choice>], sup: &[Vec<Choice>]| -> Vec<usize> {
+            sup.iter().filter_map(|j| acts.iter().position(|a| a == j)).collect()
+        };
+        let (r, c) = (idx(&row_choices, &m.row_support), idx(&col_choices, &m.col_support));
+        if !r.is_empty() || !c.is_empty() {
+            menu_seed = Some((if r.is_empty() { vec![0] } else { r }, if c.is_empty() { vec![0] } else { c }));
+        }
+    }
     if row_choices.is_empty() || col_choices.is_empty() {
         // Should be caught by is_terminal; defensive fallback.
         return leaf_node(leaf_eval(state, battle), Provenance::Terminal, depth_remaining);
@@ -604,12 +692,13 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         row_choices,
         col_choices,
         depth_remaining: depth_remaining - 1,
+        node_hash,
         state,
         any_estimated_child: false,
     };
     // Seed double-oracle with the support a shallower solve of this state
     // found (iterative deepening): it is usually most of the deeper support.
-    let (seed_rows, seed_cols) = match tt_seed(&game, hash) {
+    let (seed_rows, seed_cols) = match tt_seed(&game, hash).or(menu_seed) {
         Some(s) => s,
         None => (vec![0], vec![0]),
     };
@@ -841,6 +930,9 @@ struct RecursiveGame<'a, 'b> {
     row_choices: Vec<Vec<Choice>>,
     col_choices: Vec<Vec<Choice>>,
     depth_remaining: u32,
+    /// `canonical_hash` of `battle`: seeds the shared sample set of
+    /// `chance_samples`.
+    node_hash: u64,
     state: &'a mut SolverState<'b>,
     /// Set whenever any descendant returned an `Estimated` provenance.
     /// Propagates up so a node whose payoffs depend on any leaf-evaluated
@@ -882,7 +974,41 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         }
         self.state.stats.cells += 1;
         let t0 = Instant::now();
-        let frontier = if let Some(cc) = self.state.cfg.chance_compression {
+        let frontier = if let Some(n) = self.state.cfg.chance_samples {
+            let f = crate::sampled::enumerate_outcomes_sampled(
+                self.battle, row_joint, col_joint, crate::sampled::node_seed(self.state.cfg.record_seed, self.node_hash), n);
+            self.state.stats.sampled_cells += 1;
+            self.state.stats.samples += f.raw_combos as u64;
+            f
+        } else if self.state.cfg.outcome_classes {
+            let cc = self.state.cfg.chance_compression.unwrap_or_default();
+            let (f, dropped, rep) = crate::compress::enumerate_outcomes_classes(
+                self.battle, row_joint, col_joint, self.state.cfg.record_seed, cc);
+            let st = &mut *self.state.stats;
+            st.chance_mass_dropped_max = st.chance_mass_dropped_max.max(dropped);
+            st.chance_mass_dropped_sum += dropped;
+            st.cells_dropped_over_5pct += (dropped > 0.05) as u64;
+            use crate::compress::ClassFallback as F;
+            match rep.fallback {
+                Some(why) => {
+                    st.class_fallbacks += 1;
+                    match why {
+                        F::Unclassified => st.class_fallback_unclassified += 1,
+                        F::Focus => st.class_fallback_focus += 1,
+                        F::RollCoupledHp => st.class_fallback_roll_hp += 1,
+                        F::DamageReading => st.class_fallback_damage_reading += 1,
+                    }
+                }
+                None if rep.classified_sites > 0 => {
+                    st.class_cells += 1;
+                    st.class_sites += rep.classified_sites as u64;
+                    st.class_count += rep.classes as u64;
+                }
+                None => {}
+            }
+            st.class_lazy_unclassified += rep.lazy_unclassified as u64;
+            f
+        } else if let Some(cc) = self.state.cfg.chance_compression {
             let (f, dropped) = crate::compress::enumerate_outcomes_compressed(
                 self.battle, row_joint, col_joint, self.state.cfg.record_seed, cc);
             let st = &mut *self.state.stats;
@@ -1012,6 +1138,9 @@ mod tests {
             deadline: None,
             replay_budget: None,
             chance_compression: None,
+            outcome_classes: false,
+            chance_samples: None,
+            root_menu: None,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -1066,10 +1195,13 @@ mod tests {
             deadline: None,
             replay_budget: None,
             chance_compression: None,
+            outcome_classes: false,
+            chance_samples: None,
+            root_menu: None,
         };
         let cfg_on = SolverConfig {
             use_action_independence_factoring: true,
-            ..cfg_off
+            ..cfg_off.clone()
         };
         let s_off = endgame_solve(&b, &cfg_off, hp_ratio_leaf);
         let s_on = endgame_solve(&b, &cfg_on, hp_ratio_leaf);
@@ -1167,6 +1299,9 @@ mod tests {
             deadline: None,
             replay_budget: None,
             chance_compression: None,
+            outcome_classes: false,
+            chance_samples: None,
+            root_menu: None,
         };
 
         // ── Reference: hand-build the root matrix. ──
@@ -1269,6 +1404,9 @@ mod tests {
             deadline: None,
             replay_budget: None,
             chance_compression: None,
+            outcome_classes: false,
+            chance_samples: None,
+            root_menu: None,
         };
         let s1 = endgame_solve(&b, &cfg, hp_ratio_leaf);
         let s2 = endgame_solve(&b, &cfg, hp_ratio_leaf);
@@ -1499,6 +1637,9 @@ mod tests {
             deadline: None,
             replay_budget: None,
             chance_compression: None,
+            outcome_classes: false,
+            chance_samples: None,
+            root_menu: None,
         };
         let exact = endgame_solve(&b, &cfg_exact, hp_ratio_leaf);
         assert!(

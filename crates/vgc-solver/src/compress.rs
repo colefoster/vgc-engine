@@ -42,7 +42,7 @@
 
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
-use vgc_engine_core::{Battle, Choice, Rng, RngEvent, RngKey};
+use vgc_engine_core::{Battle, Choice, DamageSegments, DrawSpace, Rng, RngEvent, RngKey, SideRef};
 
 use crate::{discover_new_sites, expand, EnumerateOpts, Outcome, OutcomeFrontier, MAX_LAZY_ITERATIONS};
 
@@ -101,23 +101,117 @@ pub fn enumerate_outcomes_compressed(
     record_seed: u64,
     cc: ChanceCompression,
 ) -> (OutcomeFrontier, f64) {
+    let (f, dropped, _) = compressed_impl(base, p1, p2, record_seed, cc, false);
+    (f, dropped)
+}
+
+/// Why a cell could not use outcome classes (see
+/// [`enumerate_outcomes_classes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassFallback {
+    /// An unsegmented damage draw had no class probe: multi-hit, fixed
+    /// damage, Sash / Sturdy / Endure / Substitute, or a drain / Shell Bell
+    /// attacker (the post-hit HP is not a function of this one roll).
+    Unclassified,
+    /// Two damage draws on one defender (focus fire, spread + single
+    /// target, Parental Bond): the second hit's starting HP depends on the
+    /// first roll.
+    Focus,
+    /// A roll moves an attacker's HP (recoil), or the defender's HP before
+    /// the hit depends on its own earlier roll (recoil / drain).
+    RollCoupledHp,
+    /// An active mon knows Counter / Mirror Coat / Metal Burst / Comeuppance
+    /// (they read the exact damage taken).
+    DamageReading,
+}
+
+/// Per-cell outcome-class report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClassReport {
+    /// Unsegmented damage draws replaced by outcome classes.
+    pub classified_sites: u32,
+    /// Classes over those draws (replayed representatives per draw).
+    pub classes: u32,
+    /// The cell fell back to the 3-roll compressed path.
+    pub fallback: Option<ClassFallback>,
+    /// A later replay discovered an unsegmented damage draw the record pass
+    /// had not seen; it got the 3-roll representatives (partial fallback).
+    pub lazy_unclassified: bool,
+}
+
+/// Outcome-class chance (opt-in, lossy): [`enumerate_outcomes_compressed`]
+/// with every unsegmented damage draw split into **outcome classes** instead
+/// of the 3 rolls {0, 7, 15}.
+///
+/// A class is a run of rolls that leaves the defender in the same
+/// `canonical_hash` HP bucket under both crit values (bucket 0 = fainted,
+/// then the 1/4, 1/3, 33%, 1/2 and full-HP thresholds the TT keys on, or the
+/// finer buckets of Eruption / Endeavor users). Each class is computed by
+/// the engine's damage calc at the draw site with the real context (no
+/// replay) and weighted by its exact roll count, so KO and threshold mass is
+/// exact; one representative per class is replayed at the class's median
+/// roll (central HP). That is the same partition the engine already uses for
+/// segmented draws, extended to draws it leaves unsegmented because of
+/// defender coupling. The coupling is checked here on the recorded draws:
+/// when it is real ([`ClassFallback`]) the whole cell uses the existing
+/// compressed path, so a cell is never half-classified on a guess.
+///
+/// Lossy in the same two ways as segments plus one: HP inside a class is the
+/// representative's (a later threshold inside the bucket, e.g. end-of-turn
+/// chip, is decided by the median roll), an attacker's roll-dependent HP
+/// (Life Orb is fixed; recoil falls back) is not tracked, and the
+/// best-first truncation of [`ChanceCompression`] still applies.
+pub fn enumerate_outcomes_classes(
+    base: &Battle,
+    p1: &[Choice],
+    p2: &[Choice],
+    record_seed: u64,
+    cc: ChanceCompression,
+) -> (OutcomeFrontier, f64, ClassReport) {
+    compressed_impl(base, p1, p2, record_seed, cc, true)
+}
+
+fn compressed_impl(
+    base: &Battle,
+    p1: &[Choice],
+    p2: &[Choice],
+    record_seed: u64,
+    cc: ChanceCompression,
+    classes: bool,
+) -> (OutcomeFrontier, f64, ClassReport) {
     let opts = EnumerateOpts { lossy_damage_3bucket: true, auto_lossy_damage_threshold: None };
+    let mut report = ClassReport::default();
     if crate::budget::tick() {
-        return (OutcomeFrontier::aborted(), 1.0);
+        return (OutcomeFrontier::aborted(), 1.0, report);
     }
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
+    if classes {
+        vgc_engine_core::class_probe_begin();
+    }
     let _ = rec.step(p1, p2);
+    let probes = if classes { vgc_engine_core::class_probe_take() } else { Vec::new() };
     let log = rec.rng_mut().take_recording_log().expect("RNG was set to Recording above");
     if log.is_empty() {
         let h = rec.canonical_hash();
         let f = OutcomeFrontier { outcomes: vec![Outcome { hash: h, battle: rec, prob: 1.0 }], raw_combos: 1, unmatched_total: 0, lazy_iterations: 0 };
-        return (f, 0.0);
+        return (f, 0.0, report);
     }
     let mut per_site: Vec<Site> = log.into_iter().map(|d| (d.key, Vec::new(), d.space, d.drawn)).collect();
+    let mut class_of: Vec<Option<DamageSegments>> = vec![None; per_site.len()];
+    if classes {
+        match classify(base, &per_site, &probes) {
+            Ok(c) => {
+                report.classified_sites = c.iter().flatten().count() as u32;
+                report.classes = c.iter().flatten().map(|s| s.len as u32).sum();
+                class_of = c;
+            }
+            Err(why) => report.fallback = Some(why),
+        }
+    }
     let mut lazy = 0u32;
     loop {
-        resolve_damage(&mut per_site, cc.max_combos, opts);
+        resolve_damage(&mut per_site, &class_of, cc.max_combos, opts);
         let (dedup, raw, covered, unmatched, misses) = best_first_pass(base, p1, p2, record_seed, &per_site, cc);
         let new_sites = discover_new_sites(&per_site, &misses, opts);
         if new_sites.is_empty() || lazy >= MAX_LAZY_ITERATIONS || crate::budget::tripped().is_some() {
@@ -129,11 +223,74 @@ pub fn enumerate_outcomes_compressed(
             }
             outcomes.sort_by_key(|o| o.hash);
             let f = OutcomeFrontier { outcomes, raw_combos: raw, unmatched_total: unmatched, lazy_iterations: lazy };
-            return (f, (1.0 - covered).max(0.0));
+            return (f, (1.0 - covered).max(0.0), report);
+        }
+        if classes && report.fallback.is_none()
+            && new_sites.iter().any(|s| matches!(s.2, DrawSpace::UniformDamage { segments: None, .. }))
+        {
+            report.lazy_unclassified = true;
         }
         per_site.extend(new_sites.into_iter().map(|(k, _, s, d)| (k, Vec::new(), s, d)));
+        class_of.resize(per_site.len(), None);
         lazy += 1;
     }
+}
+
+/// Moves that read the exact damage a mon took this turn.
+const DAMAGE_READING: &[u16] = &[
+    vgc_engine_core::data::move_id::COUNTER,
+    vgc_engine_core::data::move_id::MIRRORCOAT,
+    vgc_engine_core::data::move_id::METALBURST,
+    vgc_engine_core::data::move_id::COMEUPPANCE,
+];
+
+/// Classes for every unsegmented damage draw of the record pass, or the
+/// reason the cell cannot use them.
+fn classify(
+    base: &Battle,
+    sites: &[Site],
+    probes: &[vgc_engine_core::DamageClassProbe],
+) -> Result<Vec<Option<DamageSegments>>, ClassFallback> {
+    use vgc_engine_core::RngDecision;
+    let unseg = |s: &Site| matches!(s.2, DrawSpace::UniformDamage { segments: None, .. });
+    let mut out: Vec<Option<DamageSegments>> = vec![None; sites.len()];
+    if !sites.iter().any(unseg) {
+        return Ok(out);
+    }
+    for side in [SideRef::P1, SideRef::P2] {
+        for slot in 0..base.format().active_count() {
+            if base.side(side).active_mon(slot).is_some_and(|m| m.moves.iter().any(|id| DAMAGE_READING.contains(id))) {
+                return Err(ClassFallback::DamageReading);
+            }
+        }
+    }
+    let moves = base.moves();
+    let roll_moves_hp = |id: u16| moves.get(id as usize).is_some_and(|m| m.recoil_num > 0 || m.drain_num > 0);
+    let damage = |s: &Site| s.0.decision == RngDecision::Damage;
+    for (i, s) in sites.iter().enumerate() {
+        if !unseg(s) {
+            continue;
+        }
+        let probe = probes.iter().find(|p| p.log_index == i).ok_or(ClassFallback::Unclassified)?;
+        let defender = s.0.target;
+        if sites.iter().filter(|o| damage(o) && o.0.target == defender).count() > 1 {
+            return Err(ClassFallback::Focus);
+        }
+        if moves.get(s.0.move_id as usize).is_some_and(|m| m.recoil_num > 0) {
+            return Err(ClassFallback::RollCoupledHp);
+        }
+        if sites[..i].iter().any(|o| damage(o) && o.0.actor == defender && roll_moves_hp(o.0.move_id)) {
+            return Err(ClassFallback::RollCoupledHp);
+        }
+        out[i] = Some(probe.classes);
+    }
+    Ok(out)
+}
+
+/// One representative per outcome class: the median roll of the class,
+/// weighted by the class's roll count. Heaviest first.
+fn class_reps(c: &DamageSegments) -> Vec<(RngEvent, u32, u32)> {
+    sorted(c.as_slice().iter().map(|&(start, n)| (RngEvent::DamageRoll(start + (n - 1) / 2), n as u32, 16)).collect())
 }
 
 /// Full outcome count of a many-way uniform site the compressor may coarsen:
@@ -175,8 +332,8 @@ fn uniform_reps(space: &vgc_engine_core::DrawSpace, n: u32, r: u32) -> Vec<(RngE
 /// Equal-weight branches can't be cut by the best-first truncation, so
 /// without this a 6-hit spread turn (3^6 = 729 damage combos) or a turn
 /// with sleep/confusion/trap durations left most of the prior unreplayed.
-fn resolve_damage(per_site: &mut [Site], max_combos: usize, opts: EnumerateOpts) {
-    let full: Vec<Option<u32>> = per_site.iter().map(|s| coarsenable(&s.2)).collect();
+fn resolve_damage(per_site: &mut [Site], class_of: &[Option<DamageSegments>], max_combos: usize, opts: EnumerateOpts) {
+    let full: Vec<Option<u32>> = per_site.iter().zip(class_of).map(|(s, c)| if c.is_some() { None } else { coarsenable(&s.2) }).collect();
     let cap = |n: u32, damage: bool| if damage { 3 } else { n };
     let mut res: Vec<u32> = full.iter().map(|f| f.map_or(0, |_| 1)).collect();
     let mut product: u64 = 1;
@@ -197,9 +354,10 @@ fn resolve_damage(per_site: &mut [Site], max_combos: usize, opts: EnumerateOpts)
         res[i] += 1;
     }
     for (i, site) in per_site.iter_mut().enumerate() {
-        site.1 = match full[i] {
-            Some(n) => uniform_reps(&site.2, n, res[i]),
-            None => sorted(expand(site.2, site.3, opts)),
+        site.1 = match (full[i], &class_of[i]) {
+            (_, Some(c)) => class_reps(c),
+            (Some(n), None) => uniform_reps(&site.2, n, res[i]),
+            (None, None) => sorted(expand(site.2, site.3, opts)),
         };
     }
 }
@@ -344,7 +502,7 @@ mod tests {
         // more 3 would make 48, so one site gets 3); k=7 -> 2^6 = 64, one stays 1.
         for (k, want) in [(3usize, vec![3usize, 3, 3]), (5, vec![3, 2, 2, 2, 2]), (7, vec![2, 2, 2, 2, 2, 2, 1])] {
             let mut ps: Vec<Site> = (0..k as u8).map(site).collect();
-            resolve_damage(&mut ps, 64, opts);
+            resolve_damage(&mut ps, &vec![None; k], 64, opts);
             let got: Vec<usize> = ps.iter().map(|s| s.1.len()).collect();
             assert_eq!(got, want, "k={k}");
             assert!(got.iter().product::<usize>() <= 64);

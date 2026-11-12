@@ -184,6 +184,7 @@ pub fn take_joint_collapse_engaged() -> bool {
 pub mod nash;
 pub mod budget;
 pub mod compress;
+pub mod sampled;
 pub mod double_oracle;
 pub mod endgame;
 pub mod factoring;
@@ -198,11 +199,12 @@ pub use endgame::{
     batch_from_scalar, hp_ratio_leaf, solve_turn, solve_turn_budgeted, BatchLeafEval, BattleMatrixGame, LeafEval,
     TurnSolution,
 };
-pub use compress::{enumerate_outcomes_compressed, ChanceCompression};
+pub use compress::{enumerate_outcomes_classes, enumerate_outcomes_compressed, ChanceCompression, ClassFallback, ClassReport};
+pub use sampled::enumerate_outcomes_sampled;
 pub use nash::{solve_zero_sum, NashSolution};
 pub use recursive::{
     endgame_solve, endgame_solve_anytime, endgame_solve_bounded, endgame_solve_with_tt, endgame_solve_with_tt_stats,
-    fallback_node, joint_actions, AnytimeSolve, BoundedSolve, EstReason, Provenance, RootValues, SolvedNode, SolverConfig,
+    fallback_node, joint_actions, AnytimeSolve, BoundedSolve, EstReason, Provenance, RootMenu, RootValues, SolvedNode, SolverConfig,
     SolverStats, Truncation,
 };
 pub use worlds::{endgame_solve_worlds, WorldResult, WorldsSolve};
