@@ -104,7 +104,9 @@ pub use rng::{
     expand_uniform_damage, DamageSegments, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent,
     RngKey, SlotRef, NO_SLOT,
 };
-pub use protocol::{ProtocolLog, ProtocolMode, ProtocolOptions, ProtocolView, StreamChunk, SyncKind, SyncPoint};
+pub use protocol::{
+    set_clone_keeps_log, ProtocolLog, ProtocolMode, ProtocolOptions, ProtocolView, StreamChunk, SyncKind, SyncPoint,
+};
 pub use side::{Side, SideRef};
 pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
 pub use team::{boosted_max_pp, build_member, build_member_in, champions_max_pp, TeamBuilder, TeamLoadError, TeamMember};

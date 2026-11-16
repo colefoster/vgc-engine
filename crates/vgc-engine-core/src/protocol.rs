@@ -223,9 +223,29 @@ pub(crate) enum StatusFx {
 #[derive(Default)]
 pub struct ProtoSlot(pub(crate) Option<Box<ProtocolLog>>);
 
+thread_local! {
+    static CLONE_KEEPS_LOG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make `Battle::clone` keep the protocol log on this thread (default off:
+/// clones drop it). Returns the previous setting; restore it when done.
+///
+/// For a solver whose leaf evaluator reads each leaf's player stream and
+/// request: every clone of a logged battle then copies the whole log, so the
+/// caller pays for it on every replay.
+pub fn set_clone_keeps_log(on: bool) -> bool {
+    CLONE_KEEPS_LOG.with(|c| c.replace(on))
+}
+
 impl Clone for ProtoSlot {
     fn clone(&self) -> Self {
-        Self(None)
+        // `is_some` first: a log-less clone (the search hot path) never
+        // reads the thread-local.
+        if self.0.is_some() && CLONE_KEEPS_LOG.with(|c| c.get()) {
+            Self(self.0.clone())
+        } else {
+            Self(None)
+        }
     }
 }
 
