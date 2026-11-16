@@ -1640,6 +1640,144 @@ fn bounded_solve(
     })
 }
 
+/// Counters of a [`vgc_solver::BatchedLeaf`] after a solve.
+struct LeafCounts {
+    batches: u64,
+    evaluated: u64,
+    memo_hits: u64,
+    singles: u64,
+    menu_calls: u64,
+    menu_fallbacks: u64,
+}
+
+/// One leaf as the Python evaluator sees it: `side`'s update lines since the
+/// solve's root (`|split|` resolved for it, no `|request|`), and its request
+/// JSON at the leaf's stop (`wait` requests included).
+fn leaf_item(b: &core::Battle, view: core::ProtocolView, side: core::SideRef, base_chunks: usize) -> Result<(Vec<String>, String), String> {
+    let log = b.protocol_log().ok_or("a leaf battle lost its protocol log")?;
+    let mut lines = Vec::new();
+    for c in log.stream(view, None).iter().skip(base_chunks) {
+        if let core::StreamChunk::Update(text) = c {
+            lines.extend(text.split('\n').map(str::to_string));
+        }
+    }
+    let req = log.sync_points().last().ok_or("a leaf battle has no request")?.requests[side as usize].clone();
+    Ok((lines, req))
+}
+
+/// [`bounded_solve`] (anytime) on a [`vgc_solver::BatchedLeaf`] driven from
+/// Python: `leaf(items)` scores one `(lines, request_json)` per leaf of a
+/// matrix cell (see [`leaf_item`]; one value per item, P1's perspective in
+/// `[-1, 1]`; `None` = `hp_ratio_leaf`), and `node_menu(p1_lines, p1_request,
+/// p2_lines, p2_request, row_joints, col_joints)` picks each expanded node's
+/// joint actions as `(row_indices | None, col_indices | None)`.
+///
+/// The root must carry a protocol log (a `ps_session` battle): nodes are
+/// reached with the log kept through the solver's clones, which is what lets
+/// the callables see each node the way a player would. The GIL is released
+/// while solving and re-taken for each call.
+fn bounded_solve_leaf(
+    py: Python<'_>,
+    battle: &core::Battle,
+    cfg: &vgc_solver::SolverConfig,
+    leaf: Option<PyObject>,
+    node_menu: Option<PyObject>,
+    side: core::SideRef,
+) -> PyResult<Result<(vgc_solver::BoundedSolve, vgc_solver::SolverStats, LeafCounts), String>> {
+    let Some(log) = battle.protocol_log() else {
+        return Err(PyValueError::new_err("leaf= / node_menu= need a ps_session battle (nodes are read from the player streams)"));
+    };
+    let view_of = |s: core::SideRef| if s == core::SideRef::P1 { core::ProtocolView::P1 } else { core::ProtocolView::P2 };
+    let base = [log.stream(core::ProtocolView::P1, None).len(), log.stream(core::ProtocolView::P2, None).len()];
+    let root = battle.clone_with_log();
+    let err_slot: std::sync::Arc<std::sync::Mutex<Option<PyErr>>> = Default::default();
+    let (slot, slot2) = (std::sync::Arc::clone(&err_slot), std::sync::Arc::clone(&err_slot));
+    let out = py.allow_threads(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            struct KeepLog(bool);
+            impl Drop for KeepLog {
+                fn drop(&mut self) {
+                    core::set_clone_keeps_log(self.0);
+                }
+            }
+            let _keep = KeepLog(core::set_clone_keeps_log(true));
+            let eval: vgc_solver::BatchLeafEval = match leaf {
+                None => Box::new(|states: &[&core::Battle]| states.iter().map(|b| vgc_solver::hp_ratio_leaf(b)).collect()),
+                Some(leaf) => Box::new(move |states: &[&core::Battle]| {
+                    let zeros = vec![0.0; states.len()];
+                    // After a failed call the solve only unwinds; the stored
+                    // error is raised once it returns.
+                    if slot.lock().unwrap().is_some() {
+                        return zeros;
+                    }
+                    let scored = Python::with_gil(|py| -> PyResult<Vec<f64>> {
+                        let items = PyList::empty(py);
+                        for b in states {
+                            let (lines, req) = leaf_item(b, view_of(side), side, base[side as usize]).map_err(PyValueError::new_err)?;
+                            items.append((lines, req))?;
+                        }
+                        let scores: Vec<f64> = leaf.call1(py, (items,))?.extract(py)?;
+                        if scores.len() != states.len() {
+                            return Err(PyValueError::new_err(format!("leaf returned {} values for {} states", scores.len(), states.len())));
+                        }
+                        Ok(scores)
+                    });
+                    match scored {
+                        Ok(v) => v,
+                        Err(e) => {
+                            *slot.lock().unwrap() = Some(e);
+                            zeros
+                        }
+                    }
+                }),
+            };
+            let mut bl = vgc_solver::BatchedLeaf::new(eval);
+            if let Some(menu) = node_menu {
+                bl = bl.with_node_menu(Box::new(move |b: &core::Battle, rows: &[Vec<core::Choice>], cols: &[Vec<core::Choice>]| {
+                    if slot2.lock().unwrap().is_some() {
+                        return (None, None);
+                    }
+                    let picked = Python::with_gil(|py| -> PyResult<vgc_solver::NodeMenu> {
+                        let (l1, r1) = leaf_item(b, core::ProtocolView::P1, core::SideRef::P1, base[0]).map_err(PyValueError::new_err)?;
+                        let (l2, r2) = leaf_item(b, core::ProtocolView::P2, core::SideRef::P2, base[1]).map_err(PyValueError::new_err)?;
+                        let tuples = |js: &[Vec<core::Choice>]| -> Vec<Vec<LegalChoice>> {
+                            js.iter().map(|j| j.iter().map(choice_to_tuple).collect()).collect()
+                        };
+                        menu.call1(py, (l1, r1, l2, r2, tuples(rows), tuples(cols)))?.extract(py)
+                    });
+                    match picked {
+                        Ok(m) => m,
+                        Err(e) => {
+                            *slot2.lock().unwrap() = Some(e);
+                            (None, None)
+                        }
+                    }
+                }));
+            }
+            let mut stats = vgc_solver::SolverStats::default();
+            let r = vgc_solver::endgame_solve_bounded_batched(&root, cfg, &mut bl, &mut std::collections::HashMap::new(), &mut stats, true);
+            let counts = LeafCounts {
+                batches: bl.batches,
+                evaluated: bl.evaluated,
+                memo_hits: bl.memo_hits,
+                singles: bl.singles,
+                menu_calls: bl.menu_calls,
+                menu_fallbacks: bl.menu_fallbacks,
+            };
+            (r, stats, counts)
+        }))
+        .map_err(|e| {
+            e.downcast_ref::<&str>().map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "solver panicked".into())
+        })
+    });
+    if let Some(e) = err_slot.lock().unwrap().take() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
 /// `truncated` / `truncation_reason` / `elapsed_ms` (shared by both solvers).
 fn set_truncation(d: &Bound<'_, PyDict>, r: &vgc_solver::BoundedSolve, t0: std::time::Instant) -> PyResult<()> {
     d.set_item("truncated", r.truncated.is_some())?;
@@ -1703,8 +1841,34 @@ fn solver_error_dict<'py>(py: Python<'py>, msg: &str, t0: std::time::Instant) ->
 ///   the root may use; `row_support` / `col_support` seed the root double
 ///   oracle. Reports `menu_rows`, `menu_cols`, `menu_fallbacks` (a menu with
 ///   no legal entry is ignored).
+///
+/// Learned leaf (off by default; the leaf is `hp_ratio_leaf` without it):
+/// - `leaf=callable`: called once per matrix cell at the depth limit with a
+///   list of `(lines, request_json)`, one per non-terminal leaf: `leaf_side`'s
+///   update lines since the root position (append them to that side's stream
+///   at the root) and its request at the leaf. It returns one value per item,
+///   P1's perspective in `[-1, 1]`. Needs a `ps_session` battle. Terminal
+///   states stay ±1 / 0 in Rust; values are memoized per canonical hash.
+///   Reports `leaf_batches`, `leaf_states`, `leaf_memo_hits`, `leaf_singles`.
+///   An exception in the callable is re-raised after the solve.
+/// - `node_menu=callable`: called once per expanded move-decision node (the
+///   root too, unless `row_menu` / `col_menu` are given) as `node_menu(
+///   p1_lines, p1_request, p2_lines, p2_request, row_joints, col_joints)`:
+///   each side's update lines since the root and its request at the node,
+///   and the node's legal joint actions. It returns `(row_indices | None,
+///   col_indices | None)`: the joint actions each side may use, in the order
+///   to hold them (the first seeds double oracle); `None` keeps them all.
+///   Picks are memoized per canonical hash. Needs a `ps_session` battle;
+///   works with or without `leaf`. Reports `node_menu_calls`,
+///   `node_menu_fallbacks` (an empty or out-of-range pick list is ignored).
+/// - With `leaf` or `node_menu`, the dict also carries `row_values` /
+///   `col_values`: `[[joint, value], ...]` for every root joint action
+///   against the other side's equilibrium strategy (P1's perspective).
+/// - `leaf_after_replacements=True`: a depth-limit node with faint
+///   replacements pending is searched through the replacement picks, so the
+///   leaf only ever scores a turn start.
 #[pyfunction]
-#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64, replay_budget = None, outcome_classes = false, chance_samples = None, row_menu = None, col_menu = None, row_support = None, col_support = None))]
+#[pyo3(signature = (battle, time_budget_ms = 2000, max_depth = 16, compress = true, mass_eps = 0.02, max_combos = 64, replay_budget = None, outcome_classes = false, chance_samples = None, row_menu = None, col_menu = None, row_support = None, col_support = None, leaf = None, leaf_side = "p1", leaf_after_replacements = false, node_menu = None))]
 #[allow(clippy::too_many_arguments)]
 fn solve_endgame_anytime<'py>(
     py: Python<'py>,
@@ -1721,8 +1885,17 @@ fn solve_endgame_anytime<'py>(
     col_menu: Option<Vec<Vec<LegalChoice>>>,
     row_support: Option<Vec<Vec<LegalChoice>>>,
     col_support: Option<Vec<Vec<LegalChoice>>>,
+    leaf: Option<PyObject>,
+    leaf_side: &str,
+    leaf_after_replacements: bool,
+    node_menu: Option<PyObject>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let t0 = std::time::Instant::now();
+    let leaf_side = match leaf_side {
+        "p1" => core::SideRef::P1,
+        "p2" => core::SideRef::P2,
+        other => return Err(PyValueError::new_err(format!("leaf_side must be \"p1\" or \"p2\", got {other:?}"))),
+    };
     let joints = |v: Option<Vec<Vec<LegalChoice>>>| -> PyResult<Option<Vec<Vec<core::Choice>>>> {
         v.map(|js| js.iter().map(|j| j.iter().map(choice_from_tuple).collect()).collect()).transpose()
     };
@@ -1748,11 +1921,22 @@ fn solve_endgame_anytime<'py>(
         outcome_classes,
         chance_samples,
         root_menu,
+        leaf_after_replacements,
         ..vgc_solver::SolverConfig::default()
     };
-    let (r, stats) = match bounded_solve(py, &battle.inner, &cfg, true) {
-        Ok(x) => x,
-        Err(msg) => return solver_error_dict(py, &msg, t0),
+    let mut leaf_counts = None;
+    let (r, stats) = match (leaf, node_menu) {
+        (None, None) => match bounded_solve(py, &battle.inner, &cfg, true) {
+            Ok(x) => x,
+            Err(msg) => return solver_error_dict(py, &msg, t0),
+        },
+        (leaf, node_menu) => match bounded_solve_leaf(py, &battle.inner, &cfg, leaf, node_menu, leaf_side)? {
+            Ok((r, stats, counts)) => {
+                leaf_counts = Some(counts);
+                (r, stats)
+            }
+            Err(msg) => return solver_error_dict(py, &msg, t0),
+        },
     };
     let d = PyDict::new(py);
     let node = &r.node;
@@ -1792,6 +1976,18 @@ fn solve_endgame_anytime<'py>(
         d.set_item("menu_rows", stats.menu_rows)?;
         d.set_item("menu_cols", stats.menu_cols)?;
         d.set_item("menu_fallbacks", stats.menu_fallbacks)?;
+    }
+    if let Some(c) = leaf_counts {
+        d.set_item("leaf_batches", c.batches)?;
+        d.set_item("leaf_states", c.evaluated)?;
+        d.set_item("leaf_memo_hits", c.memo_hits)?;
+        d.set_item("leaf_singles", c.singles)?;
+        d.set_item("node_menu_calls", c.menu_calls)?;
+        d.set_item("node_menu_fallbacks", c.menu_fallbacks)?;
+        if let Some(rv) = &r.root_values {
+            d.set_item("row_values", joint_policy_to_py(py, &rv.row)?)?;
+            d.set_item("col_values", joint_policy_to_py(py, &rv.col)?)?;
+        }
     }
     Ok(d)
 }
