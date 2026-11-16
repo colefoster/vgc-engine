@@ -221,6 +221,11 @@ pub struct SolverConfig {
     /// limited to the given menus, so double oracle only ever adds menu
     /// actions to the support. `None` (default) = unchanged.
     pub root_menu: Option<RootMenu>,
+    /// Opt-in: a node at the depth limit with faint replacements pending is
+    /// searched one node further (the replacement picks) instead of being
+    /// leaf-evaluated, so a learned leaf never scores a half-resolved turn.
+    /// The extra node does not use up depth. `false` (default) = unchanged.
+    pub leaf_after_replacements: bool,
 }
 
 /// Root action menus for [`SolverConfig::root_menu`]. A side whose menu is
@@ -257,6 +262,162 @@ impl Default for SolverConfig {
             outcome_classes: false,
             chance_samples: None,
             root_menu: None,
+            leaf_after_replacements: false,
+        }
+    }
+}
+
+/// Per-side picks of a [`NodeMenuFn`]: indices into the node's joint action
+/// lists, in the order the solver should hold them (`None` = keep them all).
+pub type NodeMenu = (Option<Vec<usize>>, Option<Vec<usize>>);
+
+/// Action menu for one expanded node: `(state, P1 joint actions, P2 joint
+/// actions) -> picks`. See [`BatchedLeaf::with_node_menu`].
+pub type NodeMenuFn = Box<dyn FnMut(&Battle, &[Vec<Choice>], &[Vec<Choice>]) -> NodeMenu>;
+
+/// A batched leaf evaluator for the recursive solver, with a per-solve memo.
+///
+/// The solver hands [`BatchedLeaf`] every non-terminal leaf of a matrix cell's
+/// outcome frontier in one call (`eval(&[&Battle]) -> Vec<f64>`, P1's
+/// perspective in `[-1, 1]`), so a model-backed leaf runs one forward per cell
+/// instead of one per leaf. Terminal states never reach `eval`: they score
+/// [`crate::hp_ratio_leaf`]'s ±1 / 0.
+///
+/// Values are memoized on `canonical_hash` (the TT's key, so HP-bucketed
+/// like the TT) for the life of this object. Keep one per solve: iterative
+/// deepening then re-scores nothing, and a transposed leaf is scored once.
+pub struct BatchedLeaf {
+    eval: crate::BatchLeafEval,
+    memo: HashMap<u64, f64>,
+    menu: Option<NodeMenuFn>,
+    menu_memo: HashMap<u64, NodeMenu>,
+    /// Calls made to the node-menu function.
+    pub menu_calls: u64,
+    /// Sides whose returned menu was empty or out of range (full list kept).
+    pub menu_fallbacks: u64,
+    /// Calls made to the evaluator.
+    pub batches: u64,
+    /// States it scored, summed over calls.
+    pub evaluated: u64,
+    /// Leaf lookups answered from the memo.
+    pub memo_hits: u64,
+    /// Leaves scored one at a time (the cell prefetch missed them).
+    pub singles: u64,
+}
+
+impl BatchedLeaf {
+    pub fn new(eval: crate::BatchLeafEval) -> Self {
+        Self {
+            eval,
+            memo: HashMap::new(),
+            menu: None,
+            menu_memo: HashMap::new(),
+            menu_calls: 0,
+            menu_fallbacks: 0,
+            batches: 0,
+            evaluated: 0,
+            memo_hits: 0,
+            singles: 0,
+        }
+    }
+
+    /// Restrict every expanded move-decision node (the root included, unless
+    /// [`SolverConfig::root_menu`] is set) to the joint actions `menu` picks,
+    /// e.g. a policy network's top-k for each side. Lossy: the solve is of
+    /// the menu game. Replacement nodes keep their full lists. Picks are
+    /// memoized per canonical hash, so transposed nodes share one menu.
+    pub fn with_node_menu(mut self, menu: NodeMenuFn) -> Self {
+        self.menu = Some(menu);
+        self
+    }
+
+    /// Apply the node menu (if any) to a node's joint action lists.
+    fn restrict(&mut self, battle: &Battle, hash: u64, rows: &mut Vec<Vec<Choice>>, cols: &mut Vec<Vec<Choice>>) {
+        let Some(menu) = self.menu.as_mut() else { return };
+        let picks = match self.menu_memo.get(&hash) {
+            Some(p) => p.clone(),
+            None => {
+                self.menu_calls += 1;
+                let p = menu(battle, rows, cols);
+                self.menu_memo.insert(hash, p.clone());
+                p
+            }
+        };
+        let mut apply = |acts: &mut Vec<Vec<Choice>>, idx: Option<Vec<usize>>| {
+            let Some(idx) = idx else { return };
+            let mut kept: Vec<Vec<Choice>> = Vec::with_capacity(idx.len());
+            for i in idx {
+                match acts.get(i) {
+                    Some(a) if !kept.contains(a) => kept.push(a.clone()),
+                    Some(_) => {}
+                    None => {
+                        kept.clear();
+                        break;
+                    }
+                }
+            }
+            if kept.is_empty() { self.menu_fallbacks += 1 } else { *acts = kept }
+        };
+        apply(rows, picks.0);
+        apply(cols, picks.1);
+    }
+
+    /// Score every `(canonical_hash, state)` not yet in the memo, in one call.
+    fn prefetch(&mut self, states: &[(u64, &Battle)]) {
+        let mut hashes: Vec<u64> = Vec::with_capacity(states.len());
+        let mut todo: Vec<&Battle> = Vec::with_capacity(states.len());
+        for &(h, b) in states {
+            if b.is_terminal() || self.memo.contains_key(&h) || hashes.contains(&h) {
+                continue;
+            }
+            hashes.push(h);
+            todo.push(b);
+        }
+        if todo.is_empty() {
+            return;
+        }
+        let vals = (self.eval)(&todo);
+        assert_eq!(vals.len(), todo.len(), "batched leaf returned {} values for {} states", vals.len(), todo.len());
+        self.batches += 1;
+        self.evaluated += todo.len() as u64;
+        for (h, v) in hashes.into_iter().zip(vals) {
+            self.memo.insert(h, v);
+        }
+    }
+
+    fn value(&mut self, battle: &Battle) -> f64 {
+        if battle.is_terminal() {
+            return crate::hp_ratio_leaf(battle);
+        }
+        let h = battle.canonical_hash();
+        if let Some(&v) = self.memo.get(&h) {
+            self.memo_hits += 1;
+            return v;
+        }
+        self.singles += 1;
+        self.prefetch(&[(h, battle)]);
+        self.memo[&h]
+    }
+}
+
+/// The leaf a solve runs on: a scalar closure or a [`BatchedLeaf`].
+enum LeafRef<'a> {
+    Scalar(&'a mut dyn FnMut(&Battle) -> f64),
+    Batched(&'a mut BatchedLeaf),
+}
+
+impl LeafRef<'_> {
+    fn reborrow(&mut self) -> LeafRef<'_> {
+        match self {
+            LeafRef::Scalar(f) => LeafRef::Scalar(&mut **f),
+            LeafRef::Batched(b) => LeafRef::Batched(&mut **b),
+        }
+    }
+
+    fn value(&mut self, battle: &Battle) -> f64 {
+        match self {
+            LeafRef::Scalar(f) => f(battle),
+            LeafRef::Batched(b) => b.value(battle),
         }
     }
 }
@@ -281,7 +442,7 @@ pub fn endgame_solve(
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut tt: HashMap<u64, SolvedNode> = HashMap::new();
     let mut stats = SolverStats::default();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats, root_pending: cfg.root_menu.is_some(), root_values: None };
+    let mut state = SolverState { cfg, leaf: LeafRef::Scalar(&mut leaf), tt: &mut tt, nodes: 0, stats: &mut stats, root_pending: cfg.root_menu.is_some(), root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -333,7 +494,7 @@ pub fn endgame_solve_with_tt(
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut stats = SolverStats::default();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats, root_pending: cfg.root_menu.is_some(), root_values: None };
+    let mut state = SolverState { cfg, leaf: LeafRef::Scalar(&mut leaf), tt, nodes: 0, stats: &mut stats, root_pending: cfg.root_menu.is_some(), root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -348,9 +509,19 @@ pub fn endgame_solve_with_tt_stats(
     tt: &mut HashMap<u64, SolvedNode>,
     stats: &mut SolverStats,
 ) -> SolvedNode {
+    with_tt_stats_impl(battle, cfg, &mut LeafRef::Scalar(&mut leaf), tt, stats)
+}
+
+fn with_tt_stats_impl(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    leaf: &mut LeafRef<'_>,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+) -> SolvedNode {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats, root_pending: cfg.root_menu.is_some(), root_values: None };
+    let mut state = SolverState { cfg, leaf: leaf.reborrow(), tt, nodes: 0, stats, root_pending: cfg.root_menu.is_some(), root_values: None };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -427,7 +598,7 @@ pub struct SolverStats {
 /// out of the public API so consumers don't have to construct one.
 struct SolverState<'a> {
     cfg: &'a SolverConfig,
-    leaf: &'a mut dyn FnMut(&Battle) -> f64,
+    leaf: LeafRef<'a>,
     tt: &'a mut HashMap<u64, SolvedNode>,
     nodes: u64,
     stats: &'a mut SolverStats,
@@ -451,7 +622,7 @@ pub struct RootValues {
 
 fn leaf_eval(state: &mut SolverState, battle: &Battle) -> f64 {
     state.stats.leaf_calls += 1;
-    (state.leaf)(battle)
+    state.leaf.value(battle)
 }
 
 /// DO seed from a shallower TT entry of the same state: the indices of its
@@ -612,8 +783,9 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         return leaf_node(leaf_eval(state, battle), Provenance::Terminal, depth_remaining);
     }
 
-    // Depth-budget exhausted.
-    if depth_remaining == 0 {
+    // Depth-budget exhausted. With `leaf_after_replacements`, a node with
+    // replacements pending is solved anyway (its children are the leaves).
+    if depth_remaining == 0 && !(state.cfg.leaf_after_replacements && battle.needs_replacements()) {
         return leaf_node(
             leaf_eval(state, battle),
             Provenance::Estimated(EstReason::DepthLimit),
@@ -681,6 +853,11 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
             menu_seed = Some((if r.is_empty() { vec![0] } else { r }, if c.is_empty() { vec![0] } else { c }));
         }
     }
+    if menu.is_none() && !battle.needs_replacements() {
+        if let LeafRef::Batched(leaf) = &mut state.leaf {
+            leaf.restrict(battle, node_hash, &mut row_choices, &mut col_choices);
+        }
+    }
     if row_choices.is_empty() || col_choices.is_empty() {
         // Should be caught by is_terminal; defensive fallback.
         return leaf_node(leaf_eval(state, battle), Provenance::Terminal, depth_remaining);
@@ -691,7 +868,7 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
         battle,
         row_choices,
         col_choices,
-        depth_remaining: depth_remaining - 1,
+        depth_remaining: depth_remaining.saturating_sub(1),
         node_hash,
         state,
         any_estimated_child: false,
@@ -803,13 +980,23 @@ pub fn endgame_solve_anytime(
     tt: &mut HashMap<u64, SolvedNode>,
     stats: &mut SolverStats,
 ) -> AnytimeSolve {
+    anytime_impl(battle, cfg, &mut LeafRef::Scalar(&mut leaf), tt, stats)
+}
+
+fn anytime_impl(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    leaf: &mut LeafRef<'_>,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+) -> AnytimeSolve {
     let _guard = ExactHpGuard::activate(cfg.exact_hp);
     let _budget = BudgetGuard::install(cfg.deadline, cfg.replay_budget);
     let mut best: Option<SolvedNode> = None;
     let mut best_values: Option<RootValues> = None;
     let mut depth_completed = 0;
     for depth in 1..=cfg.max_depth.max(1) {
-        let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut *tt, nodes: 0, stats: &mut *stats, root_pending: true, root_values: None };
+        let mut state = SolverState { cfg, leaf: leaf.reborrow(), tt: &mut *tt, nodes: 0, stats: &mut *stats, root_pending: true, root_values: None };
         let node = solve(battle, depth, &mut state);
         let values = state.root_values.take();
         if stats.stop_reason.is_some() {
@@ -899,15 +1086,39 @@ pub fn endgame_solve_bounded(
     stats: &mut SolverStats,
     anytime: bool,
 ) -> BoundedSolve {
+    bounded_impl(battle, cfg, &mut LeafRef::Scalar(&mut leaf), tt, stats, anytime)
+}
+
+/// [`endgame_solve_bounded`] on a [`BatchedLeaf`]: each matrix cell at the
+/// depth limit scores its whole outcome frontier in one evaluator call.
+pub fn endgame_solve_bounded_batched(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    leaf: &mut BatchedLeaf,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+    anytime: bool,
+) -> BoundedSolve {
+    bounded_impl(battle, cfg, &mut LeafRef::Batched(leaf), tt, stats, anytime)
+}
+
+fn bounded_impl(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    leaf: &mut LeafRef<'_>,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+    anytime: bool,
+) -> BoundedSolve {
     let (node, depth_completed, root_values) = if anytime {
-        let r = endgame_solve_anytime(battle, cfg, &mut leaf, tt, stats);
+        let r = anytime_impl(battle, cfg, leaf, tt, stats);
         (r.node, r.depth_completed, r.root_values)
     } else {
-        let n = endgame_solve_with_tt_stats(battle, cfg, &mut leaf, tt, stats);
+        let n = with_tt_stats_impl(battle, cfg, leaf, tt, stats);
         if stats.stop_reason.is_some() { (None, 0, None) } else { (Some(n), cfg.max_depth, None) }
     };
     let root_values = if node.is_some() { root_values } else { None };
-    let node = node.unwrap_or_else(|| fallback_node(battle, &mut leaf));
+    let node = node.unwrap_or_else(|| fallback_node(battle, |b| leaf.value(b)));
     let solved = matches!(node.provenance, Provenance::Exact | Provenance::Terminal);
     let truncated = match stats.stop_reason {
         Some(StopReason::Deadline) => Some(Truncation::Deadline),
@@ -1045,6 +1256,21 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         self.state.stats.enumerate_ns += t0.elapsed().as_nanos() as u64;
         self.state.stats.outcomes += frontier.outcomes.len() as u64;
         self.state.stats.raw_combos += frontier.raw_combos as u64;
+        // Children at the depth limit are leaves: score the cell's frontier
+        // in one evaluator call (the per-child `solve` below then reads the
+        // memo). Skipped once the budget tripped; the iteration is discarded.
+        if self.depth_remaining == 0 && !past_deadline(self.state) {
+            let quiesce = self.state.cfg.leaf_after_replacements;
+            if let LeafRef::Batched(leaf) = &mut self.state.leaf {
+                let leaves: Vec<(u64, &Battle)> = frontier
+                    .outcomes
+                    .iter()
+                    .filter(|o| !(quiesce && o.battle.needs_replacements()))
+                    .map(|o| (o.hash, &o.battle))
+                    .collect();
+                leaf.prefetch(&leaves);
+            }
+        }
         let mut acc = 0.0;
         for outcome in &frontier.outcomes {
             let child = solve(&outcome.battle, self.depth_remaining, self.state);
@@ -1141,6 +1367,7 @@ mod tests {
             outcome_classes: false,
             chance_samples: None,
             root_menu: None,
+            leaf_after_replacements: false,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -1198,6 +1425,7 @@ mod tests {
             outcome_classes: false,
             chance_samples: None,
             root_menu: None,
+            leaf_after_replacements: false,
         };
         let cfg_on = SolverConfig {
             use_action_independence_factoring: true,
@@ -1302,6 +1530,7 @@ mod tests {
             outcome_classes: false,
             chance_samples: None,
             root_menu: None,
+            leaf_after_replacements: false,
         };
 
         // ── Reference: hand-build the root matrix. ──
@@ -1407,6 +1636,7 @@ mod tests {
             outcome_classes: false,
             chance_samples: None,
             root_menu: None,
+            leaf_after_replacements: false,
         };
         let s1 = endgame_solve(&b, &cfg, hp_ratio_leaf);
         let s2 = endgame_solve(&b, &cfg, hp_ratio_leaf);
@@ -1640,6 +1870,7 @@ mod tests {
             outcome_classes: false,
             chance_samples: None,
             root_menu: None,
+            leaf_after_replacements: false,
         };
         let exact = endgame_solve(&b, &cfg_exact, hp_ratio_leaf);
         assert!(
@@ -1687,5 +1918,145 @@ mod tests {
             exact.value,
             fast1.value,
         );
+    }
+
+    /// A leaf that depends only on the canonical hash, so the memo (keyed on
+    /// it) cannot change a value.
+    fn hash_leaf(b: &Battle) -> f64 {
+        if b.is_terminal() {
+            return hp_ratio_leaf(b);
+        }
+        (b.canonical_hash() % 2001) as f64 / 1000.0 - 1.0
+    }
+
+    /// A `BatchedLeaf` solves to the scalar leaf's value under every chance
+    /// mode, never sees a terminal state, and scores each cell's frontier in
+    /// one call (no leaf is left to a single-state call).
+    #[test]
+    fn batched_leaf_matches_scalar_leaf() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        // Bulky mons: no depth-1 line ends the game, so every leaf is scored.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["dragonclaw","earthquake"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam","crunch"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","moves":["seismictoss"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.conditions.tera_used = true;
+        b.p2.conditions.tera_used = true;
+        let base = SolverConfig { max_depth: 1, node_budget: u64::MAX, ..SolverConfig::default() };
+        let cc = Some(crate::compress::ChanceCompression::default());
+        let variants = [
+            ("lossless", base.clone()),
+            ("factored", SolverConfig { use_action_independence_factoring: true, ..base.clone() }),
+            ("compressed", SolverConfig { chance_compression: cc, ..base.clone() }),
+            ("classes", SolverConfig { chance_compression: cc, outcome_classes: true, ..base.clone() }),
+            ("sampled", SolverConfig { chance_samples: Some(4), ..base.clone() }),
+        ];
+        for (name, cfg) in variants {
+            let mut st = SolverStats::default();
+            let scalar = endgame_solve_bounded(&b, &cfg, hash_leaf, &mut HashMap::new(), &mut st, true);
+            let saw_terminal = Rc::new(Cell::new(false));
+            let flag = Rc::clone(&saw_terminal);
+            let mut leaf = BatchedLeaf::new(Box::new(move |states: &[&Battle]| {
+                if states.iter().any(|s| s.is_terminal()) {
+                    flag.set(true);
+                }
+                states.iter().map(|s| hash_leaf(s)).collect()
+            }));
+            let mut st2 = SolverStats::default();
+            let batched = endgame_solve_bounded_batched(&b, &cfg, &mut leaf, &mut HashMap::new(), &mut st2, true);
+            assert_eq!(scalar.node.value.to_bits(), batched.node.value.to_bits(), "{name}: value differs");
+            assert_eq!(scalar.node.row_joint_policy, batched.node.row_joint_policy, "{name}: policy differs");
+            assert!(!saw_terminal.get(), "{name}: a terminal state reached the evaluator");
+            assert!(leaf.evaluated > 0, "{name}: nothing was scored");
+            assert!(leaf.batches <= st2.cells, "{name}: more calls than cells");
+            assert_eq!(leaf.singles, 0, "{name}: a frontier leaf missed the cell batch");
+        }
+    }
+
+    /// With `leaf_after_replacements`, the evaluator never scores a state
+    /// with a replacement pending; without it, it does.
+    #[test]
+    fn leaf_after_replacements_scores_turn_starts_only() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["dragonclaw"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"pikachu","level":50,"ability":"static","moves":["thunderbolt"]},
+            {"species":"eevee","level":50,"ability":"adaptability","moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.p1.conditions.tera_used = true;
+        b.p2.conditions.tera_used = true;
+        b.p2.team[0].current_hp = 1;
+        let run = |quiesce: bool| {
+            let cfg = SolverConfig { max_depth: 1, node_budget: u64::MAX, leaf_after_replacements: quiesce, ..SolverConfig::default() };
+            let pending = Rc::new(Cell::new(0u32));
+            let seen = Rc::clone(&pending);
+            let mut leaf = BatchedLeaf::new(Box::new(move |states: &[&Battle]| {
+                seen.set(seen.get() + states.iter().filter(|s| s.needs_replacements()).count() as u32);
+                states.iter().map(|s| hash_leaf(s)).collect()
+            }));
+            let r = endgame_solve_bounded_batched(&b, &cfg, &mut leaf, &mut HashMap::new(), &mut SolverStats::default(), true);
+            assert_eq!(r.depth_completed, 1);
+            (pending.get(), leaf.evaluated)
+        };
+        let (pending_off, _) = run(false);
+        let (pending_on, scored_on) = run(true);
+        assert!(pending_off > 0, "fixture never reaches a replacement stop");
+        assert_eq!(pending_on, 0);
+        assert!(scored_on > 0);
+    }
+
+    /// A node menu restricts every expanded move node to its picks, in the
+    /// returned order; a bad pick list keeps the full list and is counted.
+    #[test]
+    fn node_menu_restricts_expanded_nodes() {
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["dragonclaw","earthquake"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam","crunch"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","moves":["seismictoss"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.conditions.tera_used = true;
+        b.p2.conditions.tera_used = true;
+        let cfg = SolverConfig { max_depth: 2, node_budget: u64::MAX, ..SolverConfig::default() };
+        let rows = joint_actions(&b, SideRef::P1);
+        assert!(rows.len() >= 3);
+        let eval = || -> crate::BatchLeafEval { Box::new(|states: &[&Battle]| states.iter().map(|s| hash_leaf(s)).collect()) };
+
+        // Row menu = the last two actions, reversed; columns untouched.
+        let n = rows.len();
+        let mut leaf = BatchedLeaf::new(eval()).with_node_menu(Box::new(move |_, r, _| {
+            (Some(vec![r.len() - 1, r.len() - 2]), None)
+        }));
+        let mut st = SolverStats::default();
+        let r = endgame_solve_bounded_batched(&b, &cfg, &mut leaf, &mut HashMap::new(), &mut st, true);
+        assert_eq!(r.depth_completed, 2);
+        let allowed = [rows[n - 1].clone(), rows[n - 2].clone()];
+        assert!(r.node.row_joint_policy.iter().all(|(j, _)| allowed.contains(j)));
+        let rv = r.root_values.expect("root values");
+        assert_eq!(rv.row.iter().map(|(j, _)| j.clone()).collect::<Vec<_>>(), allowed.to_vec());
+        assert!(leaf.menu_calls > 1, "interior nodes were not given menus");
+        assert_eq!(leaf.menu_fallbacks, 0);
+
+        // Out-of-range picks: the full list is kept and the fallback counted.
+        let mut bad = BatchedLeaf::new(eval()).with_node_menu(Box::new(|_, r, _| (Some(vec![r.len() + 7]), Some(Vec::new()))));
+        let cfg1 = SolverConfig { max_depth: 1, ..cfg.clone() };
+        let r = endgame_solve_bounded_batched(&b, &cfg1, &mut bad, &mut HashMap::new(), &mut SolverStats::default(), true);
+        assert_eq!(bad.menu_fallbacks, 2);
+        assert_eq!(r.root_values.expect("root values").row.len(), n);
     }
 }

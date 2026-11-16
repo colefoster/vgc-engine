@@ -963,6 +963,7 @@ fn prod_config(depth: u32) -> SolverConfig {
         outcome_classes: false,
         chance_samples: None,
         root_menu: None,
+        leaf_after_replacements: false,
     }
 }
 

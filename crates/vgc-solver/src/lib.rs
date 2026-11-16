@@ -203,7 +203,8 @@ pub use compress::{enumerate_outcomes_classes, enumerate_outcomes_compressed, Ch
 pub use sampled::enumerate_outcomes_sampled;
 pub use nash::{solve_zero_sum, NashSolution};
 pub use recursive::{
-    endgame_solve, endgame_solve_anytime, endgame_solve_bounded, endgame_solve_with_tt, endgame_solve_with_tt_stats,
+    endgame_solve, endgame_solve_anytime, endgame_solve_bounded, endgame_solve_bounded_batched, endgame_solve_with_tt,
+    endgame_solve_with_tt_stats, BatchedLeaf, NodeMenu, NodeMenuFn,
     fallback_node, joint_actions, AnytimeSolve, BoundedSolve, EstReason, Provenance, RootMenu, RootValues, SolvedNode, SolverConfig,
     SolverStats, Truncation,
 };
