@@ -105,6 +105,13 @@ fn pairs(v: Option<&Value>) -> Vec<(String, f64)> {
     out
 }
 
+/// `(forme slug, base slug)` for formes that can Mega Evolve but are not
+/// prefixed `<base>mega`. An allowlist, not a prefix match: slug prefixes
+/// also catch `Pidgeotto` (Pidgeot), `Raichu-Alola`, `Slowbro-Galar`,
+/// `Greninja-Bond`/`-Ash` and the Gmax formes, none of which hold the Mega.
+/// Found by diffing the pokedex against the stats' Mega keys.
+const FORME_WITH_BASE_MEGA: &[(&str, &str)] = &[("floetteeternal", "floette")];
+
 impl Prior {
     /// No prior: every hidden field falls back to the documented defaults.
     pub fn none() -> Self {
@@ -267,6 +274,14 @@ impl Prior {
         let mega = format!("{s}mega");
         let mut out: Vec<(String, f64)> = self.species.iter().filter(|(k, _)| **k == s || k.starts_with(&mega)).map(|(k, v)| (k.clone(), v.usage)).collect();
         if out.is_empty() {
+            // A forme named differently from its base whose Mega is listed
+            // under the base (`Floette-Eternal` -> `Floette-Mega`).
+            if let Some((_, base)) = FORME_WITH_BASE_MEGA.iter().find(|(f, _)| *f == s) {
+                let base_mega = format!("{base}mega");
+                out = self.species.iter().filter(|(k, _)| k.starts_with(&base_mega)).map(|(k, v)| (k.clone(), v.usage)).collect();
+            }
+        }
+        if out.is_empty() {
             if let Some(f) = &self.fallback {
                 return f.keys_for(species);
             }
@@ -389,6 +404,22 @@ mod tests {
             sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
+    }
+
+    #[test]
+    fn keys_for_forme_named_base_reaches_mega() {
+        let mk = |names: &[&str]| Prior { species: names.iter().map(|n| (slug(n), SpeciesPrior { usage: 0.01, ..Default::default() })).collect(), ..Default::default() };
+        let p = mk(&["Floette-Mega", "Pidgeot-Mega", "Raichu-Mega-X", "Raichu-Mega-Y", "Slowbro-Mega", "Greninja-Mega", "Meowstic-F-Mega", "Charizard-Mega-X"]);
+        let keys = |s: &str| p.keys_for(s).into_iter().map(|k| k.0).collect::<Vec<_>>();
+        assert_eq!(keys("floetteeternal"), ["floettemega"]);
+        assert_eq!(keys("Floette-Eternal"), ["floettemega"]);
+        assert_eq!(keys("Floette"), ["floettemega"]);
+        assert_eq!(keys("Meowstic-F"), ["meowsticfmega"]);
+        assert_eq!(keys("Charizard"), ["charizardmegax"]);
+        // Formes that cannot Mega must not match the base's Mega.
+        for s in ["Raichu-Alola", "Slowbro-Galar", "Greninja-Bond", "Greninja-Ash", "Charizard-Gmax", "Pidgeotto", "Floette-Blue"] {
+            assert!(keys(s).is_empty(), "{s} falsely matched {:?}", keys(s));
+        }
     }
 
     #[test]
